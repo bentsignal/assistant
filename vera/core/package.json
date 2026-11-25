@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Vera Core: daemon, brain adapters, Vera MCP server, panel",
   "main": "src/main.ts",
-  "bin": { "vera-core": "src/main.ts" },
+  "bin": {
+    "vera-core": "src/main.ts"
+  },
   "scripts": {
     "start": "tsx src/main.ts --open",
     "dev": "tsx src/main.ts",
@@ -15,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@vera/mouth": "workspace:*",
     "tsx": "^4.19.2",
     "ws": "^8.18.0"
   },
