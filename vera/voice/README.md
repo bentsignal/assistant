@@ -170,7 +170,7 @@ synthesis time for "On it." and for one 9-word sentence.
 | Kokoro-82M v1.0 (Apache 2.0) | af_heart | 4.50 | 3.82 | 0% | 157 / 395 ms (CPU) | kept as the CPU fallback; brighter and harsher, a little "TTS" |
 | Qwen3-TTS CustomVoice presets | Aiden / Vivian | 4.43 / 4.49 | 3.60 / 3.52 | 0% | 790 / 4490 ms (plain HF) | the English preset speakers are expressive (Aiden 5.7 st), and the female ones are Chinese-native |
 | Chatterbox Turbo 350M (MIT) | built-in | 4.33 | 3.66 | 2.1% | 273 / 734 ms | Turbo has no exaggeration control; flat delivery but lower quality, quiet output |
-| Chatterbox 0.5B, exaggeration 0.25, cfg 0.4 (MIT) | built-in | see `bench/` | | | | the explicit emotion knob, set low; slower than Turbo |
+| Chatterbox 0.5B, exaggeration 0.25, cfg 0.4 (MIT) | built-in | 4.43 | 3.56 | 0% | 1440 / 3179 ms (RTF 0.98) | the explicit emotion knob set low, but still lively (4.5 st), harsh top end (5.6% in 2–5 kHz), too slow |
 | Pocket TTS 100M (Kyutai; code MIT, weights CC-BY 4.0) | mary / jane | 4.40 / 4.45 | 3.55 / 3.32 | 1.4% | 262 / 694 ms (CPU) | good for CPU, below Kokoro and Qwen |
 
 I also looked at, but didn't benchmark:
