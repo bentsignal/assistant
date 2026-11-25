@@ -24,13 +24,16 @@ function describeJob(job: Job, full = false): string {
 async function ask(vera: Vera, agent: JobAgent, args: any): Promise<string> {
   const task = need(args, "task")
   const cwd = typeof args.cwd === "string" && args.cwd.trim() ? args.cwd : vera.config.jobs.defaultCwd
+  const turn = vera.currentTurnId
   const job = vera.jobs.start(agent, task, cwd)
   if (!args.wait) return `Started ${agent} job ${job.id} in the background. Shawn gets a chime and an inbox item when it's done; no need to wait.`
   const done = await vera.jobs.wait(job.id, vera.config.jobs.waitTimeoutSeconds * 1000)
   if (done.status === "running") {
     return `${job.id} is still running after ${vera.config.jobs.waitTimeoutSeconds}s; it continues in the background and will chime when done.`
   }
-  vera.markJobSync(job.id)
+  // Only skip the inbox if the turn that asked is still there to hear the answer
+  // (not interrupted by "stop" in the meantime).
+  if (vera.currentTurnId === turn && turn !== null) vera.markJobSync(job.id)
   return describeJob(done, true)
 }
 

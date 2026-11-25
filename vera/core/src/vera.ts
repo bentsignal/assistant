@@ -274,6 +274,10 @@ export class Vera extends EventEmitter {
     }
   }
 
+  get currentTurnId(): number | null {
+    return this.current?.id ?? null
+  }
+
   /** Resolves when the given turn ends. */
   waitTurn(id: number): Promise<TurnRecord> {
     const done = this.turns.find((t) => t.id === id && t.durationMs !== undefined)
