@@ -59,10 +59,13 @@ enum VeraAudioCommand {
         lines: usize,
         #[arg(long, default_value_t = 0.45)]
         volume: f32,
-        /// A WAV to play as "the user" through another player while Vera
-        /// talks (not in Vera's reference, so it should barge in).
+        /// A WAV to play as "the user" on a stream of its own while Vera
+        /// talks: it is not in Vera's reference, so it should barge in.
         #[arg(long)]
         user_wav: Option<PathBuf>,
+        /// The user's level against the WAV's own, dB.
+        #[arg(long, default_value_t = -20.0)]
+        user_gain_db: f32,
         /// When to start it, seconds into Vera's first line.
         #[arg(long, default_value_t = 2.5)]
         user_at: f64,
@@ -78,6 +81,9 @@ enum VeraAudioCommand {
         voice_url: Option<String>,
         #[arg(long, default_value_t = super::DEFAULT_VOLUME)]
         volume: f32,
+        /// Stop talking this many seconds in (`stop_playback`).
+        #[arg(long)]
+        stop_after: Option<f64>,
         /// Keep listening this long after speaking, seconds.
         #[arg(long, default_value_t = 4.0)]
         listen: f64,
@@ -119,14 +125,25 @@ pub(crate) fn run(args: VeraAudioArgs, shutdown: &'static AtomicBool) -> Result<
             lines,
             volume,
             user_wav,
+            user_gain_db,
             user_at,
             mic,
             output,
-        } => live(&voices, lines, volume, user_wav, user_at, mic, output, shutdown),
+        } => live(
+            &voices,
+            lines,
+            volume,
+            user_wav.map(|path| (path, user_gain_db)),
+            user_at,
+            mic,
+            output,
+            shutdown,
+        ),
         VeraAudioCommand::Say {
             text,
             voice_url,
             volume,
+            stop_after,
             listen,
         } => {
             let mut config = AudioConfig {
@@ -136,11 +153,28 @@ pub(crate) fn run(args: VeraAudioArgs, shutdown: &'static AtomicBool) -> Result<
             if let Some(url) = voice_url {
                 config.voice_url = url;
             }
+            match super::voice::VoiceClient::new(&config.voice_url, None, None).ready() {
+                Ok(ready) => println!("voice service at {}: ready {ready}", config.voice_url),
+                Err(error) => println!("voice service at {}: {error}", config.voice_url),
+            }
             let (audio, events) = VeraAudio::start(config)?;
+            println!("volume {:.2}", audio.volume());
             audio.speak("say", text);
-            print_until(&events, shutdown, |event| {
-                matches!(event, AudioEvent::Playback { state, .. } if *state != super::PlaybackState::Started)
-            });
+            let started = Instant::now();
+            let mut stopped = false;
+            while !shutdown.load(Ordering::Relaxed) {
+                if !stopped && stop_after.is_some_and(|at| started.elapsed().as_secs_f64() >= at) {
+                    stopped = true;
+                    audio.stop_playback();
+                }
+                if let Ok(event) = events.recv_timeout(Duration::from_millis(20)) {
+                    print_event(started, &event);
+                    if matches!(&event, AudioEvent::Playback { state, .. } if *state != super::PlaybackState::Started)
+                    {
+                        break;
+                    }
+                }
+            }
             print_for(&events, Duration::from_secs_f64(listen), shutdown);
             Ok(())
         }
@@ -165,22 +199,6 @@ pub(crate) fn run(args: VeraAudioArgs, shutdown: &'static AtomicBool) -> Result<
 fn print_event(started: Instant, event: &AudioEvent) {
     let line = serde_json::to_string(event).unwrap_or_default();
     println!("{:>7.3}s {line}", started.elapsed().as_secs_f64());
-}
-
-fn print_until(
-    events: &mpsc::Receiver<AudioEvent>,
-    shutdown: &AtomicBool,
-    done: impl Fn(&AudioEvent) -> bool,
-) {
-    let started = Instant::now();
-    while !shutdown.load(Ordering::Relaxed) {
-        if let Ok(event) = events.recv_timeout(Duration::from_millis(50)) {
-            print_event(started, &event);
-            if done(&event) {
-                return;
-            }
-        }
-    }
 }
 
 fn print_for(events: &mpsc::Receiver<AudioEvent>, duration: Duration, shutdown: &AtomicBool) {
@@ -234,7 +252,15 @@ fn simulate(
                 }
                 None => (SimStt::Fake, None),
             };
-            let report = sim::run(room, *plan, &voices, backend, results.as_ref(), source, volume)?;
+            let report = sim::run(
+                room,
+                *plan,
+                &voices,
+                backend,
+                results.as_ref(),
+                source,
+                volume,
+            )?;
             tracing::info!(
                 room = room.name,
                 plan = ?plan,
@@ -310,7 +336,8 @@ fn print_summary(reports: &[sim::RunReport]) {
         let mut ducks: Vec<f64> = cases.iter().filter_map(|c| c.duck_ms).collect();
         let mut barges: Vec<f64> = cases.iter().filter_map(|c| c.barge_in_ms).collect();
         let detected = barges.len();
-        let wer: f64 = cases.iter().map(|c| c.word_error_rate).sum::<f64>() / cases.len().max(1) as f64;
+        let wer: f64 =
+            cases.iter().map(|c| c.word_error_rate).sum::<f64>() / cases.len().max(1) as f64;
         println!(
             "   {plan:<6} echo-only {echo_s:.0} s, false ducks {false_ducks} ({:.1}/min), false barge-ins {false_barge}, echo finals {echo_finals}",
             false_ducks as f64 / (echo_s / 60.0).max(1e-9)
@@ -334,13 +361,18 @@ fn live(
     voices: &std::path::Path,
     lines: usize,
     volume: f32,
-    user_wav: Option<PathBuf>,
+    user_wav: Option<(PathBuf, f32)>,
     user_at: f64,
     mic: Option<String>,
     output: Option<String>,
     shutdown: &AtomicBool,
 ) -> Result<()> {
     let voices = sim::load_voices(voices)?;
+    let user_clip = match &user_wav {
+        Some((path, _)) => Some(sim::Clip::load(path, "")?),
+        None => None,
+    };
+    let user_output = output.clone();
     let (audio, events) = VeraAudio::start(AudioConfig {
         microphone: mic,
         output,
@@ -379,16 +411,15 @@ fn live(
             }
             if line == 0
                 && user.is_none()
-                && let Some(path) = &user_wav
+                && let (Some(clip), Some((_, gain_db))) = (&user_clip, &user_wav)
                 && line_started.elapsed().as_secs_f64() >= user_at
             {
-                println!("{:>7.3}s (playing the user: {})", started.elapsed().as_secs_f64(), path.display());
-                user = Some(
-                    crate::desktop::background_process::command("ffplay")
-                        .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
-                        .arg(path)
-                        .spawn()?,
+                println!(
+                    "{:>7.3}s (the user starts: {})",
+                    started.elapsed().as_secs_f64(),
+                    clip.name
                 );
+                user = Some(play_apart(user_output.as_deref(), clip, *gain_db)?);
             }
             let levels = audio.levels();
             peak_mic = peak_mic.max(levels.mic);
@@ -415,9 +446,48 @@ fn live(
         }
         print_for(&events, Duration::from_millis(1_500), shutdown);
     }
-    if let Some(mut user) = user {
-        let _ = user.wait();
-    }
-    print_for(&events, Duration::from_secs(3), shutdown);
+    print_for(&events, Duration::from_secs(2), shutdown);
+    drop(user);
+    // The rest of the App's controls, briefly: Vera's volume, a stop with
+    // nothing playing, and the microphone muted and back.
+    audio.set_volume(volume * 0.8);
+    audio.stop_playback();
+    audio.set_mic_muted(true);
+    print_for(&events, Duration::from_millis(300), shutdown);
+    println!(
+        "volume {:.2}, speaking {}, muted {}",
+        audio.volume(),
+        audio.speaking(),
+        audio.mic_muted()
+    );
+    audio.set_mic_muted(false);
+    print_for(&events, Duration::from_millis(500), shutdown);
     Ok(())
+}
+
+/// Plays `clip` on an output stream of its own, outside Vera's mixer, so
+/// her echo canceller has no reference for it: to the microphone it is a
+/// person in the room. Keep the returned stream until it has played.
+fn play_apart(
+    device: Option<&str>,
+    clip: &sim::Clip,
+    gain_db: f32,
+) -> Result<super::output::Output> {
+    use std::sync::{Arc, Mutex, atomic::AtomicU32};
+    let (commands, receiver) = mpsc::channel();
+    let (reports, _ignored) = mpsc::channel();
+    let gain = 10f32.powf(gain_db / 20.0);
+    let mixer =
+        super::mixer::Mixer::new(48_000, gain, receiver, reports, Arc::new(AtomicU32::new(0)));
+    let output = super::output::open(device, Arc::new(Mutex::new(mixer)))?;
+    let id: super::mixer::SpeakId = "user".into();
+    let _ = commands.send(super::mixer::Command::Begin { id: id.clone() });
+    let _ = commands.send(super::mixer::Command::Pcm {
+        id: id.clone(),
+        rate: clip.rate,
+        samples: clip.samples.clone(),
+    });
+    let _ = commands.send(super::mixer::Command::End { id });
+    // Queued commands stay readable after the sender goes.
+    Ok(output)
 }

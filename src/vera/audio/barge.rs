@@ -54,14 +54,23 @@ const TAIL_BLOCKS: usize = 75;
 const ACTIVE_DB: f32 = -80.0;
 /// Blocks after the duck shows in the reference before the probe starts,
 /// on top of the canceller's delay: the ramp and the room's early echo.
-const PROBE_SETTLE: usize = 8;
+const PROBE_SETTLE: usize = 6;
 /// Blocks with the user in the bands the probe needs, and the most blocks
 /// it may take: long enough for the bands' bounds to fall after the duck
 /// (160 ms of hold, then 75 dB/s) under a user quieter than Vera's echo.
-const PROBE_COUNT: usize = 12;
-const PROBE_LIMIT: usize = 100;
+const PROBE_COUNT: usize = 10;
+/// Up to 800 ms: a short first word ("Wait,") and the pause after it keep
+/// Vera ducked until the user's next word confirms.
+const PROBE_LIMIT: usize = 200;
+/// The speech detector saying no this many times ends the probe.
+const REFUSALS: usize = 3;
 /// Blocks into the probe after which plain echo ends it.
 const PROBE_EARLY: usize = 20;
+/// How long the bands hold Vera's level after a duck, in blocks.
+const HOLD_BLOCKS: usize = 40;
+/// A confirmation this soon after a rejected suspicion means the user had
+/// already started then (blocks, 600 ms).
+const CHAIN_BLOCKS: u64 = 150;
 /// Echo falls by the duck's 20 dB; the loudest 20 ms of the user's voice
 /// since the duck falls by less than this.
 const PROBE_MAX_DROP_DB: f32 = 12.0;
@@ -79,6 +88,12 @@ const LEAK_EVERY: usize = 5;
 /// ever, or after the echo path changed) nothing is confirmed and nothing
 /// is learned: an unconverged canceller hasn't removed her echo at all.
 const CONVERGED_BLOCKS: usize = 250;
+/// The canceller counts as cancelling when its linear output is this much
+/// (give or take 2 dB of hysteresis) under the raw microphone where Vera
+/// alone is audible, averaged over ~1 s. With no audible echo at all (a
+/// headset) it stays as it starts: cancelling.
+const LOCKED_ERLE_DB: f32 = 6.0;
+const ECHO_AVERAGE: f32 = 1.0 / 250.0;
 const DELAY_TOLERANCE_MS: i32 = 8;
 /// After a rejected suspicion, this long before the next.
 const REFRACTORY_BLOCKS: usize = 25;
@@ -105,7 +120,8 @@ pub(crate) enum Action {
     /// A false alarm: restore Vera's volume.
     Restore,
     /// The user is talking: a barge-in. Its speech began around `onset`
-    /// (a block index).
+    /// (a block index): the first block of this suspicion, or of a false
+    /// alarm just before it that the user's voice had already started.
     Confirm { onset: u64 },
 }
 
@@ -160,6 +176,7 @@ struct Suspicion {
     /// whether it ever said no.
     checked_at: Option<usize>,
     speech_refused: bool,
+    refusals: usize,
 }
 
 pub(crate) struct Detector {
@@ -185,11 +202,23 @@ pub(crate) struct Detector {
     /// has held.
     delay_ms: i32,
     delay_held: usize,
+    /// The first block of the last rejected suspicion, and when it ended:
+    /// if the user's voice is confirmed soon after, it began there.
+    rejected: Option<(u64, u64)>,
+    /// Raw microphone and linear output, averaged over the blocks where
+    /// Vera's echo is audible: whether the canceller is cancelling.
+    echo_microphone: f32,
+    echo_linear: f32,
+    microphone_floor: Floor,
+    /// Whether the canceller is cancelling (with 4 dB of hysteresis).
+    locked: bool,
     enabled: bool,
 }
 
 /// The canceller's view of one block.
 pub(crate) struct Block<'a> {
+    /// The raw microphone, before cancellation.
+    pub microphone: &'a [f32],
     pub linear: &'a [f32],
     pub suppressed: &'a [f32],
     pub reference: &'a [f32],
@@ -233,6 +262,11 @@ impl Detector {
             recent_ratios: VecDeque::new(),
             delay_ms: -1_000,
             delay_held: 0,
+            rejected: None,
+            echo_microphone: 0.0,
+            echo_linear: 0.0,
+            microphone_floor: Floor::default(),
+            locked: true,
             enabled: true,
         }
     }
@@ -262,7 +296,6 @@ impl Detector {
     }
 
     /// The block index the next [`push`](Self::push) gets.
-    #[cfg(test)]
     pub(crate) fn position(&self) -> u64 {
         self.block
     }
@@ -332,14 +365,35 @@ impl Detector {
         }
         self.floor.push(linear_db, index);
         self.suppressed_floor.push(suppressed_db, index);
+        // Is the canceller cancelling? Over blocks where the raw
+        // microphone is well above its own floor while Vera plays.
+        let microphone = energy(block.microphone);
+        let microphone_db = db(microphone);
+        self.microphone_floor.push(microphone_db, index);
+        // Only while nobody is suspected of talking: the user's voice
+        // isn't Vera's echo, and the canceller can't remove it.
+        if active
+            && matches!(self.state, State::Watching { .. })
+            && microphone_db > self.microphone_floor.db() + 10.0
+        {
+            self.echo_microphone += (microphone - self.echo_microphone) * ECHO_AVERAGE;
+            self.echo_linear += (energy(block.linear) - self.echo_linear) * ECHO_AVERAGE;
+            let erle = db(self.echo_microphone) - db(self.echo_linear);
+            if erle >= LOCKED_ERLE_DB + 2.0 {
+                self.locked = true;
+            } else if erle < LOCKED_ERLE_DB - 2.0 {
+                self.locked = false;
+            }
+        }
+
         let echo_only = matches!(self.state, State::Watching { .. })
             && reference_db > self.floor.db() + 6.0
             && self.converged();
         self.bands
             .push(block.linear, block.reference, delay * BLOCK, echo_only);
         let bands = self.bands.latest();
-        let bound_db = (self.floor.db() + FLOOR_MARGIN_DB)
-            .max(reference_db + self.leak_db + LEAK_MARGIN_DB);
+        let bound_db =
+            (self.floor.db() + FLOOR_MARGIN_DB).max(reference_db + self.leak_db + LEAK_MARGIN_DB);
         let probe = Probe {
             linear_db,
             suppressed_db,
@@ -351,7 +405,9 @@ impl Detector {
         };
         push_capped(
             &mut self.hits,
-            (probe.suppressed_hit, probe.linear_hit),
+            // An unlocked canceller's linear output still holds Vera's echo:
+            // only the suppressed output may raise a suspicion then.
+            (probe.suppressed_hit, probe.linear_hit && self.locked),
             TRIGGER_WINDOW,
         );
 
@@ -374,12 +430,16 @@ impl Detector {
                 self.state = State::Watching { refractory: 0 };
                 None
             }
-            State::Watching { refractory } => {
-                self.watch(index, refractory, &probe, reference_db)
-            }
-            State::Suspect(suspicion) => {
-                self.probe(suspicion, index, delay, block.duck, reference_db, &probe, speech)
-            }
+            State::Watching { refractory } => self.watch(index, refractory, &probe, reference_db),
+            State::Suspect(suspicion) => self.probe(
+                suspicion,
+                index,
+                delay,
+                block.duck,
+                reference_db,
+                &probe,
+                speech,
+            ),
             State::Confirmed { quiet } => {
                 self.recent_ratios.clear();
                 let quiet = if active { 0 } else { quiet + 1 };
@@ -406,7 +466,7 @@ impl Detector {
         };
         // Echo-only stretches teach the leak, once it is clear they were
         // not the start of the user's voice.
-        if index % LEAK_EVERY as u64 == 0
+        if index.is_multiple_of(LEAK_EVERY as u64)
             && reference_db > self.floor.db() + 6.0
             && self.converged()
         {
@@ -439,6 +499,7 @@ impl Detector {
             after_min_db: 0.0,
             checked_at: None,
             speech_refused: false,
+            refusals: 0,
         });
         Some(Action::Duck)
     }
@@ -470,8 +531,11 @@ impl Detector {
         };
         suspicion.probed += 1;
         // Only the bands confirm: AEC3's suppressor can let Vera's ducked
-        // echo through, the bands' bounds never fall under it.
-        if probe.linear_hit {
+        // echo through, the bands' bounds never fall under it. While the
+        // canceller isn't cancelling (it hasn't found a weak, late echo),
+        // its linear output still holds Vera's echo, so the suppressed
+        // output must agree.
+        if probe.linear_hit && (self.locked || probe.suppressed_hit) {
             suspicion.hits += 1;
         }
         let level = if suspicion.by_suppressed {
@@ -496,18 +560,24 @@ impl Detector {
             if heard != Some(false) {
                 self.bands.forget_pending();
                 self.state = State::Confirmed { quiet: 0 };
-                return Some(Action::Confirm {
-                    onset: suspicion.first,
-                });
+                let onset = match self.rejected.take() {
+                    Some((first, ended)) if suspicion.first <= ended + CHAIN_BLOCKS => first,
+                    _ => suspicion.first,
+                };
+                return Some(Action::Confirm { onset });
             }
             suspicion.speech_refused = true;
+            suspicion.refusals += 1;
         }
         // Done early once it is plain: the output fell with Vera and the
         // bands never showed the user, or nothing showed up at all.
-        let plainly_echo = suspicion.probed >= PROBE_EARLY && fell_with_vera
-            && suspicion.hits < PROBE_COUNT;
-        let nothing = suspicion.probed >= PROBE_EARLY * 2 && suspicion.hits == 0;
-        if suspicion.probed >= PROBE_LIMIT || plainly_echo || nothing {
+        let plainly_echo =
+            suspicion.probed >= PROBE_EARLY && fell_with_vera && suspicion.hits < PROBE_COUNT;
+        // The bands' bounds hold Vera's level for 160 ms after the duck
+        // reaches them: a quiet user can't show before that.
+        let nothing = suspicion.probed >= HOLD_BLOCKS + PROBE_EARLY && suspicion.hits == 0;
+        let refused = suspicion.refusals >= REFUSALS;
+        if suspicion.probed >= PROBE_LIMIT || plainly_echo || nothing || refused {
             // Energy that stayed but was never speech is noise; anything
             // else fell with Vera.
             let echo = !suspicion.speech_refused;
@@ -530,6 +600,17 @@ impl Detector {
     /// with the duck (`echo`), what triggered was Vera's leak; when it
     /// didn't and still wasn't speech, it was the room's noise.
     fn reject(&mut self, suspicion: &Suspicion, echo: bool) -> Action {
+        tracing::debug!(
+            echo,
+            by_suppressed = suspicion.by_suppressed,
+            probed = suspicion.probed,
+            band_hits = suspicion.hits,
+            before_db = suspicion.before_db,
+            after_db = suspicion.after_db,
+            refusals = suspicion.refusals,
+            converged = self.converged(),
+            "vera audio: suspicion rejected"
+        );
         let ratios: Vec<f32> = self.recent_ratios.drain(..).collect();
         for ratio in ratios {
             self.learn(ratio);
@@ -562,6 +643,7 @@ impl Detector {
             };
             floor.raise(suspicion.after_min_db - 3.0);
         }
+        self.rejected = Some((suspicion.first, self.block));
         self.state = State::Watching {
             refractory: REFRACTORY_BLOCKS,
         };
@@ -609,9 +691,13 @@ impl Default for Floor {
 
 impl Floor {
     fn push(&mut self, level_db: f32, index: u64) {
-        push_capped(&mut self.history, level_db.max(FLOOR_LOWEST_DB), FLOOR_HISTORY);
+        push_capped(
+            &mut self.history,
+            level_db.max(FLOOR_LOWEST_DB),
+            FLOOR_HISTORY,
+        );
         self.raised_db = (self.raised_db - FLOOR_RAISE_DECAY_DB).max(FLOOR_LOWEST_DB);
-        if index % FLOOR_EVERY == 0 && self.history.len() >= 50 {
+        if index.is_multiple_of(FLOOR_EVERY) && self.history.len() >= 50 {
             let mut sorted: Vec<f32> = self.history.iter().copied().collect();
             sorted.sort_by(f32::total_cmp);
             self.percentile_db = sorted[sorted.len() / 10];
@@ -688,14 +774,17 @@ mod tests {
             self.played.push_back(vera * duck_now);
             let echo = self.played[self.played.len() - 1 - self.delay_blocks];
             let reference: Vec<f32> = (0..BLOCK).map(|_| self.noise() * vera * duck_now).collect();
-            let (mut linear, mut suppressed) = (Vec::new(), Vec::new());
+            let (mut microphone, mut linear, mut suppressed) = (Vec::new(), Vec::new(), Vec::new());
             for _ in 0..BLOCK {
-                let residual = self.noise() * echo * self.leak;
+                // The canceller takes the echo down to `leak` of itself.
+                let raw = self.noise() * echo;
                 let near = self.noise() * user + self.noise() * 1e-4;
-                linear.push(residual + near);
-                suppressed.push(residual * self.suppressed_leak + near);
+                microphone.push(raw + near);
+                linear.push(raw * self.leak + near);
+                suppressed.push(raw * self.leak * self.suppressed_leak + near);
             }
             let block = Block {
+                microphone: &microphone,
                 linear: &linear,
                 suppressed: &suppressed,
                 reference: &reference,

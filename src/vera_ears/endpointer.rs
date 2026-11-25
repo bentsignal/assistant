@@ -145,6 +145,20 @@ impl Endpointer {
         was_speaking
     }
 
+    /// Starts an utterance whose speech began at `onset`, now, whatever
+    /// the frames said: the duplex engine knows the user is talking before
+    /// the level gate does (Vera's echo raised its noise floor).
+    pub(crate) fn force_start(&mut self, onset: usize) -> Event {
+        let clip_start = onset.saturating_sub(samples(self.settings.pre_roll));
+        self.state = State::Speaking {
+            clip_start,
+            speech_end: self.position(),
+            silent_frames: 0,
+        };
+        self.earliest = self.earliest.min(clip_start);
+        Event::Started { clip_start, onset }
+    }
+
     /// Passes over `samples` without judging them (audio heard while paused),
     /// so positions stay on the capture's timeline.
     pub(crate) fn skip(&mut self, samples: usize) {
@@ -227,9 +241,7 @@ impl Endpointer {
                 let forced = length >= samples(settings.max_utterance) * 2;
                 let quiet_ms = *silent_frames * FRAME_MS;
                 if quiet_ms < pause.as_millis() as usize && !forced {
-                    return (!speech
-                        && quiet_ms == frames(QUIET) * FRAME_MS
-                        && pause > QUIET)
+                    return (!speech && quiet_ms == frames(QUIET) * FRAME_MS && pause > QUIET)
                         .then(|| Event::Quiet {
                             clip_start: *clip_start,
                             speech_end: *speech_end,
@@ -342,11 +354,19 @@ mod tests {
         endpointer.set_inhibited(false);
         let mut audio = utterance(&[(400, 0)], -70.0);
         let started = run(&mut endpointer, &audio, 160);
-        assert!(matches!(started.as_slice(), [Event::Started { .. }]), "{started:?}");
+        assert!(
+            matches!(started.as_slice(), [Event::Started { .. }]),
+            "{started:?}"
+        );
         endpointer.set_inhibited(true);
         audio = noise(1_200, -70.0, &mut 7);
         let ended = run(&mut endpointer, &audio, 160);
-        assert!(ended.iter().any(|event| matches!(event, Event::Ended { .. })), "{ended:?}");
+        assert!(
+            ended
+                .iter()
+                .any(|event| matches!(event, Event::Ended { .. })),
+            "{ended:?}"
+        );
     }
 
     #[test]

@@ -119,9 +119,7 @@ impl Bands {
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(WINDOW);
         let window = (0..WINDOW)
-            .map(|n| {
-                0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / WINDOW as f32).cos()
-            })
+            .map(|n| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * n as f32 / WINDOW as f32).cos())
             .collect();
         let bin_hz = RATE as f32 / WINDOW as f32;
         let ratio = (HIGH_HZ / LOW_HZ).powf(1.0 / BANDS as f32);
@@ -200,7 +198,10 @@ impl Bands {
             return Frame::default();
         }
         let now_linear = self.band_energies_of(true, 0);
-        let reference_end = self.reference.len().saturating_sub(delay.min(KEEP - WINDOW));
+        let reference_end = self
+            .reference
+            .len()
+            .saturating_sub(delay.min(KEEP - WINDOW));
         let now_reference = if reference_end >= WINDOW {
             self.band_energies_of(false, self.reference.len() - reference_end)
         } else {
@@ -311,7 +312,11 @@ impl Bands {
     /// Band energies of the last `WINDOW` samples of the linear output, or
     /// of the reference ending `back` samples from its newest.
     fn band_energies_of(&mut self, linear: bool, back: usize) -> [f32; BANDS] {
-        let source = if linear { &self.linear } else { &self.reference };
+        let source = if linear {
+            &self.linear
+        } else {
+            &self.reference
+        };
         let end = source.len() - back;
         for (index, (into, sample)) in self
             .scratch
@@ -370,10 +375,15 @@ mod tests {
                     residual + voice + noise.gauss() * 1e-4
                 })
                 .collect();
-            let frame = bands.push(&linear, &reference, 0, !user).expect("a frame per hop");
+            let frame = bands
+                .push(&linear, &reference, 0, !user)
+                .expect("a frame per hop");
             frames.push((user, frame.user()));
         }
-        let echo_alarms = frames[100..].iter().filter(|(user, hit)| !user && *hit).count();
+        let echo_alarms = frames[100..]
+            .iter()
+            .filter(|(user, hit)| !user && *hit)
+            .count();
         let caught = frames.iter().filter(|(user, hit)| *user && *hit).count();
         let user_frames = frames.iter().filter(|(user, _)| *user).count();
         assert_eq!(echo_alarms, 0);

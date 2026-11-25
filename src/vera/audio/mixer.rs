@@ -35,7 +35,9 @@ pub(crate) type SpeakId = Arc<str>;
 #[derive(Debug)]
 pub(crate) enum Command {
     /// A new utterance, queued behind any others; its audio comes as `Pcm`.
-    Begin { id: SpeakId },
+    Begin {
+        id: SpeakId,
+    },
     /// More of `id`'s audio, mono at `rate`.
     Pcm {
         id: SpeakId,
@@ -43,11 +45,15 @@ pub(crate) enum Command {
         samples: Vec<f32>,
     },
     /// No more audio is coming for `id`.
-    End { id: SpeakId },
+    End {
+        id: SpeakId,
+    },
     /// Stops (fades out) and drops every utterance; chimes go on.
     Stop,
     /// Drops one utterance (fading it out if it is playing).
-    Drop { id: SpeakId },
+    Drop {
+        id: SpeakId,
+    },
     Duck(bool),
     /// Vera's volume as a linear gain.
     Gain(f32),
@@ -65,9 +71,14 @@ pub(crate) enum Report {
         samples: Vec<f32>,
         duck: f32,
     },
-    Started { id: SpeakId },
+    Started {
+        id: SpeakId,
+    },
     /// The last sample of `id` was rendered; it is heard at `ends_at_ns`.
-    Finished { id: SpeakId, ends_at_ns: u64 },
+    Finished {
+        id: SpeakId,
+        ends_at_ns: u64,
+    },
 }
 
 struct Item {
@@ -152,10 +163,6 @@ impl Mixer {
         }
     }
 
-    pub(crate) fn rate(&self) -> u32 {
-        self.rate
-    }
-
     /// A new output stream at `rate`: queued audio is resampled for it.
     pub(crate) fn set_rate(&mut self, rate: u32) {
         if rate == self.rate {
@@ -164,7 +171,8 @@ impl Mixer {
         let from = self.rate;
         for item in &mut self.queue {
             let buffered: Vec<f32> = item.buffer.drain(..).collect();
-            item.buffer.extend(super::resample::resample(&buffered, from, rate));
+            item.buffer
+                .extend(super::resample::resample(&buffered, from, rate));
             item.resampler = item
                 .resampler
                 .take()

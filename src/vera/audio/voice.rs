@@ -59,10 +59,6 @@ impl VoiceClient {
         }
     }
 
-    pub(crate) fn url(&self) -> &str {
-        &self.url
-    }
-
     /// Whether the service answers its health check as ready.
     pub(crate) fn ready(&self) -> Result<bool, String> {
         let mut response = self
@@ -155,9 +151,17 @@ impl VoiceClient {
             carry.extend_from_slice(&buffer[..read]);
             let whole = carry.len() / 4 * 4;
             let samples: Vec<f32> = carry[..whole]
-                .chunks_exact(4)
-                .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-                .map(|sample| if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 })
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| f32::from_le_bytes(*bytes))
+                .map(|sample| {
+                    if sample.is_finite() {
+                        sample.clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                })
                 .collect();
             carry.drain(..whole);
             total += samples.len();
@@ -235,7 +239,10 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         let outcome = fetched.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(matches!(outcome, Fetched::Done { ref id } if &**id == "s1"), "{outcome:?}");
+        assert!(
+            matches!(outcome, Fetched::Done { ref id } if &**id == "s1"),
+            "{outcome:?}"
+        );
         let request = server.join().unwrap();
         assert_eq!(request, r#"{"text":"On it.","voice":"af_heart"}"#);
         let mut received = Vec::new();
@@ -262,7 +269,13 @@ mod tests {
         let client = VoiceClient::new(&url, None, None);
         let (mixer, _commands) = mpsc::channel();
         let (done, fetched) = mpsc::channel();
-        client.speak("s2".into(), "Hi.".into(), mixer, done, Arc::new(AtomicBool::new(false)));
+        client.speak(
+            "s2".into(),
+            "Hi.".into(),
+            mixer,
+            done,
+            Arc::new(AtomicBool::new(false)),
+        );
         let outcome = fetched.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(matches!(outcome, Fetched::Failed { .. }), "{outcome:?}");
     }

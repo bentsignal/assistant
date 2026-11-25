@@ -215,7 +215,9 @@ impl Convolver {
         let partitions = self.filter.len();
         self.newest = (self.newest + partitions - 1) % partitions;
         self.history[self.newest].copy_from_slice(&self.spectrum);
-        self.sum.iter_mut().for_each(|bin| *bin = Complex32::default());
+        self.sum
+            .iter_mut()
+            .for_each(|bin| *bin = Complex32::default());
         for (offset, filter) in self.filter.iter().enumerate() {
             let spectrum = &self.history[(self.newest + offset) % partitions];
             for ((sum, x), h) in self.sum.iter_mut().zip(spectrum).zip(filter) {
@@ -319,7 +321,11 @@ mod tests {
             let direct: f32 = (0..response.len().min(n + 1))
                 .map(|k| response[k] * signal[n - k])
                 .sum();
-            assert!((fast[n] - direct).abs() < 1e-3, "{n}: {} vs {direct}", fast[n]);
+            assert!(
+                (fast[n] - direct).abs() < 1e-3,
+                "{n}: {} vs {direct}",
+                fast[n]
+            );
         }
     }
 

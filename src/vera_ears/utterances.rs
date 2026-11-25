@@ -421,7 +421,11 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
             }
         };
         if text.is_empty() {
-            let reason = if finished.speech { "no words" } else { "no speech" };
+            let reason = if finished.speech {
+                "no words"
+            } else {
+                "no speech"
+            };
             tracing::info!(reason, "utterance dropped");
             if pending.announced {
                 self.output.emit(&Event::SpeechCancel {
@@ -574,6 +578,48 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
         &mut self.backend
     }
 
+    /// Samples pushed so far (the position the next sample gets).
+    pub(crate) fn position(&self) -> usize {
+        self.endpointer.position()
+    }
+
+    /// Replaces kept audio from `from` on with `samples` (the duplex engine
+    /// swaps in a cleaner signal once it knows the user was talking).
+    pub(crate) fn overwrite(&mut self, from: usize, samples: &[f32]) {
+        for (offset, sample) in samples.iter().enumerate() {
+            let position = from + offset;
+            if position >= self.ring_first
+                && let Some(into) = self.ring.get_mut(position - self.ring_first)
+            {
+                *into = *sample;
+            }
+        }
+    }
+
+    /// Starts an utterance whose speech began at `onset` (a position),
+    /// replacing one that started after it, which is dropped silently (the
+    /// caller held its events). One that began before it goes on.
+    pub(crate) fn force_start(&mut self, onset: usize) {
+        let onset_ms = self.epoch_ms(onset);
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.onset_ms <= onset_ms)
+        {
+            return;
+        }
+        if let Some(current) = self.current.take() {
+            let in_flight = current.speculation.map(|(id, _)| id);
+            for id in in_flight.into_iter().chain(current.partial) {
+                self.stale.insert(id);
+            }
+        }
+        if let endpointer::Event::Started { clip_start, onset } = self.endpointer.force_start(onset)
+        {
+            self.started(clip_start.max(self.ring_first), onset);
+        }
+    }
+
     /// When the utterance being spoken began (epoch ms).
     pub(crate) fn current_onset_ms(&self) -> Option<u64> {
         self.current.as_ref().map(|current| current.onset_ms)
@@ -599,7 +645,11 @@ pub(crate) fn join(prefix: &str, text: &str) -> String {
                 return format!("{prefix} {text}");
             }
             let mut chars = text.chars();
-            let head: String = chars.next().into_iter().flat_map(char::to_lowercase).collect();
+            let head: String = chars
+                .next()
+                .into_iter()
+                .flat_map(char::to_lowercase)
+                .collect();
             format!("{prefix} {head}{}", chars.as_str())
         }
     }
@@ -709,7 +759,10 @@ mod tests {
         assert!((1_480..=1_560).contains(&(end - start)), "{}", end - start);
         // The speculation during the pause was the one used.
         assert_eq!(ears.backend().asked.len(), 1);
-        assert!(ears.backend().asked[0].2, "confirmed speech skips the check");
+        assert!(
+            ears.backend().asked[0].2,
+            "confirmed speech skips the check"
+        );
     }
 
     #[test]
@@ -727,7 +780,10 @@ mod tests {
             })
         });
         assert!(lines(&output).is_empty());
-        assert!(!ears.backend().asked[0].2, "unconfirmed clips are checked again");
+        assert!(
+            !ears.backend().asked[0].2,
+            "unconfirmed clips are checked again"
+        );
     }
 
     #[test]
@@ -869,7 +925,10 @@ mod tests {
     #[test]
     fn joined_continuations_read_as_one_sentence() {
         assert_eq!(join("Vera", "What's new?"), "Vera what's new?");
-        assert_eq!(join("Vera, open the browser and", "Search."), "Vera, open the browser and search.");
+        assert_eq!(
+            join("Vera, open the browser and", "Search."),
+            "Vera, open the browser and search."
+        );
         assert_eq!(join("Vera, ask", "I think so."), "Vera, ask I think so.");
         assert_eq!(join("Check the", "T3 threads."), "Check the T3 threads.");
         assert_eq!(join("Stop.", "Thanks."), "Stop. Thanks.");
@@ -884,7 +943,11 @@ mod tests {
         audio.extend(utterance(&[(800, 0)], -70.0));
         play(&mut ears, &audio, &mut said("never"));
         ears.pause(5);
-        play(&mut ears, &utterance(&[(800, 1_500)], -70.0), &mut said("unheard"));
+        play(
+            &mut ears,
+            &utterance(&[(800, 1_500)], -70.0),
+            &mut said("unheard"),
+        );
         ears.resume(6);
         assert_eq!(
             kinds(&lines(&output)),

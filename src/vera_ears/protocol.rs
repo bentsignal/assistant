@@ -23,8 +23,13 @@ pub(crate) enum Event<'a> {
         partials: bool,
         pause_ms: u64,
     },
-    SpeechStart { t: u64 },
-    Partial { text: &'a str, t: u64 },
+    SpeechStart {
+        t: u64,
+    },
+    Partial {
+        text: &'a str,
+        t: u64,
+    },
     Final {
         text: &'a str,
         start: u64,
@@ -37,10 +42,19 @@ pub(crate) enum Event<'a> {
     /// door, music the speech detector rejects) or that a pause interrupted.
     /// No `final` follows it. Extra to the contract: parsers that ignore
     /// unknown types lose nothing.
-    SpeechCancel { t: u64, reason: &'a str },
-    Paused { t: u64 },
-    Resumed { t: u64 },
-    Error { message: &'a str },
+    SpeechCancel {
+        t: u64,
+        reason: &'a str,
+    },
+    Paused {
+        t: u64,
+    },
+    Resumed {
+        t: u64,
+    },
+    Error {
+        message: &'a str,
+    },
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Clone, Copy)]
@@ -96,7 +110,10 @@ impl<W: Write + Send> Output<W> {
             }
         };
         line.push('\n');
-        let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         if writer
             .write_all(line.as_bytes())
             .and_then(|()| writer.flush())
@@ -142,7 +159,9 @@ mod tests {
     #[test]
     fn events_are_the_contract_lines() {
         assert_eq!(
-            line(&Event::SpeechStart { t: 1_732_500_000_000 }),
+            line(&Event::SpeechStart {
+                t: 1_732_500_000_000
+            }),
             "{\"type\":\"speech_start\",\"t\":1732500000000}\n"
         );
         assert_eq!(
@@ -175,14 +194,19 @@ mod tests {
             pause_ms: 700,
         });
         assert!(
-            ready.starts_with("{\"type\":\"ready\",\"engine\":\"hex\",\"model\":\"parakeet_unified_en\""),
+            ready.starts_with(
+                "{\"type\":\"ready\",\"engine\":\"hex\",\"model\":\"parakeet_unified_en\""
+            ),
             "{ready}"
         );
     }
 
     #[test]
     fn commands_parse_and_garbage_is_reported() {
-        assert_eq!(parse_command("{\"cmd\":\"pause\"}"), Some(Ok(Command::Pause)));
+        assert_eq!(
+            parse_command("{\"cmd\":\"pause\"}"),
+            Some(Ok(Command::Pause))
+        );
         assert_eq!(
             parse_command(" {\"cmd\": \"resume\"}\r"),
             Some(Ok(Command::Resume))

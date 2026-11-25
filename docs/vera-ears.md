@@ -7,6 +7,9 @@ the GPU through Vulkan), and speaks the Ears JSON-lines contract from
 [`VERA.md`](../VERA.md). Core does the wake-word gating; Ears transcribes
 everything it hears.
 
+Vera v2 runs these same ears inside its duplex audio engine, on the
+echo-cancelled microphone: see [`vera-audio.md`](vera-audio.md).
+
 Code: `src/vera_ears.rs` (microphone, engine, stdin/stdout),
 `src/vera_ears/endpointer.rs` (where utterances start and end),
 `src/vera_ears/utterances.rs` (what gets announced and when),

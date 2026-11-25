@@ -23,6 +23,9 @@ use crate::vera_ears::utterances::{Backend, Finished};
 
 /// The output closes after this long with nothing to play.
 const OUTPUT_LINGER: Duration = Duration::from_secs(8);
+/// How often the engine logs its echo canceller and barge-in counters
+/// while the output is open.
+const STATS_EVERY: Duration = Duration::from_secs(2);
 /// How long the loop waits for audio before looking at everything else.
 const POLL: Duration = Duration::from_millis(5);
 
@@ -95,6 +98,12 @@ pub(super) fn run(
     );
     core.set_barge_in(config.barge_in);
     core.set_stt_source(config.stt_source);
+    // `VERA_AUDIO_DUMP=<folder>`: keep this run's microphone, reference,
+    // and cancelled audio (16 kHz) and write them there on shutdown.
+    let dump = std::env::var_os("VERA_AUDIO_DUMP").map(std::path::PathBuf::from);
+    if dump.is_some() {
+        core.audio_dump = Some(Default::default());
+    }
     let device = match &config.microphone {
         Some(query) => match crate::vera_ears::resolve_device(query) {
             Ok(device) => Some(device),
@@ -117,7 +126,11 @@ pub(super) fn run(
         });
     let (results, transcribed) = mpsc::channel::<Finished>();
     let mut engine = Engine {
-        voice: VoiceClient::new(&config.voice_url, config.voice.clone(), config.preset.clone()),
+        voice: VoiceClient::new(
+            &config.voice_url,
+            config.voice.clone(),
+            config.preset.clone(),
+        ),
         config,
         events,
         shared,
@@ -135,7 +148,25 @@ pub(super) fn run(
         ready: false,
     };
     let mut results = Some(results);
+    let mut reported = Instant::now();
     loop {
+        if engine.output.is_some() && reported.elapsed() >= STATS_EVERY {
+            reported = Instant::now();
+            let stats = engine.core.stats;
+            let (microphone_peak_db, cancelled_peak_db) = engine.core.take_peaks();
+            tracing::info!(
+                microphone_peak_db,
+                cancelled_peak_db,
+                aec_delay_ms = engine.core.delay_ms(),
+                blocks = stats.blocks,
+                ducks = stats.ducks,
+                restores = stats.restores,
+                barge_ins = stats.barge_ins,
+                late_blocks = stats.late_blocks,
+                resyncs = engine.core.reference_resyncs(),
+                "vera audio: duplex"
+            );
+        }
         match requests.try_recv() {
             Ok(Request::Shutdown) | Err(TryRecvError::Disconnected) => break,
             Ok(request) => {
@@ -147,7 +178,10 @@ pub(super) fn run(
         if let Some(sender) = results.take_if(|_| engine.stt.is_none()) {
             match stt_loaded.try_recv() {
                 Ok(Ok(stt)) => {
-                    engine.stt = Some((stt.selection.model.as_str().to_owned(), stt.backend_label.clone()));
+                    engine.stt = Some((
+                        stt.selection.model.as_str().to_owned(),
+                        stt.backend_label.clone(),
+                    ));
                     *engine.core.backend() = SttBackend::Ready(stt.backend(sender));
                     if !engine.shared.muted.load(Ordering::Relaxed) {
                         engine.open_input();
@@ -168,9 +202,10 @@ pub(super) fn run(
             engine.core.transcribed(finished);
         }
         engine.listen();
-        engine
-            .core
-            .tick(now_ns(), &mut crate::transcription::speech_detector::contains_speech);
+        engine.core.tick(
+            now_ns(),
+            &mut crate::transcription::speech_detector::contains_speech,
+        );
         engine.flush();
     }
     engine.core.stop_playback();
@@ -180,6 +215,9 @@ pub(super) fn run(
     }
     drop(engine.input.take());
     drop(engine.output.take());
+    if let (Some(folder), Some(audio)) = (dump, engine.core.audio_dump.take()) {
+        super::sim::write_dump(&folder, "live", &audio);
+    }
     tracing::info!("vera audio: stopped");
 }
 
@@ -199,8 +237,13 @@ impl Engine {
                 self.core.speech_queued(id.clone());
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.fetches.insert(id.to_string(), cancel.clone());
-                self.voice
-                    .speak(id, text, self.commands.clone(), self.fetched.0.clone(), cancel);
+                self.voice.speak(
+                    id,
+                    text,
+                    self.commands.clone(),
+                    self.fetched.0.clone(),
+                    cancel,
+                );
             }
             Request::SpeakPcm { id, samples, rate } => {
                 let id: SpeakId = id.into();
@@ -313,7 +356,9 @@ impl Engine {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .busy();
-        self.shared.speaking.store(self.core.speaking(), Ordering::Relaxed);
+        self.shared
+            .speaking
+            .store(self.core.speaking(), Ordering::Relaxed);
         if busy || self.output.is_none() {
             self.idle_since = None;
         } else {

@@ -66,11 +66,6 @@ impl Resampler {
         }
     }
 
-    /// Output samples produced so far.
-    pub(crate) fn produced(&self) -> u64 {
-        self.next
-    }
-
     /// Appends `input` and returns every output sample it completes.
     pub(crate) fn push(&mut self, input: &[f32]) -> Vec<f32> {
         let mut output = Vec::new();
@@ -144,7 +139,11 @@ impl Resampler {
                 acc += sample * weight;
             }
         }
-        if weights.abs() < 1e-6 { acc } else { acc / weights }
+        if weights.abs() < 1e-6 {
+            acc
+        } else {
+            acc / weights
+        }
     }
 }
 
@@ -175,7 +174,12 @@ mod tests {
 
     #[test]
     fn a_tone_keeps_its_level_and_phase_across_rates() {
-        for (from, to) in [(48_000, 16_000), (24_000, 48_000), (44_100, 16_000), (16_000, 16_000)] {
+        for (from, to) in [
+            (48_000, 16_000),
+            (24_000, 48_000),
+            (44_100, 16_000),
+            (16_000, 16_000),
+        ] {
             let input = tone(from, 440.0, 1.0);
             let output = resample(&input, from, to);
             assert_eq!(output.len(), to as usize, "{from}->{to}");
@@ -186,10 +190,7 @@ mod tests {
             let expected = tone(to, 440.0, 1.0);
             // Away from the edges the output is the same tone, in phase.
             let middle = to as usize / 4..to as usize * 3 / 4;
-            let error: Vec<f32> = middle
-                .clone()
-                .map(|n| output[n] - expected[n])
-                .collect();
+            let error: Vec<f32> = middle.clone().map(|n| output[n] - expected[n]).collect();
             let snr = 20.0 * (rms(&expected[middle]) / rms(&error).max(1e-9)).log10();
             assert!(snr > 50.0, "{from}->{to}: {snr:.1} dB");
         }
@@ -219,4 +220,3 @@ mod tests {
         }
     }
 }
-

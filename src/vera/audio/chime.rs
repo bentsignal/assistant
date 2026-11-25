@@ -27,7 +27,9 @@ impl std::str::FromStr for ChimeKind {
             "listening" => Ok(Self::Listening),
             "done" => Ok(Self::Done),
             "error" => Ok(Self::Error),
-            _ => Err(format!("{value:?} is not notify, listening, done, or error")),
+            _ => Err(format!(
+                "{value:?} is not notify, listening, done, or error"
+            )),
         }
     }
 }

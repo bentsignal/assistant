@@ -19,6 +19,10 @@ use super::{AudioEvent, PlaybackState};
 use crate::vera_ears::EarsSettings;
 use crate::vera_ears::utterances::{Backend, Finished, Utterances};
 
+/// Linear output kept for a barge-in's opening words (3 s).
+const LINEAR_KEEP: usize = 3 * RATE as usize;
+/// Audio a barge-in's utterance keeps from before its onset.
+const PRE_ROLL_SAMPLES: usize = RATE as usize * 3 / 10;
 /// A microphone block waits at most this long for its reference.
 const MAX_REFERENCE_WAIT_NS: f64 = 80e6;
 /// The first final after a barge-in, if it begins within this of the
@@ -96,6 +100,10 @@ pub(crate) struct Stats {
     pub barge_ins: u64,
     pub waited_blocks: u64,
     pub late_blocks: u64,
+    /// Loudest 4 ms of the raw microphone and of the cancelled output since
+    /// the last [`Core::take_peaks`], as mean squares.
+    pub microphone_peak: f32,
+    pub cancelled_peak: f32,
 }
 
 pub(crate) struct Core<B: Backend> {
@@ -115,6 +123,10 @@ pub(crate) struct Core<B: Backend> {
     barge_in_turn: Option<u64>,
     /// When the suspicion being probed began (epoch ms).
     suspected_at: Option<u64>,
+    /// The last few seconds of the linear output, by position, to give a
+    /// barge-in's utterance its opening words intact.
+    linear_ring: std::collections::VecDeque<f32>,
+    linear_first: usize,
     muted: bool,
     events: Vec<AudioEvent>,
     mic_level: Arc<AtomicU32>,
@@ -169,6 +181,8 @@ impl<B: Backend> Core<B> {
             finishing: Vec::new(),
             barge_in_turn: None,
             suspected_at: None,
+            linear_ring: std::collections::VecDeque::new(),
+            linear_first: 0,
             muted: false,
             events: Vec::new(),
             mic_level,
@@ -195,8 +209,16 @@ impl<B: Backend> Core<B> {
         self.utterances.backend()
     }
 
-    pub(crate) fn detector(&self) -> &Detector {
-        &self.detector
+    /// The peaks since the last call, in dBFS (raw microphone, cancelled).
+    pub(crate) fn take_peaks(&mut self) -> (f32, f32) {
+        let db = |e: f32| 10.0 * (e + 1e-12).log10();
+        let peaks = (
+            db(self.stats.microphone_peak),
+            db(self.stats.cancelled_peak),
+        );
+        self.stats.microphone_peak = 0.0;
+        self.stats.cancelled_peak = 0.0;
+        peaks
     }
 
     pub(crate) fn delay_ms(&self) -> i32 {
@@ -261,9 +283,15 @@ impl<B: Backend> Core<B> {
             } => {
                 // A stamp that isn't on our clock (no device timestamps):
                 // assume the block plays 20 ms from now.
-                let plausible = playback_ns + 10_000_000 >= now_ns && playback_ns < now_ns + 2_000_000_000;
-                let playback_ns = if plausible { playback_ns } else { now_ns + 20_000_000 };
-                self.reference.push(device_rate, playback_ns, &samples, duck);
+                let plausible =
+                    playback_ns + 10_000_000 >= now_ns && playback_ns < now_ns + 2_000_000_000;
+                let playback_ns = if plausible {
+                    playback_ns
+                } else {
+                    now_ns + 20_000_000
+                };
+                self.reference
+                    .push(device_rate, playback_ns, &samples, duck);
             }
             mixer::Report::Started { id } => {
                 if let Some(speech) = self.speeches.iter_mut().find(|speech| speech.id == id) {
@@ -292,11 +320,21 @@ impl<B: Backend> Core<B> {
 
     /// A microphone chunk: mono `samples` at `rate`, the last captured at
     /// `captured_through_ns`, handled at `now_ns`.
-    pub(crate) fn mic(&mut self, samples: &[f32], rate: u32, captured_through_ns: u64, now_ns: u64) {
+    pub(crate) fn mic(
+        &mut self,
+        samples: &[f32],
+        rate: u32,
+        captured_through_ns: u64,
+        now_ns: u64,
+    ) {
         if self.muted {
             return;
         }
-        if self.capture.as_ref().is_none_or(|capture| capture.rate != rate) {
+        if self
+            .capture
+            .as_ref()
+            .is_none_or(|capture| capture.rate != rate)
+        {
             self.capture = Some(Capture::new(rate));
         }
         let capture = self.capture.as_mut().expect("set above");
@@ -304,7 +342,11 @@ impl<B: Backend> Core<B> {
         let plausible = captured_through_ns <= now_ns + 5_000_000
             && captured_through_ns + 1_000_000_000 > now_ns;
         // Without device stamps, audio delivered now was captured ~10 ms ago.
-        let stamp = if plausible { captured_through_ns } else { now_ns - 10_000_000 };
+        let stamp = if plausible {
+            captured_through_ns
+        } else {
+            now_ns - 10_000_000
+        };
         match &mut capture.timeline {
             Some(timeline) => {
                 timeline.observe(capture.received, stamp);
@@ -355,10 +397,7 @@ impl<B: Backend> Core<B> {
                 true
             }
         });
-        loop {
-            let Some(capture) = &self.capture else {
-                break;
-            };
+        while let Some(capture) = &self.capture {
             if capture.pending.len() < BLOCK {
                 break;
             }
@@ -380,13 +419,26 @@ impl<B: Backend> Core<B> {
         }
     }
 
-    fn block(&mut self, microphone: &[f32], at_ns: f64, speech: &mut dyn FnMut(&[f32]) -> Option<bool>) {
+    fn block(
+        &mut self,
+        microphone: &[f32],
+        at_ns: f64,
+        speech: &mut dyn FnMut(&[f32]) -> Option<bool>,
+    ) {
         self.stats.blocks += 1;
+        let mean_square =
+            |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
+        self.stats.microphone_peak = self.stats.microphone_peak.max(mean_square(microphone));
         let mut reference = [0.0f32; BLOCK];
         let duck = self.reference.read(at_ns + LOOKAHEAD_NS, &mut reference);
         let cancelled = self.aec.process(microphone, &reference);
+        self.stats.cancelled_peak = self
+            .stats
+            .cancelled_peak
+            .max(mean_square(&cancelled.suppressed));
         let (action, probe) = self.detector.push(
             &barge::Block {
+                microphone,
                 linear: &cancelled.linear,
                 suppressed: &cancelled.suppressed,
                 reference: &reference,
@@ -396,6 +448,15 @@ impl<B: Backend> Core<B> {
             speech,
         );
         let end_ms = self.epoch.unix_ms(at_ns + BLOCK as f64 * 1e9 / RATE as f64);
+        // The linear output, at the position Utterances is about to give
+        // this block.
+        if self.linear_ring.is_empty() {
+            self.linear_first = self.utterances.position();
+        }
+        self.linear_ring.extend(&cancelled.linear);
+        let excess = self.linear_ring.len().saturating_sub(LINEAR_KEEP);
+        self.linear_ring.drain(..excess);
+        self.linear_first += excess;
         if let Some(action) = action {
             self.act(action, end_ms);
         }
@@ -406,7 +467,8 @@ impl<B: Backend> Core<B> {
             dump[3].extend_from_slice(&cancelled.suppressed);
         }
         if let Some(traces) = &mut self.traces {
-            let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
+            let energy =
+                |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32;
             traces.push(BlockTrace {
                 ns: at_ns,
                 probe,
@@ -443,7 +505,11 @@ impl<B: Backend> Core<B> {
             Action::Restore => {
                 self.stats.restores += 1;
                 let _ = self.mixer.send(mixer::Command::Duck(false));
-                let from = self.suspected_at.take().unwrap_or(now_ms).saturating_sub(400);
+                let from = self
+                    .suspected_at
+                    .take()
+                    .unwrap_or(now_ms)
+                    .saturating_sub(400);
                 tracing::debug!("vera audio: false alarm, volume restored");
                 // An utterance the false alarm started is echo; one the user
                 // began before it goes on.
@@ -457,7 +523,7 @@ impl<B: Backend> Core<B> {
                 }
                 self.gate.drop_held(from, now_ms);
             }
-            Action::Confirm { .. } => {
+            Action::Confirm { onset } => {
                 self.suspected_at = None;
                 let _ = self.mixer.send(mixer::Command::Duck(false));
                 if let Some(speech) = self
@@ -475,10 +541,39 @@ impl<B: Backend> Core<B> {
                     self.stop_playback();
                     self.barge_in_turn = Some(now_ms);
                 }
-                let released = self.gate.release();
-                self.forward(released);
+                self.start_turn(onset);
             }
         }
+    }
+
+    /// The user's interrupting turn: its utterance starts where their
+    /// voice did (`onset`, a detector block, which lines up with Utterances'
+    /// positions at `BLOCK` samples each), over the linear output, which
+    /// has their opening words intact where AEC3's suppressor clipped them.
+    fn start_turn(&mut self, onset: u64) {
+        let block = self.detector.position().saturating_sub(1);
+        let behind = (block.saturating_sub(onset) as usize + 1) * BLOCK;
+        // The block just processed is not in Utterances yet.
+        let onset_position = (self.utterances.position() + BLOCK).saturating_sub(behind);
+        let from = onset_position
+            .saturating_sub(PRE_ROLL_SAMPLES)
+            .max(self.linear_first);
+        let audio: Vec<f32> = self
+            .linear_ring
+            .range(from - self.linear_first..)
+            .copied()
+            .collect();
+        let before = self.utterances.current_onset_ms();
+        self.gate.forgive();
+        self.utterances.overwrite(from, &audio);
+        self.utterances.force_start(onset_position);
+        if self.utterances.current_onset_ms() != before {
+            // The utterance the suspicion started was replaced.
+            self.gate.discard_held();
+        }
+        let released = self.gate.release();
+        self.forward(released);
+        self.drain_heard();
     }
 
     fn level(&mut self, samples: &[f32]) {
@@ -521,7 +616,9 @@ impl<B: Backend> Core<B> {
                 Heard::Final { text, start, end } => {
                     let during_playback = self
                         .barge_in_turn
-                        .take_if(|at| start + BARGE_IN_TURN_MS >= *at && start <= *at + BARGE_IN_TURN_MS)
+                        .take_if(|at| {
+                            start + BARGE_IN_TURN_MS >= *at && start <= *at + BARGE_IN_TURN_MS
+                        })
                         .is_some();
                     AudioEvent::Final {
                         text,

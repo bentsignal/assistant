@@ -25,10 +25,6 @@ impl Heard {
             Self::Partial { .. } | Self::Error { .. } => None,
         }
     }
-
-    fn ends_utterance(&self) -> bool {
-        matches!(self, Self::Final { .. } | Self::SpeechCancel { .. })
-    }
 }
 
 /// [`Sink`] that keeps Ears' events for the engine to read.
@@ -66,7 +62,6 @@ impl Sink for Collected {
 struct Held {
     onset: u64,
     events: Vec<Heard>,
-    ended: bool,
 }
 
 #[derive(Default)]
@@ -101,7 +96,6 @@ impl Gate {
             return Vec::new();
         }
         if let Some(held) = self.held.iter_mut().find(|held| held.onset == onset) {
-            held.ended |= event.ends_utterance();
             held.events.push(event);
             return Vec::new();
         }
@@ -109,7 +103,6 @@ impl Gate {
             self.held.push(Held {
                 onset,
                 events: vec![event],
-                ended: false,
             });
             return Vec::new();
         }
@@ -118,10 +111,7 @@ impl Gate {
 
     /// The user is talking: everything held, in order.
     pub(crate) fn release(&mut self) -> Vec<Heard> {
-        self.held
-            .drain(..)
-            .flat_map(|held| held.events)
-            .collect()
+        self.held.drain(..).flat_map(|held| held.events).collect()
     }
 
     /// A false alarm that began at `from` (epoch ms) and was decided at
@@ -132,13 +122,21 @@ impl Gate {
         self.dropping_until = until;
     }
 
-    pub(crate) fn holding(&self) -> bool {
+    #[cfg(test)]
+    fn holding(&self) -> bool {
         !self.held.is_empty()
     }
 
-    /// Whether every held utterance has ended (its final or cancel is in).
-    pub(crate) fn held_ended(&self) -> bool {
-        self.held.iter().all(|held| held.ended)
+    /// Forgets what is held without dropping anything that comes later
+    /// (the utterance it belonged to was replaced).
+    pub(crate) fn discard_held(&mut self) {
+        self.held.clear();
+    }
+
+    /// The last false alarm was the user after all: nothing of it is
+    /// dropped any more.
+    pub(crate) fn forgive(&mut self) {
+        self.dropping_from = None;
     }
 }
 
@@ -171,7 +169,10 @@ mod tests {
         assert!(gate.admit(partial.clone(), false).is_empty());
         assert!(gate.holding());
         assert_eq!(gate.release(), [start(900), partial]);
-        assert_eq!(gate.admit(final_("Stop.", 900), false), [final_("Stop.", 900)]);
+        assert_eq!(
+            gate.admit(final_("Stop.", 900), false),
+            [final_("Stop.", 900)]
+        );
     }
 
     #[test]

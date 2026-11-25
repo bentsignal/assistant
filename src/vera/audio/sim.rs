@@ -423,7 +423,8 @@ pub(crate) fn run(
     let mut speak_count = 0;
     let mut traces_seen = 0;
     let steps = (seconds * 100.0) as u64;
-    let mut silero = |samples: &[f32]| crate::transcription::speech_detector::contains_speech(samples);
+    let mut silero =
+        |samples: &[f32]| crate::transcription::speech_detector::contains_speech(samples);
     for step in 0..steps {
         let now = T0_NS + step * STEP_NS;
         while cue_index < cues.len() && cues[cue_index].0 * 1e9 + T0_NS as f64 <= now as f64 {
@@ -470,7 +471,8 @@ pub(crate) fn run(
         }
         // The microphone hears up to now, minus its buffering.
         let heard_until_ns = now as f64 - room.input_latency_ms as f64 * 1e6;
-        let until = ((heard_until_ns - T0_NS as f64) / 1e9 * RATE as f64 * mic_rate).max(0.0) as u64;
+        let until =
+            ((heard_until_ns - T0_NS as f64) / 1e9 * RATE as f64 * mic_rate).max(0.0) as u64;
         if until > mic_next {
             let chunk: Vec<f32> = (mic_next..until)
                 .map(|j| interpolate(&field, j as f64 / mic_rate))
@@ -484,7 +486,7 @@ pub(crate) fn run(
         core.tick(now, &mut silero);
         // Speech to text answers before the next step: an infinitely fast GPU.
         loop {
-            let fake: Vec<Finished> = core.backend().fake_answers.drain(..).collect();
+            let fake = std::mem::take(&mut core.backend().fake_answers);
             for finished in fake {
                 received += 1;
                 core.transcribed(finished);
@@ -513,28 +515,12 @@ pub(crate) fn run(
     }
     let traces = core.traces.take().unwrap_or_default();
     if let (Some(dir), Some(dump)) = (&dump_dir, core.audio_dump.take()) {
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: RATE,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
-        for (name, samples) in ["mic", "ref", "linear", "suppressed"].iter().zip(dump.iter()) {
-            let path = dir.join(format!("{}-{plan:?}-{name}.wav", room.name));
-            if let Ok(mut writer) = hound::WavWriter::create(&path, spec) {
-                for sample in samples {
-                    let _ = writer.write_sample(*sample);
-                }
-                let _ = writer.finalize();
-            }
-        }
+        write_dump(dir, &format!("{}-{plan:?}", room.name), &dump);
         // Where the user really spoke, for offline analysis.
-        let mut truth = String::from("onset_s,end_s,phrase
-");
+        let mut truth = String::from("onset_s,end_s,phrase\n");
         for t in &truths {
             truth.push_str(&format!(
-                "{:.3},{:.3},{}
-",
+                "{:.3},{:.3},{}\n",
                 (t.onset_ns - T0_NS as f64) / 1e9,
                 (t.end_ns - T0_NS as f64) / 1e9,
                 voices.user[t.phrase].name
@@ -561,22 +547,16 @@ pub(crate) fn run(
                 u8::from(trace.probe.suppressed_hit),
                 trace.probe.band_hits,
                 u8::from(trace.probe.active),
-                trace.action.map(|action| format!("{action:?}")).unwrap_or_default()
+                trace
+                    .action
+                    .map(|action| format!("{action:?}"))
+                    .unwrap_or_default()
             ));
         }
         let _ = std::fs::write(&path, csv);
     }
     Ok(report(
-        room,
-        plan,
-        seconds,
-        voices,
-        &truths,
-        &events,
-        &actions,
-        &traces,
-        &core,
-        echo_dbfs,
+        room, plan, seconds, voices, &truths, &events, &actions, &traces, &core, echo_dbfs,
     ))
 }
 
@@ -641,7 +621,9 @@ fn report(
         let echo_only = trace.probe.active && !user_near(trace.ns, 500e6);
         if echo_only {
             blocks += 1;
-            if first_reference.is_some_and(|first| trace.ns > first + 3e9) && trace.microphone > 1e-8 {
+            if first_reference.is_some_and(|first| trace.ns > first + 3e9)
+                && trace.microphone > 1e-8
+            {
                 mic += trace.microphone as f64;
                 linear += trace.linear as f64;
                 suppressed += trace.suppressed as f64;
@@ -673,7 +655,9 @@ fn report(
                     report.false_barge_ins += 1;
                 }
             }
-            AudioEvent::Final { text, start, end, .. } => {
+            AudioEvent::Final {
+                text, start, end, ..
+            } => {
                 let (start, end) = (unix_to_ns(*start), unix_to_ns(*end));
                 let user = truths
                     .iter()
@@ -747,14 +731,37 @@ fn report(
     report
 }
 
+/// Writes a core's audio dump (microphone, reference, linear, suppressed)
+/// as 16 kHz float WAVs named `<prefix>-<signal>.wav` in `folder`.
+pub(crate) fn write_dump(folder: &std::path::Path, prefix: &str, dump: &[Vec<f32>; 4]) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: RATE,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    for (name, samples) in ["mic", "ref", "linear", "suppressed"]
+        .iter()
+        .zip(dump.iter())
+    {
+        let path = folder.join(format!("{prefix}-{name}.wav"));
+        if let Ok(mut writer) = hound::WavWriter::create(&path, spec) {
+            for sample in samples {
+                let _ = writer.write_sample(*sample);
+            }
+            let _ = writer.finalize();
+        }
+    }
+}
+
 /// The default test material: Vera's lines and the user's phrases, read
 /// from `dir` (see `scripts/vera-audio/make-voices.ps1`).
 pub(crate) fn load_voices(dir: &std::path::Path) -> Result<Voices> {
     let manifest_path = dir.join("voices.json");
-    let manifest: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&manifest_path)
-            .wrap_err_with(|| format!("could not read {}", manifest_path.display()))?,
-    )?;
+    let text = std::fs::read_to_string(&manifest_path)
+        .wrap_err_with(|| format!("could not read {}", manifest_path.display()))?;
+    // PowerShell 5 writes UTF-8 with a byte-order mark.
+    let manifest: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))?;
     let load = |key: &str| -> Result<Vec<Clip>> {
         manifest[key]
             .as_array()
@@ -779,8 +786,16 @@ mod tests {
 
     #[test]
     fn word_error_rate_counts_edits_per_expected_word() {
-        assert_eq!(word_error_rate("Stop, ask Claude to fix them.", "stop ask claude to fix them"), 0.0);
-        assert!((word_error_rate("wait start a new thread", "start a new thread") - 0.2).abs() < 1e-9);
+        assert_eq!(
+            word_error_rate(
+                "Stop, ask Claude to fix them.",
+                "stop ask claude to fix them"
+            ),
+            0.0
+        );
+        assert!(
+            (word_error_rate("wait start a new thread", "start a new thread") - 0.2).abs() < 1e-9
+        );
         assert_eq!(word_error_rate("no", ""), 1.0);
     }
 
@@ -813,11 +828,29 @@ mod tests {
         let room = &RoomSpec::all()[0];
         let voices = voices();
         let _speech = crate::transcription::speech_detector::override_for_test(Some(true));
-        let echo = run(room, Plan::Echo, &voices, SimStt::Fake, None, SttSource::Hybrid, 0.7).unwrap();
+        let echo = run(
+            room,
+            Plan::Echo,
+            &voices,
+            SimStt::Fake,
+            None,
+            SttSource::Hybrid,
+            0.7,
+        )
+        .unwrap();
         assert_eq!(echo.false_barge_ins, 0, "{echo:?}");
         assert!(echo.echo_finals.is_empty(), "{:?}", echo.echo_finals);
         assert!(echo.erle_suppressed_db > 20.0, "{echo:?}");
-        let barge = run(room, Plan::Barge, &voices, SimStt::Fake, None, SttSource::Hybrid, 0.7).unwrap();
+        let barge = run(
+            room,
+            Plan::Barge,
+            &voices,
+            SimStt::Fake,
+            None,
+            SttSource::Hybrid,
+            0.7,
+        )
+        .unwrap();
         // The first case is 0.9 s into the first audio Vera ever played:
         // the canceller hasn't converged, so nothing confirms yet.
         for case in &barge.cases[1..] {

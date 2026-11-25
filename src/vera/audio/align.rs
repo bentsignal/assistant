@@ -145,7 +145,9 @@ impl Reference {
             tracing::debug!("vera audio: playback clock jumped; reference timeline restarted");
         }
         let resampled = session.resampler.push(samples);
-        session.duck.extend(std::iter::repeat_n(duck, resampled.len()));
+        session
+            .duck
+            .extend(std::iter::repeat_n(duck, resampled.len()));
         session.ring.extend(resampled);
         let excess = session.ring.len().saturating_sub(KEEP);
         session.ring.drain(..excess);

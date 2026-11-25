@@ -112,9 +112,14 @@ pub(crate) enum AudioEvent {
     },
     /// An utterance began at `t` (Unix ms). Exactly one `Final` or
     /// `SpeechCancel` follows.
-    SpeechStart { t: u64 },
+    SpeechStart {
+        t: u64,
+    },
     /// The utterance so far; each replaces the last.
-    Partial { text: String, t: u64 },
+    Partial {
+        text: String,
+        t: u64,
+    },
     Final {
         text: String,
         start: u64,
@@ -122,17 +127,25 @@ pub(crate) enum AudioEvent {
         /// The user said it over Vera: the turn that barged in.
         during_playback: bool,
     },
-    SpeechCancel { t: u64, reason: String },
+    SpeechCancel {
+        t: u64,
+        reason: String,
+    },
     /// The user talked over `speak_id`, which has stopped. `Playback`
     /// `interrupted` follows for it and anything queued behind it.
-    BargeIn { speak_id: String },
+    BargeIn {
+        speak_id: String,
+    },
     Playback {
         speak_id: String,
         state: PlaybackState,
     },
     /// Something went wrong. `fatal` means the engine stopped (speech to
     /// text could not load); everything else recovers on its own.
-    Error { message: String, fatal: bool },
+    Error {
+        message: String,
+        fatal: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -171,8 +184,15 @@ pub(crate) struct Shared {
 }
 
 pub(crate) enum Request {
-    Speak { id: String, text: String },
-    SpeakPcm { id: String, samples: Vec<f32>, rate: u32 },
+    Speak {
+        id: String,
+        text: String,
+    },
+    SpeakPcm {
+        id: String,
+        samples: Vec<f32>,
+        rate: u32,
+    },
     Stop,
     Volume(f32),
     Mute(bool),
@@ -244,7 +264,11 @@ impl VeraAudio {
     /// Vera's own volume, 0..=1; it ramps there over ~60 ms. The system
     /// volume is never touched.
     pub(crate) fn set_volume(&self, level: f32) {
-        let level = if level.is_finite() { level.clamp(0.0, 1.0) } else { DEFAULT_VOLUME };
+        let level = if level.is_finite() {
+            level.clamp(0.0, 1.0)
+        } else {
+            DEFAULT_VOLUME
+        };
         self.shared.volume.store(level.to_bits(), Ordering::Relaxed);
         let _ = self.requests.send(Request::Volume(level));
     }

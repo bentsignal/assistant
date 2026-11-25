@@ -43,29 +43,6 @@ impl EchoCanceller {
         config.filter.refined.length_blocks = FILTER_BLOCKS;
         config.filter.coarse.length_blocks = FILTER_BLOCKS;
         config.filter.export_linear_aec_output = true;
-        if let Ok(tune) = std::env::var("VERA_AEC_TUNE") {
-            for knob in tune.split(',') {
-                match knob {
-                    "snr10" => config.suppressor.dominant_nearend_detection.snr_threshold = 10.0,
-                    "trigger6" => config.suppressor.dominant_nearend_detection.trigger_threshold = 6,
-                    "enr1" => config.suppressor.dominant_nearend_detection.enr_threshold = 1.0,
-                    "enr01" => config.suppressor.dominant_nearend_detection.enr_threshold = 0.1,
-                    "gain05" => config.ep_strength.default_gain = 0.5,
-                    "subband" => config.suppressor.use_subband_nearend_detection = true,
-                    "transparent" => {
-                        config.suppressor.nearend_tuning.mask_lf.enr_transparent = 2.0;
-                        config.suppressor.nearend_tuning.mask_lf.enr_suppress = 2.5;
-                        config.suppressor.nearend_tuning.mask_hf.enr_transparent = 0.5;
-                        config.suppressor.nearend_tuning.mask_hf.enr_suppress = 1.0;
-                    }
-                    "filter64" => {
-                        config.filter.refined.length_blocks = 64;
-                        config.filter.coarse.length_blocks = 64;
-                    }
-                    _ => {}
-                }
-            }
-        }
         Self {
             processor: BlockProcessor::new(&config, RATE as usize, 1, 1),
             high_pass: HighPass::new(80.0, RATE as f32),

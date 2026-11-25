@@ -105,7 +105,11 @@ pub(crate) fn open(device: Option<&str>, mixer: Arc<Mutex<Mixer>>) -> Result<Out
             on_error,
             None,
         ),
-        format => return Err(eyre!("{name} wants {format:?} samples, which Vera doesn't write")),
+        format => {
+            return Err(eyre!(
+                "{name} wants {format:?} samples, which Vera doesn't write"
+            ));
+        }
     }
     .wrap_err_with(|| format!("could not open {name} for output"))?;
     stream
