@@ -1,0 +1,7 @@
+export { createMouth, type Mouth, type VeraMouth, type SpeakTiming, type ChimeKind } from "./mouth.ts"
+export { DEFAULT_CONFIG, loadUserMouthConfig, resolveConfig, type MouthConfig } from "./config.ts"
+export { PRESETS, PRESET_NAMES, resolveEffects, type EffectsConfig, type EffectsOverrides, type PresetName } from "./dsp/effects.ts"
+export { KOKORO_VOICES, ensureModel, packageFor, defaultModelsDir, type EngineName } from "./models.ts"
+export { normalizeForSpeech } from "./text/normalize.ts"
+export { splitForSpeech, type Chunk } from "./text/split.ts"
+export { renderChime, CHIME_KINDS } from "./chimes.ts"
