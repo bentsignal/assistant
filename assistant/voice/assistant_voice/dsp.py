@@ -35,6 +35,9 @@ class Preset:
     chorus_delay_ms: float = 9.0
     chorus_depth_ms: float = 0.25
     chorus_rate: float = 0.3
+    # robot: a light ring modulator (the voice times a low sine carrier), mixed in
+    ring_mix: float = 0.0
+    ring_hz: float = 60.0
     # tone
     deess_db: float = 0.0         # max sibilance reduction
     presence_db: float = 0.0      # peaking EQ at 3.2 kHz (negative softens harshness)
@@ -59,6 +62,16 @@ PRESETS: dict[str, Preset] = {
         "synthetic", "More of the robot: stronger comb and chorus, a larger plate.",
         reverb_mix=0.14, reverb_rt60=0.8, comb_mix=0.09, comb_ms=3.0, comb_fb=0.45,
         chorus_mix=0.12, chorus_depth_ms=0.35, deess_db=4.0, presence_db=-1.0),
+    # Per-voice presets (a voice names one in voices.json).
+    "sheen": Preset(
+        "sheen", "A polished synthetic sheen: a brighter, tighter comb and a little more chorus.",
+        reverb_mix=0.10, reverb_rt60=0.6, comb_mix=0.08, comb_ms=2.0, comb_fb=0.4,
+        chorus_mix=0.09, chorus_depth_ms=0.3, deess_db=4.0, presence_db=-1.0),
+    "robot": Preset(
+        "robot", "Subtly mechanical: a light ring modulator, a metallic comb and a larger plate.",
+        reverb_mix=0.13, reverb_rt60=0.8, comb_mix=0.12, comb_ms=5.0, comb_fb=0.55,
+        chorus_mix=0.06, ring_mix=0.16, ring_hz=55.0, deess_db=4.0, presence_db=-1.0,
+        warmth_db=1.5),
     "raw": Preset("raw", "No character: only loudness and the limiter."),
 }
 
@@ -181,6 +194,9 @@ class Chain:
 
     def _tint(self, x):
         p, sr = self.p, self.sr
+        n = np.arange(len(x))
+        if p.ring_mix > 0:  # before the comb, so the comb rings on the modulated voice too
+            x = x * (1 - p.ring_mix) + p.ring_mix * x * np.sin(2 * np.pi * p.ring_hz * (n + self.t) / sr)
         y = x.copy()
         if p.comb_mix > 0:
             d = self.comb_d
@@ -191,7 +207,6 @@ class Chain:
         if p.chorus_mix > 0:
             buf = np.concatenate([self.hist, x])
             h = len(self.hist)
-            n = np.arange(len(x))
             delay = (p.chorus_delay_ms + p.chorus_depth_ms * np.sin(2 * np.pi * p.chorus_rate * (n + self.t) / sr)) * 1e-3 * sr
             y += p.chorus_mix * np.interp(n + h - delay, np.arange(len(buf)), buf)
             self.hist = buf[-h:]

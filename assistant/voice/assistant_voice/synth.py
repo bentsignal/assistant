@@ -85,7 +85,8 @@ class Synth:
         for v in self.voices.values():
             if self.available(v):
                 return v.id
-        raise RuntimeError("no voice is available")
+        # No GPU: keep a default so the service still answers; warm() reports why it can't speak.
+        return want if want in self.voices else next(iter(self.voices))
 
     def available(self, v: Voice) -> bool:
         return v.engine != "qwen" or self.cuda
@@ -98,11 +99,15 @@ class Synth:
             raise KeyError(f"voice {vid!r} needs a CUDA GPU")
         return v
 
-    def preset(self, name: str | None) -> dsp.Preset:
-        p = dsp.PRESETS.get(name or self.default_preset)
+    def preset(self, name: str | None, voice: Voice | None = None) -> dsp.Preset:
+        """The named preset, else the voice's own, else the service default."""
+        p = dsp.PRESETS.get(name or self.voice_preset(voice))
         if p is None:
             raise KeyError(f"unknown preset {name!r}")
         return p
+
+    def voice_preset(self, v: Voice | None) -> str:
+        return v.preset if v is not None and v.preset in dsp.PRESETS else self.default_preset
 
     # --- startup ----------------------------------------------------------------
     def warm(self):
@@ -111,7 +116,7 @@ class Synth:
         try:
             t = time.perf_counter()
             v = self.voice(None)
-            for _ in self.stream("Ready.", v.id, self.default_preset):
+            for _ in self.stream("Ready.", v.id):
                 pass
             for p in dsp.PRESETS:
                 self.gain(v, dsp.PRESETS[p])
@@ -164,7 +169,8 @@ class Synth:
 
     def stream(self, text: str, voice: str | None = None, preset: str | None = None,
                stop: threading.Event | None = None, timing: dict | None = None) -> Iterator[np.ndarray]:
-        v, p = self.voice(voice), self.preset(preset)
+        v = self.voice(voice)
+        p = self.preset(preset, v)
         stop = stop or threading.Event()
         parts = textmod.sentences(text)
         if not parts:
@@ -200,7 +206,8 @@ class Synth:
             "default": self.default_voice,
             "default_preset": self.default_preset,
             "sample_rate": SAMPLE_RATE,
-            "voices": [dict(v.public(), available=self.available(v)) for v in self.voices.values()],
+            "voices": [dict(v.public(), preset=self.voice_preset(v), available=self.available(v))
+                       for v in self.voices.values()],
             "presets": [{"id": p.name, "description": p.description}
                         for p in dsp.PRESETS.values() if p.name != "raw"],
         }

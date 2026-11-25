@@ -134,6 +134,15 @@ class DspTests(unittest.TestCase):
         err = np.abs(whole[:n] - chunked[:n]).max()
         self.assertLess(err, 0.02)  # only the limiter's lookahead differs at chunk edges
 
+    def test_chunked_equals_whole_for_every_preset(self):
+        x = speechlike(3.0, seed=2)
+        for name, p in dsp.PRESETS.items():
+            g = dsp.calibrate_gain(x, SR, p)
+            whole = dsp.render(x, SR, p, gain=g)
+            chunked = dsp.render(x, SR, p, gain=g, chunk=1999)
+            n = min(len(whole), len(chunked))
+            self.assertLess(np.abs(whole[:n] - chunked[:n]).max(), 0.02, name)
+
     def test_reverb_tail_comes_out_in_flush(self):
         c = dsp.Chain(SR, dsp.PRESETS["vera"], 1.0)
         c.process(speechlike(1.0))
@@ -166,3 +175,27 @@ class ShaperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VoiceListTests(unittest.TestCase):
+    def test_every_voice_has_its_files_and_a_known_preset(self):
+        from assistant_voice.engines import load_voices, VOICES_DIR
+        voices = load_voices()
+        self.assertIn("isla", [v.id for v in voices])
+        for v in voices:
+            self.assertEqual(v.engine, "qwen", v.id)
+            self.assertTrue((VOICES_DIR / v.ref).is_file(), v.id)
+            self.assertTrue((VOICES_DIR / v.ref).with_suffix(".txt").is_file(), v.id)
+            self.assertTrue(v.preset == "" or v.preset in dsp.PRESETS, v.id)
+
+    def test_preset_comes_from_request_then_voice_then_default(self):
+        from assistant_voice.synth import Synth
+        from assistant_voice.engines import Voice
+        s = Synth.__new__(Synth)
+        s.default_preset = "vera"
+        robot = Voice("x", "qwen", "X", "", "", "", ref="x.wav", preset="robot")
+        plain = Voice("y", "qwen", "Y", "", "", "", ref="y.wav")
+        self.assertEqual(s.preset(None, robot).name, "robot")
+        self.assertEqual(s.preset("natural", robot).name, "natural")
+        self.assertEqual(s.preset(None, plain).name, "vera")
+        self.assertEqual(s.preset(None).name, "vera")

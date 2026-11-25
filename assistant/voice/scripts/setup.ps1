@@ -38,18 +38,6 @@ if (-not $NoModels) {
     Write-Host "Downloading Qwen3-TTS 1.7B Base (about 4.5 GB, once)..."
     & $py -c "from huggingface_hub import snapshot_download as s; s('Qwen/Qwen3-TTS-12Hz-1.7B-Base')"
     if ($LASTEXITCODE -ne 0) { throw "Qwen download failed" }
-
-    $k = Join-Path $Models "kokoro-onnx"
-    New-Item -ItemType Directory -Force $k | Out-Null
-    foreach ($f in "kokoro-v1.0.onnx", "voices-v1.0.bin") {
-        $dest = Join-Path $k $f
-        if (-not (Test-Path $dest)) {
-            Write-Host "Downloading Kokoro $f ..."
-            curl.exe -sSL -o "$dest.part" "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/$f"
-            if ($LASTEXITCODE -ne 0) { throw "Kokoro download failed" }
-            Move-Item -Force "$dest.part" $dest
-        }
-    }
 }
 
 $hidden = Join-Path $Venv "Scripts\pythonw.exe"

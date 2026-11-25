@@ -56,7 +56,8 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             req = json.loads(self.rfile.read(n) or b"{}")
             text = str(req.get("text") or "")[:MAX_TEXT]
-            v, p = self.synth.voice(req.get("voice")), self.synth.preset(req.get("preset"))
+            v = self.synth.voice(req.get("voice"))
+            p = self.synth.preset(req.get("preset"), v)
         except (ValueError, KeyError) as e:
             return self._json(400, {"error": str(e).strip("'\"")})
         if not self.synth.ready:

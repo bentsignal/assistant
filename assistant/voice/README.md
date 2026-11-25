@@ -16,7 +16,7 @@ powershell -ExecutionPolicy Bypass -File assistant\voice\scripts\setup.ps1   # o
 
 This installs uv if needed, creates `~/.assistant/voice/venv` (uv-managed CPython 3.12, CUDA
 12.8 torch, locked by `uv.lock`), and downloads Qwen3-TTS 1.7B Base to
-`~/.assistant/models/hf` and Kokoro to `~/.assistant/models/kokoro-onnx`. Run it again after
+`~/.assistant/models/hf`. Run it again after
 pulling changes (`-Dev` installs editable instead).
 
 Start the service. `pythonw` has no console, and the service starts no child processes:
@@ -37,7 +37,7 @@ Command line (from a terminal):
 
 ```powershell
 $py = "$HOME\.assistant\voice\venv\Scripts\python.exe"
-& $py -m assistant_voice say "On it. I'll ping you when it's done." [--voice isla] [--preset vera] [--out x.wav] [--volume 0.7]
+& $py -m assistant_voice say "On it. I'll ping you when it's done." [--voice isla] [--preset P] [--out x.wav] [--volume 0.7]
 & $py -m assistant_voice voices
 & $py -m assistant_voice calibrate                  # re-measure loudness gains (normally automatic)
 & $py assistant\voice\scripts\test_service.py [--voice eli] [--play]   # against a running service
@@ -72,35 +72,59 @@ $py = "$HOME\.assistant\voice\venv\Scripts\python.exe"
 
 ## Voices
 
-| id | engine | | first audio | notes |
-| --- | --- | --- | --- | --- |
-| **isla** (default) | Qwen3-TTS | British, female, calm | 220 ms | best scores, softest top end |
-| **nora** | Qwen3-TTS | American, female, low and matter-of-fact | 225 ms | the flattest pitch of the Qwen voices |
-| june | Qwen3-TTS | American, female, warm and a little brighter | 220 ms | |
-| **eli** | Qwen3-TTS | American, male, calm | 225 ms | |
-| heart | Kokoro (CPU) | v1's `af_heart`, without v1's processing | 165 ms | fallback; ~0.9 s on first use (loads Kokoro) |
-| river | Kokoro (CPU) | `af_river`, very even | 155 ms | fallback |
+| id | | preset | notes |
+| --- | --- | --- | --- |
+| **isla** (default) | British, female, calm | `vera` | Vera's voice; best scores, softest top end |
+| alfred | British, older male butler: low, warm, unhurried, dry wit | `vera` | |
+| jarvis | British male assistant: smooth mid-low, precise, faintly wry | `sheen` | |
+| optimus | American, very deep, slow, grave and noble | `robot` | subtly mechanical; still 0% WER |
+| buzz | American, earnest heroic mid-baritone, can-do bravado | `vera` | |
+| saul | American, fast-talking slick salesman, slightly nasal | `vera` | |
+| eli | American, male, calm | `vera` | |
 
-The Qwen voices need a CUDA GPU. Without one, `/v1/voices` marks them
-`available: false` and the default falls back to `heart`.
+Every voice is Qwen3-TTS and needs a CUDA GPU. Without one, `/v1/voices` marks them
+`available: false` and `/v1/health` reports why. (The Kokoro CPU fallback was removed with
+its two voices; nora and june were removed too.)
 
-**How the Qwen voices were made.** Qwen3-TTS VoiceDesign (1.7B) builds a voice from a
-text description. Each prompt asked for a calm, even, low-emotion voice (the prompts
-are in `assistant_voice/voices/*.design.txt`). I rendered three takes of one reference line
-per prompt, scored them, and kept the best take as a fixed ~10 s reference clip
-(`voices/*.wav`, with its transcript in `*.txt`). At runtime Qwen3-TTS **Base** clones
-that clip, so the voice is identical on every call. Sampling is seeded per sentence, so
-the same text is always read the same way. Adding a voice means dropping a clip and
-transcript in `voices/` and listing it in `voices.json`.
+**Presets per voice.** A voice may name its own effects preset in `voices.json`
+(`"preset": "robot"`). A request's `preset` wins, then the voice's own, then the service
+default (`vera`, or `voice.preset` in config). `/v1/voices` reports each voice's
+resolved `preset`.
+
+**How the voices were made.** Qwen3-TTS VoiceDesign (1.7B) builds a voice from a text
+description. The descriptions are in `assistant_voice/voices/*.design.txt`, and they
+describe only timbre, age, accent and delivery: an archetype, never a real person, and
+no recording of anyone was used. Isla, Eli, and the old voices asked for a calm, even,
+low-emotion delivery; the persona voices (alfred, jarvis, optimus, buzz, saul) ask for
+their character. For each persona voice, two descriptions × two to three seeds were
+rendered on a reference line in its own register (`*.txt`), the takes measured for pitch
+and pace, a shortlist cloned over five varied lines, and the take with the most
+consistent pitch across lines and 0% Parakeet WER kept as the ~10 s reference clip
+(`voices/*.wav`). At runtime Qwen3-TTS **Base** clones that clip, so the voice is
+identical on every call. Sampling is seeded per sentence, so the same text is always read
+the same way. Adding a built-in voice means dropping a clip and transcript in `voices/`
+and listing it in `voices.json`; for your own voices see "Your own voices" below.
+
+Persona voices through the service (five lines each, own preset, Parakeet via
+`hex transcribe`, 2026-11-25):
+
+| voice | preset | WER | LUFS | F0 median | pitch spread | words/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| isla | vera | 1.2% (Codex → "Todex") | −20.7 | 182 Hz | 3.1 st | 3.5 |
+| alfred | vera | 0% | −20.7 | 83 Hz | 3.6 st | 3.2 |
+| jarvis | sheen | 0% | −19.5 | 91 Hz | 3.8 st | 3.2 |
+| optimus | robot | 0% | −20.3 | 89 Hz | 3.3 st | 2.7 |
+| buzz | vera | 0% | −20.9 | 130 Hz | 3.7 st | 3.8 |
+| saul | vera | 0% | −20.1 | 175 Hz | 4.5 st | 3.7 |
 
 ## Samples (`samples/`)
 
 Line 1: "On it. I've asked Codex to check the build, I'll ping you when it's done."
 Line 2: "Your T3 thread on the hex fork needs an answer: should it keep the old shortcut?"
 
-`<voice>-<preset>-<line>.mp3`, for example `isla-vera-1.mp3`. There are 18 files for
-isla, nora, and eli × vera, natural, and synthetic, plus `heart-vera-*` for comparison
-with v1's voice.
+`<voice>-<preset>-<line>.mp3`, for example `isla-vera-1.mp3`, for isla and eli × vera,
+natural, and synthetic. (The tables below are from before the persona voices and still list
+the removed nora and heart for comparison.)
 
 Numbers are means over six lines rendered through the real service pipeline (the two
 above plus four more in `bench/lines.json`). First audio is warm and measured from the
@@ -154,7 +178,7 @@ How the columns were measured:
 - 0% WER, about 220 ms to first audio, and −20.9 LUFS / −3.4 dBTP, all within the
   contract.
 
-**Runner-ups.** nora has the flattest pitch (2.9 st) and an American accent; pick it if
+**Runner-ups (at the time).** nora (since removed) had the flattest pitch (2.9 st) and an American accent; it suited
 isla's British accent isn't wanted. eli is the best male option (UTMOSv2 4.03), though
 his pitch is livelier (4.9 st). Switch with `"voice"` in the request or in config.
 
@@ -167,7 +191,7 @@ synthesis time for "On it." and for one 9-word sentence.
 | engine (licence) | best voice | UTMOS | UTMOSv2 | WER | "On it." / sentence | verdict |
 | --- | --- | --- | --- | --- | --- | --- |
 | **Qwen3-TTS 1.7B Base, designed + cloned** (Apache 2.0) via faster-qwen3-tts (MIT, CUDA graphs) | gb_f → isla | 4.47 | 3.96 | 0% | 239 / 1190 ms (streams: ~220 ms to first audio) | **chosen**: most natural, calm by prompt, streams |
-| Kokoro-82M v1.0 (Apache 2.0) | af_heart | 4.50 | 3.82 | 0% | 157 / 395 ms (CPU) | kept as the CPU fallback; brighter and harsher, a little "TTS" |
+| Kokoro-82M v1.0 (Apache 2.0) | af_heart | 4.50 | 3.82 | 0% | 157 / 395 ms (CPU) | was the CPU fallback (removed); brighter and harsher, a little "TTS" |
 | Qwen3-TTS CustomVoice presets | Aiden / Vivian | 4.43 / 4.49 | 3.60 / 3.52 | 0% | 790 / 4490 ms (plain HF) | the English preset speakers are expressive (Aiden 5.7 st), and the female ones are Chinese-native |
 | Chatterbox Turbo 350M (MIT) | built-in | 4.33 | 3.66 | 2.1% | 273 / 734 ms | Turbo has no exaggeration control; flat delivery but lower quality, quiet output |
 | Chatterbox 0.5B, exaggeration 0.25, cfg 0.4 (MIT) | built-in | 4.43 | 3.56 | 0% | 1440 / 3179 ms (RTF 0.98) | the explicit emotion knob set low, but still lively (4.5 st), harsh top end (5.6% in 2–5 kHz), too slow |
@@ -218,6 +242,8 @@ checks this):
 | `natural` | 0.06 / 0.5 s, darker | — | — | +0.03 |
 | `vera` (default) | 0.10 / 0.6 s | 4% | 6% | −0.07 |
 | `synthetic` | 0.14 / 0.8 s | 9%, more feedback | 12%, deeper | −0.34 |
+| `sheen` (jarvis) | 0.10 / 0.6 s | 8%, 2 ms (brighter) | 9% | not scored |
+| `robot` (optimus) | 0.13 / 0.8 s | 12%, 5 ms, more feedback | 6% | not scored; plus a 16% ring modulator at 55 Hz and +1.5 dB warmth |
 
 These came from an ablation on isla. The first draft of `vera` (reverb 0.16 / 0.75 s,
 comb 5%, chorus 10%) cost −0.48. Reverb was most of that: 0.16 wet cost −0.5 on its
@@ -279,9 +305,6 @@ garbles a line), and terms against their accepted forms. Results on
 - **Short utterances are quieter.** One-word utterances such as "Okay." measure about
   −25 LUFS. That's normal for a single word under gated loudness; they sound level with
   the rest.
-- **Kokoro latency.** Kokoro voices synthesize a whole sentence before streaming it, so
-  a long first clause takes about 400 ms. The first Kokoro request also loads the model
-  (about 0.9 s).
 - **Cancel latency.** Cancelling takes effect at the next chunk (up to about 0.5 s of
   GPU work), so a new request right after a cancel waits that long.
 - **Prosody varies between texts.** Qwen is a sampling model. Seeding makes each text

@@ -1,14 +1,18 @@
 [
   {"id": "isla", "engine": "qwen", "name": "Isla", "gender": "female", "accent": "British",
    "description": "Calm, measured and even; soft standard British accent.", "ref": "isla.wav"},
-  {"id": "nora", "engine": "qwen", "name": "Nora", "gender": "female", "accent": "American",
-   "description": "Calm, slightly low, matter-of-fact; neutral American accent.", "ref": "nora.wav"},
-  {"id": "june", "engine": "qwen", "name": "June", "gender": "female", "accent": "American",
-   "description": "Warm and relaxed, a little brighter; neutral American accent.", "ref": "june.wav"},
+  {"id": "alfred", "engine": "qwen", "name": "Alfred", "gender": "male", "accent": "British",
+   "description": "An older English butler: low, warm and unhurried, with dry, understated wit.", "ref": "alfred.wav"},
+  {"id": "jarvis", "engine": "qwen", "name": "Jarvis", "gender": "male", "accent": "British",
+   "description": "A polished British assistant: smooth mid-low voice, precise and unflappable, faintly wry.",
+   "ref": "jarvis.wav", "preset": "sheen"},
+  {"id": "optimus", "engine": "qwen", "name": "Optimus", "gender": "male", "accent": "American",
+   "description": "A deep, commanding baritone: slow, noble and grave, with a subtle mechanical edge.",
+   "ref": "optimus.wav", "preset": "robot"},
+  {"id": "buzz", "engine": "qwen", "name": "Buzz", "gender": "male", "accent": "American",
+   "description": "A confident, earnest, heroic mid-baritone with upbeat can-do bravado.", "ref": "buzz.wav"},
+  {"id": "saul", "engine": "qwen", "name": "Saul", "gender": "male", "accent": "American",
+   "description": "A fast-talking, charming salesman: slick, slightly nasal, Midwestern energy.", "ref": "saul.wav"},
   {"id": "eli", "engine": "qwen", "name": "Eli", "gender": "male", "accent": "American",
-   "description": "Calm, warm mid-low male voice, unhurried.", "ref": "eli.wav"},
-  {"id": "heart", "engine": "kokoro", "name": "Heart (Kokoro)", "gender": "female", "accent": "American",
-   "description": "Kokoro af_heart, v1's voice without v1's processing. Runs on the CPU.", "kokoro": "af_heart"},
-  {"id": "river", "engine": "kokoro", "name": "River (Kokoro)", "gender": "female", "accent": "American",
-   "description": "Kokoro af_river: even and plain. Runs on the CPU.", "kokoro": "af_river"}
+   "description": "Calm, warm mid-low male voice, unhurried.", "ref": "eli.wav"}
 ]

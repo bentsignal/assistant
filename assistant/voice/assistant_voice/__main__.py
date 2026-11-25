@@ -101,7 +101,7 @@ def main(argv=None):
     s.add_argument("--parent-pid", type=int, help="exit when this process exits (the App passes its PID)")
     for p in (s, sub.add_parser("say"), sub.add_parser("voices"), sub.add_parser("calibrate")):
         p.add_argument("--voice", default=cfg.get("voice"))
-        p.add_argument("--preset", default=cfg.get("preset", "vera"))
+        p.add_argument("--preset", default=None, help="effects preset (default: the voice's own, else vera)")
     say = sub._name_parser_map["say"]
     say.add_argument("text")
     say.add_argument("--out", help="write a WAV instead of playing it")
@@ -111,7 +111,7 @@ def main(argv=None):
     _logging(args.cmd != "serve")
 
     from .synth import Synth
-    synth = Synth(args.voice, args.preset)
+    synth = Synth(args.voice, args.preset or cfg.get("preset", "vera"))
     if args.cmd == "serve":
         from .server import serve
         if args.parent_pid:

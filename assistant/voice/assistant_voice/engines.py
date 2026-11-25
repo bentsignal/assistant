@@ -2,10 +2,8 @@
 
 - `qwen`: Qwen3-TTS 1.7B Base (Apache 2.0) on the GPU through faster-qwen3-tts (CUDA
   graphs, streaming). Each voice is a fixed ~10 s reference clip, designed once with
-  Qwen3-TTS VoiceDesign from a text description ("calm, even, low emotion ...") and then
-  cloned, so the voice is identical every time.
-- `kokoro`: Kokoro-82M (Apache 2.0) through kokoro-onnx on the CPU. Lighter and a bit
-  more synthetic; the fallback when there's no CUDA GPU.
+  Qwen3-TTS VoiceDesign from a text description (timbre, age, accent and delivery only)
+  and then cloned, so the voice is identical every time. It needs a CUDA GPU.
 
 Engines yield float32 mono chunks at 24 kHz.
 """
@@ -28,7 +26,6 @@ HOME = Path(os.environ.get("ASSISTANT_HOME", Path.home() / ".assistant"))
 # `ASSISTANT_VOICE_MODELS` points a test home (ASSISTANT_HOME elsewhere) at the real models.
 MODELS = Path(os.environ.get("ASSISTANT_VOICE_MODELS", HOME / "models"))
 HF_HOME = MODELS / "hf"
-KOKORO_DIR = MODELS / "kokoro-onnx"
 VOICES_DIR = Path(__file__).parent / "voices"
 
 QWEN_BASE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
@@ -43,12 +40,11 @@ class Voice:
     gender: str
     accent: str
     ref: str = ""        # qwen: reference clip in voices/ (with a .txt transcript)
-    kokoro: str = ""     # kokoro: voice name
-    speed: float = 1.0
+    preset: str = ""     # this voice's own effects preset; empty uses the service default
 
     def public(self) -> dict:
         d = asdict(self)
-        d.pop("ref"); d.pop("kokoro")
+        d.pop("ref")
         return d
 
 
@@ -100,22 +96,6 @@ class QwenEngine:
                 gen.close()
 
 
-class KokoroEngine:
-    name = "kokoro"
-
-    def __init__(self):
-        from kokoro_onnx import Kokoro
-        self.k = Kokoro(str(KOKORO_DIR / "kokoro-v1.0.onnx"), str(KOKORO_DIR / "voices-v1.0.bin"))
-        self.lock = threading.Lock()
-
-    def stream(self, text: str, voice: Voice, stop: threading.Event) -> Iterator[np.ndarray]:
-        lang = "en-gb" if voice.kokoro.startswith("b") else "en-us"
-        with self.lock:
-            a, sr = self.k.create(text, voice=voice.kokoro, speed=voice.speed, lang=lang)
-        if not stop.is_set():
-            yield np.asarray(a, np.float32).reshape(-1)
-
-
 class Engines:
     """Loads engines on first use (the default voice's engine is loaded at startup)."""
 
@@ -127,7 +107,9 @@ class Engines:
         with self._lock:
             if name not in self._engines:
                 log.info("loading engine %s", name)
-                self._engines[name] = QwenEngine() if name == "qwen" else KokoroEngine()
+                if name != "qwen":
+                    raise KeyError(f"unknown engine {name!r}")
+                self._engines[name] = QwenEngine()
                 log.info("engine %s loaded", name)
             return self._engines[name]
 

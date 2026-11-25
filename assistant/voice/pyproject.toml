@@ -1,14 +1,13 @@
 [project]
 name = "assistant-voice"
 version = "2.0.0"
-description = "Assistant's local TTS service: Qwen3-TTS (GPU) or Kokoro (CPU), calm voices, gentle reverb, streamed f32 PCM over HTTP."
+description = "Assistant's local TTS service: Qwen3-TTS on the GPU, designed persona voices, gentle reverb, streamed f32 PCM over HTTP."
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "torch==2.11.0",
   "torchaudio==2.11.0",
   "faster-qwen3-tts==0.5.4",
   "transformers==5.15.1",
-  "kokoro-onnx==0.6.1",
   "numpy>=2",
   "scipy>=1.13",
   "soundfile>=0.12",
