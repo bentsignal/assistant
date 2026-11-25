@@ -97,10 +97,16 @@ def main():
         if pause_at is not None and want["start_ms"] < resume_at * 1000 and want["end_ms"] > pause_at * 1000:
             print(f"(paused)  {want['text']}")
             continue
-        best = max(((similarity(want["text"], e["text"]), i) for i, (_, e) in enumerate(finals) if i not in used),
-                   default=(0, None))
+        # The final whose onset falls on this utterance in the fixture's
+        # timeline (onset = its `start`, against the ready line's clock).
+        near = [i for i, (_, e) in enumerate(finals) if i not in used
+                and want["start_ms"] - 600 <= e["start"] - t0 * 1000 <= want["end_ms"]]
+        best = max(((similarity(want["text"], finals[i][1]["text"]), i) for i in near), default=(0, None))
         if best[1] is None or best[0] < 0.5:
-            print(f"MISSING   {want['text']}")
+            heard = repr(finals[best[1]][1]["text"]) if best[1] is not None else "nothing"
+            print(f"WRONG     {want['text']!r} -> {heard}" if best[1] is not None else f"MISSING   {want['text']!r}")
+            if best[1] is not None:
+                used.add(best[1])
             failed = True
             continue
         used.add(best[1])

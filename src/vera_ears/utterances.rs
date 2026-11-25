@@ -562,12 +562,28 @@ impl<B: Backend, W: Write + Send> Utterances<B, W> {
     }
 }
 
-/// `prefix` and `text` as one transcript.
+/// `prefix` and `text` as one transcript. The model capitalizes the start
+/// of every clip, so a continuation of a sentence the prefix left open gets
+/// its first word lowered ("Vera, check the" + "Hex thread" stays, "Vera" +
+/// "What's new?" becomes "Vera what's new?"); "I" and words in capitals
+/// keep theirs.
 pub(crate) fn join(prefix: &str, text: &str) -> String {
     match (prefix.trim(), text.trim()) {
         ("", text) => text.to_owned(),
         (prefix, "") => prefix.to_owned(),
-        (prefix, text) => format!("{prefix} {text}"),
+        (prefix, text) => {
+            let first = text.split_whitespace().next().unwrap_or("");
+            let mut letters = first.chars().filter(|character| character.is_alphabetic());
+            let lower_rest = letters.next().is_some_and(char::is_uppercase)
+                && letters.next().is_some_and(char::is_lowercase);
+            let pronoun = first == "I" || first.starts_with("I'");
+            if prefix.ends_with(['.', '?', '!']) || !lower_rest || pronoun {
+                return format!("{prefix} {text}");
+            }
+            let mut chars = text.chars();
+            let head: String = chars.next().into_iter().flat_map(char::to_lowercase).collect();
+            format!("{prefix} {head}{}", chars.as_str())
+        }
     }
 }
 
@@ -828,6 +844,17 @@ mod tests {
         assert_eq!(kinds.last().map(String::as_str), Some("final"));
         let partials = kinds.iter().filter(|kind| *kind == "partial").count();
         assert!(partials >= 3, "{kinds:?}");
+    }
+
+    #[test]
+    fn joined_continuations_read_as_one_sentence() {
+        assert_eq!(join("Vera", "What's new?"), "Vera what's new?");
+        assert_eq!(join("Vera, open the browser and", "Search."), "Vera, open the browser and search.");
+        assert_eq!(join("Vera, ask", "I think so."), "Vera, ask I think so.");
+        assert_eq!(join("Check the", "T3 threads."), "Check the T3 threads.");
+        assert_eq!(join("Stop.", "Thanks."), "Stop. Thanks.");
+        assert_eq!(join("", "Hello."), "Hello.");
+        assert_eq!(join("Hello.", " "), "Hello.");
     }
 
     #[test]

@@ -78,10 +78,17 @@ pub(crate) struct EarsArgs {
     /// separated; an empty value turns biasing off.
     #[arg(long, default_value = "Vera", value_delimiter = ',')]
     vocabulary: Vec<String>,
+    /// How readily a vocabulary term replaces the words heard: off, light,
+    /// normal, or strong.
+    #[arg(long, default_value = "normal", value_parser = parse_boost)]
+    vocabulary_boost: crate::dictation::vocabulary::VocabularyBoost,
     /// Skip the speech detector (Silero): announce and transcribe every
     /// clip the level endpointer cuts.
     #[arg(long)]
     no_speech_check: bool,
+    /// Print the microphones `--device` can name, one per line, and exit.
+    #[arg(long)]
+    list_devices: bool,
 }
 
 /// Gives `hex ears` its own data folder before anything reads one, keeping
@@ -118,6 +125,12 @@ pub(crate) fn isolate() {
 
 pub(crate) fn run(args: EarsArgs, shutdown: &'static AtomicBool) -> Result<()> {
     init_logging();
+    if args.list_devices {
+        for name in crate::audio::input_device_names()? {
+            println!("{name}");
+        }
+        return Ok(());
+    }
     let _ = ctrlc::set_handler(move || shutdown.store(true, Ordering::Relaxed));
     let output = Arc::new(Output::new(std::io::stdout()));
     match listen(&args, shutdown, &output) {
@@ -166,7 +179,7 @@ fn listen(
         .collect();
     crate::dictation::vocabulary::apply(
         &terms,
-        crate::dictation::vocabulary::VocabularyBoost::Normal,
+        args.vocabulary_boost,
     );
 
     let commands = spawn_stdin_reader();
@@ -283,6 +296,17 @@ fn listen(
     }
     tracing::info!("ears stopped");
     Ok(())
+}
+
+fn parse_boost(value: &str) -> Result<crate::dictation::vocabulary::VocabularyBoost, String> {
+    use crate::dictation::vocabulary::VocabularyBoost;
+    match value {
+        "off" => Ok(VocabularyBoost::Off),
+        "light" => Ok(VocabularyBoost::Light),
+        "normal" => Ok(VocabularyBoost::Normal),
+        "strong" => Ok(VocabularyBoost::Strong),
+        _ => Err(format!("{value:?} is not off, light, normal, or strong")),
+    }
 }
 
 fn resolve_device(query: &str) -> Result<String> {

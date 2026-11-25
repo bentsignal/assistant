@@ -83,6 +83,10 @@ stdin, one JSON command per line: `{"cmd":"pause"}`, `{"cmd":"resume"}`,
 `{"cmd":"shutdown"}`. Logs go to stderr. `partial` is optional. Times are
 Unix epoch milliseconds.
 
+The Rust Ears is `hex.exe ears` in this fork; see
+[`docs/vera-ears.md`](docs/vera-ears.md) for flags, the extra
+`speech_cancel`/`paused`/`resumed` lines, and measurements.
+
 ### Mouth: text to speech (`vera/mouth`, package `@vera/mouth`)
 
 ```ts
