@@ -51,7 +51,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "ask_codex",
     description:
-      "Hand a task to Codex (headless, full permissions, with computer-use plugins). Use for USING THE COMPUTER: operating desktop apps, clicking around, browser automation, system settings, anything on screen. OpenAI models are best at computer use. Background by default.",
+      "Hand a task to Codex (headless, full permissions, with computer-use plugins). Use for USING THE COMPUTER: operating desktop apps, clicking around, driving a browser to DO something (fill a form, change a setting), anything on screen. OpenAI models are best at computer use. NOT for looking information up online: use your own web search for that. Background by default.",
     inputSchema: { type: "object", properties: askProps, required: ["task"] },
   },
   {

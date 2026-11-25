@@ -63,24 +63,37 @@ export class SapiMouth extends Emitter implements Mouth {
   private queue: Promise<void> = Promise.resolve()
   private generation = 0
 
+  /** options: { volume?: 0-100, rate?: -10..10, voice?: substring of an installed voice name } */
+  constructor(private options: { volume?: number; rate?: number; voice?: string } = {}) {
+    super()
+  }
+
+  /** Start PowerShell and load SAPI now, so the first sentence doesn't wait for it. */
+  warm() {
+    this.shell()
+  }
+
   private shell(): ChildProcess {
     if (this.ps && this.ps.exitCode === null) return this.ps
     const script = [
       "Add-Type -AssemblyName System.Speech",
       "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer",
-      "$s.Rate = 1",
-      "try { $v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Name -match 'Zira|Aria|Jenny' } | Select-Object -First 1; if ($v) { $s.SelectVoice($v.VoiceInfo.Name) } } catch {}",
+      `$s.Rate = ${Math.round(this.options.rate ?? 1)}`,
+      `$s.Volume = ${Math.round(this.options.volume ?? 100)}`,
+      `try { $v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Name -match '${(this.options.voice ?? "Zira|Aria|Jenny").replace(/'/g, "")}' } | Select-Object -First 1; if ($v) { $s.SelectVoice($v.VoiceInfo.Name) } } catch {}`,
       "[Console]::Out.WriteLine('ready')",
       "while ($true) { $line = [Console]::In.ReadLine(); if ($line -eq $null) { break }",
       "  $m = $line | ConvertFrom-Json",
       "  try { if ($m.cmd -eq 'speak') { $s.Speak([string]$m.text) } elseif ($m.cmd -eq 'wav') { (New-Object System.Media.SoundPlayer $m.path).PlaySync() } } catch {}",
       "  [Console]::Out.WriteLine('done') }",
     ].join("\n")
-    const ps = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "-"], {
+    // Run from a file so stdin stays free for our JSON lines.
+    const file = join(paths.home, "sapi-speaker.ps1")
+    writeFileSync(file, script.replace(/\n/g, "\r\n") + "\r\n")
+    const ps = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     })
-    ps.stdin!.write(script.replace(/\n/g, "\r\n") + "\r\n")
     onLines(ps.stdout!, (line) => {
       if (line.trim() === "done") {
         const p = this.pending
@@ -228,6 +241,10 @@ export async function createMouth(config: VeraConfig["mouth"]): Promise<{ mouth:
       console.error(`[mouth] @vera/mouth unavailable (${(err as Error).message}); using ${process.platform === "win32" ? "SAPI" : "stub"}`)
     }
   }
-  if ((want === "sapi" || want === "auto") && process.platform === "win32") return { mouth: new SapiMouth(), name: "sapi" }
+  if ((want === "sapi" || want === "auto") && process.platform === "win32") {
+    const sapi = new SapiMouth((config.options ?? {}) as any)
+    sapi.warm()
+    return { mouth: sapi, name: "sapi" }
+  }
   return { mouth: new StubMouth(), name: "stub" }
 }

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vera</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="orb-wrap"><div id="orb" class="orb idle"></div></div>
+  <div class="status">
+    <div id="status-word" class="status-word">idle</div>
+    <div id="meta" class="meta"></div>
+  </div>
+  <div class="header-actions">
+    <button id="talk" class="big">Talk</button>
+    <button id="stop" class="big secondary">Stop</button>
+  </div>
+</header>
+
+<main>
+  <section class="convo">
+    <div class="said-block">
+      <div class="label">Vera said</div>
+      <div id="said" class="said"></div>
+    </div>
+    <div class="heard-block">
+      <div class="label">Heard</div>
+      <div id="heard" class="heard"></div>
+      <div id="partial" class="partial"></div>
+    </div>
+    <form id="ask">
+      <input id="text" autocomplete="off" placeholder="Type to Vera…">
+      <button type="submit">Send</button>
+    </form>
+    <div id="thinking" class="thinking"></div>
+    <div id="cards" class="cards"></div>
+  </section>
+
+  <aside>
+    <div class="panel">
+      <div class="panel-head"><h2>Inbox</h2><button id="inbox-read" class="small">Mark read</button></div>
+      <ul id="inbox" class="list"></ul>
+    </div>
+    <div class="panel">
+      <h2>Jobs</h2>
+      <ul id="jobs" class="list"></ul>
+    </div>
+    <div class="panel">
+      <h2>Watching in T3</h2>
+      <ul id="watches" class="list"></ul>
+    </div>
+    <details class="panel">
+      <summary>Log</summary>
+      <pre id="log" class="log"></pre>
+    </details>
+  </aside>
+</main>
+<script src="markdown.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

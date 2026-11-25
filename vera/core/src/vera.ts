@@ -229,11 +229,18 @@ export class Vera extends EventEmitter {
   async utterance(input: UtteranceInput): Promise<GateResult & { turnId?: number }> {
     const now = Date.now()
     // Belt and braces for half-duplex: drop speech that began while Vera was talking.
-    if (input.source === "ears" && input.start && this.mouth?.speaking && input.start >= this.speechStartedAt) {
+    const echo =
+      input.source === "ears" &&
+      !!input.start &&
+      input.start >= this.speechStartedAt &&
+      (this.mouth?.speaking || input.start <= this.speechEndedAt + this.config.ears.tailMs)
+    if (echo) {
       this.log(`dropped (heard while speaking): ${input.text}`)
       return { action: "ignore", reason: "heard while speaking" }
     }
-    const g = gate(input, { followUpUntil: this.followUpUntil }, now, {
+    // While Vera is talking the follow-up window is open (it opens fully when she stops).
+    const followUpUntil = this.mouth?.speaking ? Number.MAX_SAFE_INTEGER : this.followUpUntil
+    const g = gate(input, { followUpUntil }, now, {
       extra: this.config.wake.words,
       maxLeadingWords: this.config.wake.maxLeadingWords,
     })

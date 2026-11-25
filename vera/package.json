@@ -3,6 +3,12 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.12.3",
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "pnpm --filter @vera/core start",
+    "dev": "pnpm --filter @vera/core dev",
+    "test": "pnpm -r test"
+  }
 }
-

@@ -31,8 +31,8 @@ const DISABLED_FEATURES = [
   "view_image",
   "shell_tool",
   "unified_exec",
-  // Code mode wraps tools in a JS `exec` tool; the brain should call speak directly.
-  "code_mode_host",
+  // Not "code_mode_host": Codex's web search runs inside code mode's `exec`.
+  // Vera's tools skip it (omit_tools_from) so `speak` is a direct call.
 ]
 
 /** Names of the MCP servers in the user's Codex config, so the brain can switch them off. */

@@ -119,6 +119,17 @@ const specs: Record<JobAgent, AgentSpec> = {
   },
 }
 
+/**
+ * Agents often open with a plan ("I'll look through...", "Let me check...").
+ * Drop leading paragraphs like that so summaries start with the answer.
+ */
+export function cleanResult(text: string): string {
+  const paras = text.trim().split(/\n\s*\n/)
+  const preamble = /^(I'll|I will|I'm going to|I am going to|Let me|First,? I'll|Now I'll|Next,? I'll|I need to|I'm checking|Checking)\b/i
+  while (paras.length > 1 && (preamble.test(paras[0].trim()) || /\bI'll (pull|check|look|search|dig)\b/.test(paras[0]))) paras.shift()
+  return paras.join("\n\n")
+}
+
 function tryJson(s: string): any {
   try {
     return JSON.parse(s)
@@ -216,6 +227,7 @@ export class Jobs {
           job.status = "failed"
           job.error ??= stderr.trim().split("\n").slice(-3).join(" ") || `exited with code ${code}`
         } else job.status = "done"
+        if (job.result) job.result = cleanResult(job.result)
         if (stderr.trim()) log.write(JSON.stringify({ type: "vera.stderr", text: stderr.slice(-4000) }) + "\n")
         log.end()
         this.running.delete(id)
