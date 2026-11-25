@@ -160,22 +160,60 @@ export const HANDLERS: Record<string, ToolHandler> = {
     return `Reverted to the version from before the last edit (${restored}). It applies from the next turn.`
   },
 
-  set_name(assistant, args) {
-    const { from, to } = assistant.setName(need(args, "name"))
-    if (from === to) return `You're already called ${to}.`
-    return `Done: you're ${to} now. Shawn wakes you with "${to}" from now on, and the next turn's prompt uses the new name. Confirm in a few words, as ${to}.`
+  async set_name(assistant, args) {
+    const name = need(args, "name")
+    if (args.remove) {
+      const p = assistant.removePersona(name)
+      return `Removed ${p.name}; "${p.name}" no longer wakes you. Your names: ${assistant.personas.map((x) => x.name).join(", ")}.`
+    }
+    if (args.add) {
+      const asked = typeof args.voice === "string" && args.voice.trim() ? args.voice.trim() : ""
+      const list = await fetchVoices(assistant.voicePort).catch(() => null)
+      let voice = asked.toLowerCase() || assistant.persona.voice
+      if (list && asked) voice = pickVoice(list.voices, asked).id
+      else if (list) {
+        // No voice asked for: one of the same name, else the current persona's.
+        try {
+          voice = pickVoice(list.voices, name).id
+        } catch {}
+      }
+      const p = assistant.addPersona(name, voice, typeof args.style === "string" ? args.style : undefined)
+      return `Added ${p.name} (voice ${p.voice}). "${p.name}" wakes you now, and you answer in that voice. Confirm in a few words.`
+    }
+    const { from, to } = assistant.setName(name, typeof args.from === "string" && args.from.trim() ? args.from : undefined)
+    if (from === to) return `That persona is already called ${to}.`
+    return `Done: ${from} is ${to} now. Shawn wakes that persona with "${to}" from now on, and the next turn's prompt uses the new name. Confirm in a few words, as ${to}.`
   },
 
   async set_voice(assistant, args) {
+    const wanted = typeof args.voice === "string" ? args.voice.trim() : ""
+    const personaName = typeof args.persona === "string" ? args.persona.trim() : ""
+    if (/^(default|persona|personas|own|normal|none|reset)$/i.test(wanted) && !personaName) {
+      if (!assistant.voiceOverride) return "There's no override: each persona already speaks in its own voice."
+      assistant.setVoice(null)
+      return `Override cleared: each persona speaks in its own voice again (you're ${assistant.persona.name}, voice ${assistant.persona.voice}). Say a few words.`
+    }
     const list = await fetchVoices(assistant.voicePort)
     const current = assistant.currentVoice ?? list.default
-    const wanted = typeof args.voice === "string" ? args.voice.trim() : ""
-    if (!wanted) return `Voices (* is the current one):
-${describeVoices(list.voices, current)}`
+    const personaLines = assistant.personas.map((p) => `- ${p.name}: ${p.voice}`).join("\n")
+    if (!wanted) {
+      const override = assistant.voiceOverride
+      return `Voices (* is the one you speak in now):
+${describeVoices(list.voices, current)}
+
+Personas and their voices:
+${personaLines}${override ? `\n\nOverride on: every persona speaks as ${override} until set_voice default.` : ""}`
+    }
+    if (personaName) {
+      const v = pickVoice(list.voices, wanted, assistant.findPersonaVoice(personaName))
+      const p = assistant.setPersonaVoice(personaName, v.id)
+      const note = assistant.voiceOverride ? ` (an override, ${assistant.voiceOverride}, is on; set_voice default clears it)` : ""
+      return `${p.name} now speaks as ${v.name}${note}. Confirm in a few words.`
+    }
     const v = pickVoice(list.voices, wanted, current)
     if (v.id === current) return `You already speak as ${v.name}.`
     assistant.setVoice(v.id)
-    return `Switched to ${v.name}. Your next speak line, this turn included, is in the new voice; say a few words in it.`
+    return `Switched to ${v.name} (an override for every persona until 'default'). Your next speak line, this turn included, is in the new voice; say a few words in it.`
   },
 
   set_brain(assistant, args) {

@@ -82,6 +82,10 @@ const U = {
   oldname: "Vera, what's the time now?",
   nova: "Nova, what's the capital of Spain?",
   renameBack: "Nova, call yourself Vera again.",
+  alfred: "Hey Alfred, what's the capital of Italy?",
+  jarvis: "Jarvis, what's the capital of Japan?",
+  followup: "And what about Germany?",
+  veraAgain: "Vera, what's the capital of Peru?",
 }
 
 const LONG = {
@@ -128,6 +132,10 @@ const SCRIPT = [
   rule("in the water", [speak("A big pinch.")]),
   rule("good night", [speak("Good night.")]),
   rule("spain", [speak("Madrid.")]),
+  rule("italy", [speak("Rome.")]),
+  rule("japan", [speak("Tokyo.")]),
+  rule("germany", [speak("Berlin.")]),
+  rule("peru", [speak("Lima.")]),
   rule("call yourself vera", [{ tool: "set_name", args: { name: "Vera" } }, speak("Vera again.")]),
   rule("call yourself nova", [{ tool: "set_name", args: { name: "Nova" } }, speak("Okay, I'm Nova.")]),
 ]
@@ -547,6 +555,8 @@ class Run {
       this.check(sent?.voice === b, `the next line used the new voice (${sent?.voice} vs ${b})`)
       await this.turn("garden", "The garden is green and quiet.")
       await this.hidden()
+      // Back to each name's own voice (no override) for what follows.
+      await this.control("voice default")
     })
 
     await step("changing the volume mid-reply", async () => {
@@ -664,7 +674,7 @@ class Run {
       const named = this.trace.find(isFrom("name", (m) => m.name === "Nova"))
       this.check(named.length === 1, "Core told the App her new name")
       this.check(this.trace.find((e) => e.kind === "name" && e.name === "Nova").length === 1, "the App applied it")
-      this.check(this.trace.find((e) => e.kind === "tray" && /^Nova /.test(e.tooltip)).length > 0, "the tray says Nova")
+      this.check(this.trace.find((e) => e.kind === "tray" && /^Nova\b/.test(e.tooltip)).length > 0, "the tray says Nova")
       this.check(this.trace.find((e) => e.kind === "engine").length === engines, "nothing restarted")
       await this.hidden()
       // The old name no longer wakes her.
@@ -676,6 +686,30 @@ class Run {
       await this.turn("nova", "Madrid.")
       await this.hidden()
       await this.turn("renameBack", "Vera again.")
+      await this.hidden()
+    })
+
+    await step("switching personas by name", async () => {
+      // Each name answers in its own voice; a follow-up without a name stays
+      // with the last one; one conversation underneath.
+      const voiceOf = async (said, text) => {
+        const cmd = await this.trace.waitFor(isFrom("speak", (m) => m.text === text), { after: said.at, within: 15_000, what: `"${text}"` })
+        const sent = await this.trace.waitFor((e) => e.kind === "speak" && e.t >= cmd.t, { after: cmd.t - 1, within: 5_000, what: "the App's speak" })
+        return { core: cmd.msg.voice, app: sent.voice }
+      }
+      const alfred = await this.turn("alfred", "Rome.")
+      let v = await voiceOf(alfred.said, "Rome.")
+      this.check(v.core === "alfred" && v.app === "alfred", `"Hey Alfred" answers in alfred's voice (core ${v.core}, app ${v.app})`)
+      const jarvis = await this.turn("jarvis", "Tokyo.")
+      v = await voiceOf(jarvis.said, "Tokyo.")
+      this.check(v.core === "jarvis" && v.app === "jarvis", `"Jarvis" answers in jarvis's voice (core ${v.core}, app ${v.app})`)
+      const follow = await this.turn("followup", "Berlin.")
+      v = await voiceOf(follow.said, "Berlin.")
+      this.check(v.app === "jarvis", `a follow-up without a name stays with Jarvis (${v.app})`)
+      await this.hidden()
+      const vera = await this.turn("veraAgain", "Lima.")
+      v = await voiceOf(vera.said, "Lima.")
+      this.check(v.app === "isla", `"Vera" answers in isla's voice (${v.app})`)
       await this.hidden()
     })
 

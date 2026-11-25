@@ -61,6 +61,24 @@ brain's `set_name` tool). It applies live, nothing restarts:
 - **The App**: the tray tooltip and menu, Settings' copy, alerts.
 - **The voice**: `assistant.sayAs` respells the name when it's said wrong.
 
+**Personas.** She has several names, `assistant.personas` in `config.json`:
+`[{name, voice, style?}]`, by default Vera (`isla`), Alfred (`alfred`, a dry,
+courteous English butler), Jarvis (`jarvis`), Optimus (`optimus`), Buzz
+(`buzz`), Saul (`saul`) and Tony (`tony`); `assistant.name` is always the
+first. Any name wakes her, each with its own fuzzy variants (Vera's tuned
+list stays Vera's), and the gate says which one did. That persona answers:
+each turn the brain gets is tagged `[Shawn is talking to Alfred]`, the prompt
+lists the personas (`{{personas}}`, with their manner) so she lightly takes
+one on, and every `speak` carries that persona's `voice`. Follow-ups, with no
+name, stay with the last persona. It's one agent with one conversation and
+one memory; only the voice and manner change. `app.voice` is an explicit
+override every persona speaks in (`set_voice` with a voice alone, or
+Settings); `set_voice` "default" clears it. By voice: `set_name` renames,
+adds or removes a persona ("add a persona called Max with the Optimus
+voice"), and `set_voice` with a persona gives it its own voice ("make Jarvis
+use the Eli voice"). A change to the personas restarts the brain before the
+next turn, and Core tells the App with `name`.
+
 The old data folder `~/.vera` is moved to `~/.assistant` on the first launch
 of `assistant.exe` (an old `vera.exe` still running is asked to quit first),
 and its old start-at-login entry is removed.
@@ -124,7 +142,7 @@ app → core:
 core → app:
 
 ```json
-{"cmd":"speak","speak_id":"s12","text":"On it. I'll ping you."}
+{"cmd":"speak","speak_id":"s12","text":"On it. I'll ping you.","voice":"alfred"}
 {"cmd":"stop_speaking"}
 {"cmd":"hud","state":"idle|listening|thinking|speaking|working"}
 {"cmd":"chime","kind":"notify|listening|done|error"}
@@ -134,7 +152,7 @@ core → app:
 {"cmd":"badge","count":2}
 {"cmd":"error","what":"brain|brain_timeout|speech","message":"…"}
 {"cmd":"name","name":"Nova"}
-{"cmd":"voice","voice":"eli"}
+{"cmd":"voice","voice":"eli"}            (or null: each persona's own voice again)
 ```
 
 **Nothing is ever left hanging** (v2's live test failed this way: an engine

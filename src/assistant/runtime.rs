@@ -95,6 +95,35 @@ pub(crate) enum Msg {
     Shutdown,
 }
 
+/// A line to say, in this voice (`None`: the service's default).
+struct SpeechLine {
+    text: String,
+    voice: Option<String>,
+}
+
+/// A config from before personas gets them, once: her name keeps Isla's
+/// voice and the stock personas join it. `app.voice` was the one voice for
+/// everything; it's cleared, so each name speaks in its own.
+fn migrate_personas(config: Config) -> Config {
+    if config.has_personas {
+        return config;
+    }
+    let personas: Vec<serde_json::Value> = config
+        .personas
+        .iter()
+        .map(super::config::Persona::to_json)
+        .collect();
+    tracing::info!(count = personas.len(), "seeding personas");
+    if let Err(error) = super::config::save(|root| {
+        *super::config::slot(root, &["assistant", "personas"]) = json!(personas);
+        *super::config::slot(root, &["app", "voice"]) = serde_json::Value::Null;
+    }) {
+        tracing::error!(error = %format!("{error:#}"), "could not save personas");
+        return config;
+    }
+    Config::load()
+}
+
 pub(crate) fn run(hidden: bool) -> Result<()> {
     // Rune would `_exit` at the end of its loop; Vera has children to stop
     // and a tray icon to take down after it.
@@ -102,7 +131,7 @@ pub(crate) fn run(hidden: bool) -> Result<()> {
     let Some(instance) = super::instance::Instance::claim(hidden)? else {
         return Ok(());
     };
-    let config = Config::load();
+    let config = migrate_personas(Config::load());
     apply_start_at_login(&config);
     let (messages, inbox) = mpsc::channel::<Msg>();
     let (actions, ui_actions) = mpsc::channel::<UiAction>();
@@ -259,7 +288,7 @@ struct Controller {
     /// Lines Core sent while the voice or the audio engine wasn't ready yet:
     /// (Core's speak id, text, when). They play once it is, or fail after
     /// `HOLD_FOR`.
-    held: VecDeque<(String, String, Instant)>,
+    held: VecDeque<(String, SpeechLine, Instant)>,
     /// The last transcript, until Core acts on it (thinks or speaks): only
     /// then is it a turn worth listing, not speech Vera overheard.
     heard: Option<(String, Instant)>,
@@ -550,7 +579,13 @@ impl Controller {
         tracing::info!(name = self.config.name, "the assistant's name");
         trace::record("name", json!({"name": self.config.name}));
         if let Some(audio) = &self.audio {
-            audio.set_vocabulary(vec![self.config.name.clone()]);
+            audio.set_vocabulary(
+                self.config
+                    .personas
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect(),
+            );
         }
         self.publish(true);
     }
@@ -629,7 +664,11 @@ impl Controller {
 
     fn command(&mut self, command: CoreCommand) {
         match command {
-            CoreCommand::Speak { speak_id, text } => self.speak(speak_id, text),
+            CoreCommand::Speak {
+                speak_id,
+                text,
+                voice,
+            } => self.speak(speak_id, text, voice),
             CoreCommand::StopSpeaking => {
                 self.drop_held(true);
                 if let Some(audio) = &self.audio {
@@ -676,8 +715,8 @@ impl Controller {
                 // Core saved it as `app.voice` (Shawn asked, by voice): the
                 // next line uses it.
                 self.config = Config::load();
-                let voice = self.config.voice.clone().or(Some(voice));
-                tracing::info!(?voice, "Core switched the voice");
+                let voice = self.config.voice.clone().or(voice);
+                tracing::info!(?voice, "Core set the voice override");
                 trace::record("voice_set", json!({"voice": voice}));
                 if let Some(audio) = &self.audio {
                     audio.set_voice(voice.clone());
@@ -696,9 +735,12 @@ impl Controller {
         }
     }
 
-    fn speak(&mut self, speak_id: String, text: String) {
+    fn speak(&mut self, speak_id: String, text: String, voice: Option<String>) {
         self.commit_heard();
         self.remember(false, &text);
+        // An explicit voice (`app.voice`) beats the waking persona's.
+        let voice = self.config.voice.clone().or(voice);
+        let text = SpeechLine { text, voice };
         if !self.can_speak() && self.voice_may_come() {
             // Still loading (just launched, or restarting): hold the line
             // until the voice is ready rather than fail it.
@@ -729,7 +771,11 @@ impl Controller {
             }
             let (speak_id, text, at) = self.held.pop_front().expect("front");
             if self.can_speak() {
-                tracing::info!(speak_id, waited_ms = at.elapsed().as_millis(), "a held line plays");
+                tracing::info!(
+                    speak_id,
+                    waited_ms = at.elapsed().as_millis(),
+                    "a held line plays"
+                );
             }
             self.send_speech(speak_id, text);
         }
@@ -747,7 +793,8 @@ impl Controller {
         }
     }
 
-    fn send_speech(&mut self, speak_id: String, text: String) {
+    fn send_speech(&mut self, speak_id: String, line: SpeechLine) {
+        let SpeechLine { text, voice } = line;
         let Some(audio) = &self.audio else {
             // No engine right now: this line ends at once, and Shawn knows.
             self.tell_core(AppEvent::Playback {
@@ -763,9 +810,9 @@ impl Controller {
         let engine_id = self.ledger.sent(&speak_id, &text, Instant::now());
         trace::record(
             "speak",
-            json!({"id": engine_id, "voice": self.config.voice, "chars": text.chars().count()}),
+            json!({"id": engine_id, "voice": voice, "chars": text.chars().count()}),
         );
-        audio.speak(&engine_id, &text);
+        audio.speak_as(&engine_id, &text, voice);
     }
 
     fn audio_event(&mut self, event: AudioEvent) {

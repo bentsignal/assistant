@@ -65,7 +65,17 @@ export interface AssistantConfig {
    * are derived from it), how the prompt names her (`{{name}}`), and what
    * the App shows. `sayAs` respells it for the voice when it's said wrong.
    */
-  assistant: { name: string; sayAs?: string }
+  assistant: {
+    name: string
+    sayAs?: string
+    /**
+     * Her names ("personas"), each with its own voice and an optional
+     * manner. Any of them wakes her; the reply is in the voice of the one
+     * he used. One assistant, one memory. `name` is always `personas[0].name`.
+     * Missing: `DEFAULT_PERSONAS`, with `name` first.
+     */
+    personas?: Persona[]
+  }
   /** Loopback HTTP port to try first (the brain's tool calls, the debug hook); a free one if it's taken. */
   port: number
   brain: {
@@ -124,6 +134,49 @@ export interface AssistantConfig {
 }
 
 export const DEFAULT_NAME = "Vera"
+
+/** One of her names: what wakes her, the voice she answers in, and a light manner. */
+export interface Persona {
+  name: string
+  /** A voice id from the voice service's `/v1/voices`. */
+  voice: string
+  /** A short line of manner ("a dry, courteous English butler"). */
+  style?: string
+}
+
+/** The names she starts with. The first is her own (Vera, in the `isla` voice). */
+export const DEFAULT_PERSONAS: readonly Persona[] = [
+  { name: DEFAULT_NAME, voice: "isla" },
+  { name: "Alfred", voice: "alfred", style: "a dry, courteous English butler" },
+  { name: "Jarvis", voice: "jarvis", style: "a crisp, unflappable AI aide with polite wit" },
+  { name: "Optimus", voice: "optimus", style: "a calm, noble commander of few words" },
+  { name: "Buzz", voice: "buzz", style: "an earnest, upbeat space ranger" },
+  { name: "Saul", voice: "saul", style: "a quick, persuasive fixer with a wink" },
+  { name: "Tony", voice: "tony", style: "a quick, confident inventor with a wry edge" },
+]
+
+/**
+ * Her personas as config says, cleaned: valid names only, no name twice
+ * (case ignored), at least one. Without `assistant.personas`, the defaults
+ * with `assistant.name` (if it isn't Vera) in Vera's place.
+ */
+export function personasOf(config: Pick<AssistantConfig, "assistant">): Persona[] {
+  const given = config.assistant?.personas
+  const raw: unknown[] = Array.isArray(given) && given.length
+    ? given
+    : DEFAULT_PERSONAS.map((p, i) => (i === 0 ? { ...p, name: validName(config.assistant?.name) ?? p.name } : { ...p }))
+  const out: Persona[] = []
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue
+    const o = r as Record<string, unknown>
+    const name = validName(o.name)
+    if (!name || out.some((p) => p.name.toLowerCase() === name.toLowerCase())) continue
+    const voice = typeof o.voice === "string" && o.voice.trim() ? o.voice.trim() : DEFAULT_PERSONAS[0].voice
+    const style = typeof o.style === "string" && o.style.trim() ? o.style.trim() : undefined
+    out.push({ name, voice, ...(style ? { style } : {}) })
+  }
+  return out.length ? out : [{ ...DEFAULT_PERSONAS[0] }]
+}
 
 export const DEFAULT_CONFIG: AssistantConfig = {
   assistant: { name: DEFAULT_NAME },

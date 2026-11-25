@@ -184,16 +184,30 @@ export const TOOLS: ToolDef[] = [
   {
     name: "set_name",
     description:
-      "Change your own name, when Shawn asks ('call yourself Nova', 'your name is Nova now'). It becomes your wake word at once (he says it to talk to you), and you go by it from the next turn. One word. Confirm in a few words using the new name.",
-    inputSchema: { type: "object", properties: { name: str("Your new name, one word, like Nova.") }, required: ["name"] },
+      "Change your names (personas: each name wakes you and has its own voice). name alone renames the persona he's talking to ('call yourself Nova'); from+name renames another ('rename Buzz to Rex'); name+add:true adds one ('add a persona called Max with the Optimus voice': voice is a voice name or id, style an optional short manner); name+remove:true removes one. Names are one word. Applies at once as a wake word, and from the next turn in your prompt. Confirm in a few words.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: str("The (new) name, one word, like Nova."),
+        from: str("Rename this persona instead of the one he's talking to."),
+        add: bool("Add name as a new persona."),
+        remove: bool("Remove the persona called name."),
+        voice: str("With add: its voice (a voice name or id)."),
+        style: str("With add: an optional short manner, like 'a dry, courteous English butler'."),
+      },
+      required: ["name"],
+    },
   },
   {
     name: "set_voice",
     description:
-      "List your voices, or switch to one, when Shawn asks ('switch to Eli', 'try the next voice', 'what voices do you have?'). No voice: lists them (read them out briefly or show them). voice: a voice's name or id, or 'next' / 'previous' to step through them for auditioning. Applies from your next speak line, so after switching, speak a short line in the new voice. Saved for next time.",
+      "List voices or change them. No args: lists the voices and which persona uses which. persona+voice: gives that persona its own voice ('make Jarvis use the Eli voice'). voice alone: an override every persona speaks in, for auditioning ('switch to Eli', 'try the next voice': 'next' / 'previous' step through them); voice 'default' clears the override so each persona speaks in its own voice again ('use your normal voices'). Applies from your next speak line, so after a switch say a short line in the new voice. Saved.",
     inputSchema: {
       type: "object",
-      properties: { voice: str("A voice name or id, or 'next' or 'previous'. Leave out to list the voices.") },
+      properties: {
+        voice: str("A voice name or id, 'next', 'previous', or 'default' (clear the override). Leave out to list."),
+        persona: str("Give this persona the voice (its own, not an override)."),
+      },
     },
   },
   {

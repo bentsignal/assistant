@@ -16,7 +16,7 @@ use super::super::controls::{
 };
 use super::super::{Paint, icons, lists, scroll_body};
 use super::{Actions, Recent, SettingsView, Status, Tone, UiAction, send};
-use crate::assistant::config::{Brain, Wake};
+use crate::assistant::config::{Brain, Persona, Wake};
 
 /// The window: Hex's settings pane, without the sidebar.
 pub(crate) const SIZE: (f32, f32) = (600.0, 760.0);
@@ -24,6 +24,7 @@ const SELECT_WIDTH: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Open {
+    Persona(usize),
     Microphone,
     Voice,
     Model,
@@ -31,8 +32,9 @@ enum Open {
 
 pub(crate) struct AssistantUi {
     pub(crate) view: SettingsView,
-    /// The name field; it follows `view.name` unless it's being edited.
-    name: TextEdit,
+    /// One name field per persona; they follow `view.personas` unless one
+    /// is being edited.
+    names: Vec<TextEdit>,
     open: Option<Open>,
     /// The volume while its slider is dragged; saved when it lets go.
     volume_drag: Option<f32>,
@@ -68,7 +70,7 @@ impl AssistantUi {
     pub(crate) fn live(actions: std::sync::mpsc::Sender<UiAction>) -> Self {
         Self {
             view: SettingsView::default(),
-            name: TextEdit::new(crate::assistant::config::DEFAULT_NAME),
+            names: Vec::new(),
             open: None,
             volume_drag: None,
             prompt: None,
@@ -78,7 +80,7 @@ impl AssistantUi {
 
     pub(crate) fn fixture() -> Self {
         Self {
-            name: TextEdit::new(fixture_view().name),
+            names: fields(&fixture_view().personas),
             view: fixture_view(),
             open: None,
             volume_drag: None,
@@ -94,18 +96,52 @@ impl AssistantUi {
     /// What the runtime published. The name field takes the new name unless
     /// Shawn is typing in it.
     pub(crate) fn set_view(&mut self, view: SettingsView) {
-        if !self.name.focused && self.name.text.trim() != view.name {
-            self.name = TextEdit::new(view.name.clone());
+        let editing = self.names.iter().any(|name| name.focused);
+        let shown: Vec<&str> = self.names.iter().map(|name| name.text.trim()).collect();
+        let saved: Vec<&str> = view.personas.iter().map(|p| p.name.as_str()).collect();
+        if !editing && shown != saved {
+            self.names = fields(&view.personas);
         }
         self.view = view;
     }
 
-    /// Applies what the name field says, if it changed.
-    fn commit_name(&mut self) {
-        let typed = self.name.text.trim().to_string();
-        if typed != self.view.name {
-            self.act(UiAction::SetName(typed));
+    /// Applies what the name fields say: renamed, added, or emptied (an
+    /// empty field is left out). Nothing changes if no name is left.
+    fn commit_names(&mut self) {
+        let mut personas = Vec::new();
+        for (index, field) in self.names.iter().enumerate() {
+            let Some(name) = crate::assistant::config::valid_name(field.text.trim()) else {
+                continue;
+            };
+            if personas
+                .iter()
+                .any(|p: &Persona| p.name.eq_ignore_ascii_case(&name))
+            {
+                continue;
+            }
+            let mut persona = self.view.personas.get(index).cloned().unwrap_or(Persona {
+                name: String::new(),
+                voice: self.view.personas[0].voice.clone(),
+                style: None,
+            });
+            persona.name = name;
+            personas.push(persona);
         }
+        if !personas.is_empty() && personas != self.view.personas {
+            self.view.personas = personas.clone();
+            self.act(UiAction::SetPersonas(personas));
+        }
+    }
+
+    fn remove_persona(&mut self, index: usize) {
+        if self.view.personas.len() <= 1 || index >= self.view.personas.len() {
+            return;
+        }
+        let mut personas = self.view.personas.clone();
+        personas.remove(index);
+        self.names = fields(&personas);
+        self.view.personas = personas.clone();
+        self.act(UiAction::SetPersonas(personas));
     }
 
     /// Opens the personality editor on the prompt as it is now, or closes it.
@@ -164,6 +200,14 @@ impl AssistantUi {
     }
 }
 
+/// A name field per persona.
+fn fields(personas: &[Persona]) -> Vec<TextEdit> {
+    personas
+        .iter()
+        .map(|p| TextEdit::new(p.name.clone()))
+        .collect()
+}
+
 /// The stock prompt, for renders and scenes.
 const FIXTURE_PROMPT: &str = include_str!("../../../assistant/core/prompts/system.md");
 
@@ -177,6 +221,9 @@ pub(crate) fn fixture_view() -> SettingsView {
                 .into(),
         },
         name: crate::assistant::config::DEFAULT_NAME.into(),
+        personas: crate::assistant::config::default_personas(
+            crate::assistant::config::DEFAULT_NAME,
+        ),
         muted: false,
         microphones: vec![
             "Microphone (Shure MV7+)".into(),
@@ -274,7 +321,7 @@ pub(crate) fn app(actions: std::sync::mpsc::Sender<UiAction>) -> rune::App<Assis
         .init(move || AssistantUi::live(actions))
         .on_close(|ui: &mut AssistantUi, _| {
             ui.open = None;
-            ui.commit_name();
+            ui.commit_names();
         })
 }
 
@@ -286,7 +333,12 @@ pub(crate) fn view(ui: &AssistantUi, cx: &mut Cx<AssistantUi>) -> El {
     let content = page("assistant-settings")
         .pt(4.0)
         .pb(METRICS.section_gap)
-        .child(section(p, "assistant", "Assistant", vec![name_row(ui, p)]))
+        .child(section(
+            p,
+            "assistant",
+            "Assistant",
+            persona_rows(ui, p, &mut layer),
+        ))
         .child(status(ui, p))
         .child(section(
             p,
@@ -529,28 +581,124 @@ fn wake_row(ui: &AssistantUi, p: Paint) -> El {
     )
 }
 
-/// Her name: what wakes her, what she calls herself, and what everything
-/// here calls her. Enter applies it (so does closing the window).
-fn name_row(ui: &AssistantUi, p: Paint) -> El {
-    let typed = ui.name.text.trim();
-    let invalid = !typed.is_empty() && crate::assistant::config::valid_name(typed).is_none();
-    let field = TextInput::new(&ui.name)
-        .placeholder(crate::assistant::config::DEFAULT_NAME)
-        .label("Name")
-        .width(Some(SELECT_WIDTH))
-        .invalid(invalid)
-        .on_edit(|ui: &mut AssistantUi| &mut ui.name)
-        .on_submit(|ui: &mut AssistantUi, _: &mut Tx| ui.commit_name())
-        .build(p.k)
-        .key("name");
-    let hint = if invalid {
-        "One word, letters only".to_string()
-    } else if typed != ui.view.name {
-        "Press Enter to apply".to_string()
-    } else {
-        "Say it to wake the assistant".to_string()
-    };
-    icon_row(p, "name-row", &icons::PEN, "Name", Some(&hint), field)
+/// Her names: a line saying what they're for, then a row per persona (the
+/// name, Enter applies it; its voice; remove), then Add.
+fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
+    let mut rows = vec![
+        col()
+            .key("names-intro")
+            .px(METRICS.row_px)
+            .py(10.0)
+            .gap(2.0)
+            .child(text("Names").key("title").font(p.k.ty.ui).color(p.text()))
+            .child(
+                text("Say any of these names to wake the assistant. Each answers in its own voice")
+                    .key("description")
+                    .font(DESCRIPTION)
+                    .color(p.muted()),
+            ),
+    ];
+    let removable = ui.view.personas.len() > 1;
+    for (index, field) in ui.names.iter().enumerate() {
+        let typed = field.text.trim();
+        let invalid = !typed.is_empty() && crate::assistant::config::valid_name(typed).is_none();
+        let name = TextInput::new(field)
+            .placeholder("Name")
+            .label("Name")
+            .width(Some(150.0))
+            .invalid(invalid)
+            .on_edit(move |ui: &mut AssistantUi| &mut ui.names[index])
+            .on_submit(|ui: &mut AssistantUi, _: &mut Tx| ui.commit_names())
+            .build(p.k)
+            .key(format!("name-{index}"));
+        let voice = ui
+            .view
+            .personas
+            .get(index)
+            .map(|persona| persona.voice.clone())
+            .unwrap_or_default();
+        let label = ui
+            .view
+            .voices
+            .iter()
+            .find(|(id, _)| *id == voice)
+            .map_or_else(|| voice.clone(), |(_, name)| name.clone());
+        let choices: Vec<(String, bool, UiAction)> = ui
+            .view
+            .voices
+            .iter()
+            .map(|(id, name)| {
+                (
+                    name.clone(),
+                    *id == voice,
+                    UiAction::SetPersonaVoice {
+                        index,
+                        voice: id.clone(),
+                    },
+                )
+            })
+            .collect();
+        let picker = select(
+            p,
+            &format!("persona-voice-{index}"),
+            "Voice",
+            &label,
+            ui.open == Some(Open::Persona(index)),
+            Open::Persona(index),
+            choices,
+            layer,
+        );
+        let remove = rune_kit::IconButton::new(&rune_theme_opencode::icons::CLOSE)
+            .variant(rune_kit::IconButtonVariant::Ghost)
+            .label("Remove")
+            .disabled(!removable || index >= ui.view.personas.len())
+            .on_press(move |ui: &mut AssistantUi| ui.remove_persona(index))
+            .build(p.k)
+            .key(format!("remove-{index}"));
+        rows.push(
+            row()
+                .key(format!("persona-{index}"))
+                .px(METRICS.row_px)
+                .py(8.0)
+                .gap(8.0)
+                .center_y()
+                .child(name)
+                .child(el().grow(1.0))
+                .child(picker)
+                .child(remove),
+        );
+    }
+    let adding = ui.names.len() > ui.view.personas.len();
+    rows.push(
+        row()
+            .key("names-add")
+            .px(METRICS.row_px)
+            .py(8.0)
+            .center_y()
+            .child(
+                text(if adding {
+                    "Type the new name and press Enter"
+                } else {
+                    "Names apply when you press Enter"
+                })
+                .key("names-hint")
+                .font(DESCRIPTION)
+                .color(p.muted())
+                .grow(1.0)
+                .shrink(),
+            )
+            .child(
+                Button::new("Add name")
+                    .variant(ButtonVariant::Neutral)
+                    .disabled(adding)
+                    .on_press_tx(|ui: &mut AssistantUi, _: &mut Tx| {
+                        ui.names.push(TextEdit::new(""))
+                    })
+                    .build_push(p.k)
+                    .key("add-name"),
+            ),
+    );
+    rows
 }
 
 fn voice_row(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> El {
@@ -564,28 +712,25 @@ fn voice_row(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> El {
     };
     let label = current
         .as_deref()
-        .map_or_else(|| "Default".to_string(), name_of);
-    let mut choices: Vec<(String, bool, UiAction)> = ui
-        .view
-        .voices
-        .iter()
-        .map(|(id, name)| {
-            (
-                name.clone(),
-                current.as_deref() == Some(id.as_str()),
-                UiAction::SetVoice(Some(id.clone())),
-            )
-        })
-        .collect();
-    if choices.is_empty() {
-        choices.push(("Default".into(), true, UiAction::SetVoice(current.clone())));
-    }
+        .map_or_else(|| "Each name's own".to_string(), name_of);
+    let mut choices: Vec<(String, bool, UiAction)> = vec![(
+        "Each name's own".to_string(),
+        current.is_none(),
+        UiAction::SetVoice(None),
+    )];
+    choices.extend(ui.view.voices.iter().map(|(id, name)| {
+        (
+            name.clone(),
+            current.as_deref() == Some(id.as_str()),
+            UiAction::SetVoice(Some(id.clone())),
+        )
+    }));
     icon_row(
         p,
         "voice-row",
         &icons::SPEAKER,
         "Voice",
-        None,
+        Some("One voice for every name, or each its own"),
         select(
             p,
             "voice-select",
@@ -728,7 +873,10 @@ fn personality_row(ui: &AssistantUi, p: Paint) -> El {
         "personality",
         &icons::PEN,
         "Personality",
-        Some(&format!("How {} talks and behaves: her system prompt", ui.view.name)),
+        Some(&format!(
+            "How {} talks and behaves: her system prompt",
+            ui.view.name
+        )),
         Button::new(if open { "Close" } else { "Edit\u{2026}" })
             .variant(ButtonVariant::Neutral)
             .on_press_tx(|ui: &mut AssistantUi, _: &mut Tx| ui.toggle_prompt())

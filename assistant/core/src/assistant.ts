@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto"
 import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import { CORE_DIR, DEFAULT_NAME, loadConfig, paths, saveConfigPatch, validName, type BrainHarness, type AssistantConfig } from "./config.ts"
+import { CORE_DIR, DEFAULT_NAME, loadConfig, paths, personasOf, saveConfigPatch, validName, type BrainHarness, type AssistantConfig, type Persona } from "./config.ts"
 import { gate, stripWakeWord, type GateResult } from "./gate.ts"
 import { Inbox, oneLine, truncate } from "./inbox.ts"
 import { SystemPrompt, renderPrompt } from "./prompt.ts"
@@ -25,12 +25,16 @@ export interface Line {
   who: "shawn" | "assistant"
   text: string
   at: number
+  /** Which of her names said it. */
+  persona?: string
 }
 
 export interface TurnRecord {
   id: number
   text: string
   via: string
+  /** The persona he was talking to: the reply is in its voice. */
+  persona?: string
   brain: string
   startedAt: number
   /** ms from the turn being sent to the brain until its first `speak` call. */
@@ -114,6 +118,8 @@ export class Assistant {
   lastHeard = ""
   partial = ""
   followUpUntil = 0
+  /** The name he last used (follow-ups keep it): who answers, in whose voice. */
+  activePersona = ""
   /** Vera's own output level (0-1, see VOLUME_STEP). The App applies and persists it. */
   volume: number
   /** Microphone muted from the tray: nothing heard counts. */
@@ -282,10 +288,11 @@ export class Assistant {
         break
       case "settings_changed": {
         const before = this.name
+        const personasBefore = JSON.stringify(this.personas)
         this.config = loadConfig()
         if (typeof ev.volume === "number") this.adoptVolume(ev.volume)
         this.log("settings changed; config reloaded")
-        if (this.name !== before) this.renamed(before)
+        if (this.name !== before || JSON.stringify(this.personas) !== personasBefore) this.renamed(before)
         break
       }
         break
@@ -328,7 +335,7 @@ export class Assistant {
 
   private wakeIn(text: string): boolean {
     const m = stripWakeWord(text, {
-      name: this.name,
+      names: this.personas.map((p) => p.name),
       extra: this.config.wake.words,
       maxLeadingWords: this.config.wake.maxLeadingWords,
       soft: this.config.wake.soft,
@@ -404,7 +411,7 @@ export class Assistant {
     const brain = createBrain(harness, {
       model: settings.model,
       effort: settings.effort,
-      systemPrompt: renderPrompt(this.prompt.read(), this.name),
+      systemPrompt: renderPrompt(this.prompt.read(), this.name, this.personas),
       mcp: this.mcpLaunch(harness),
       cwd: paths.brainDir,
       stateDir: paths.brainDir,
@@ -436,7 +443,7 @@ export class Assistant {
     const open = this.mouth.speaking || input.duringPlayback || this.bargePending
     const followUpUntil = open ? Number.MAX_SAFE_INTEGER : this.followUpUntil
     const g = gate(input, { followUpUntil }, now, {
-      name: this.name,
+      names: this.personas.map((p) => p.name),
       extra: this.config.wake.words,
       maxLeadingWords: this.config.wake.maxLeadingWords,
       soft: this.config.wake.soft,
@@ -445,6 +452,11 @@ export class Assistant {
     const wasBarge = this.bargePending
     this.bargePending = false
     this.lastHeard = input.text
+    // The name he used picks who answers; a follow-up keeps the last one.
+    if (g.action !== "ignore" && g.persona && g.persona !== this.activePersona) {
+      this.log(`persona: ${this.activePersona} -> ${g.persona}`)
+      this.activePersona = g.persona
+    }
     switch (g.action) {
       case "ignore":
         this.log(`ignored (${g.reason}): ${input.text}`)
@@ -497,6 +509,7 @@ export class Assistant {
       id: ++this.turnSeq,
       text,
       via,
+      persona: this.persona.name,
       brain: "",
       startedAt: Date.now(),
       heardEndAt,
@@ -523,7 +536,7 @@ export class Assistant {
     try {
       const brain = await this.ensureBrain()
       rec.brain = brain.label
-      const msg = this.composeTurn(rec.text)
+      const msg = this.composeTurn(rec.text, rec.persona)
       rec.startedAt = Date.now() // measure from hand-off, not from brain start
       this.log(`turn ${rec.id} -> ${brain.label}: ${truncate(oneLine(msg), 400)}`)
       result = await this.withDeadline(rec, brain, brain.turn(msg), (why) => (timedOut = why))
@@ -550,7 +563,7 @@ export class Assistant {
     }
   }
 
-  private composeTurn(text: string): string {
+  private composeTurn(text: string, persona?: string): string {
     const parts: string[] = []
     if (this.recapNext) {
       this.recapNext = false
@@ -558,7 +571,7 @@ export class Assistant {
       if (recent.length) {
         parts.push(
           "[You just took over this conversation from another session. Recent lines, for context:]\n" +
-            recent.map((l) => `${l.who === "shawn" ? "Shawn" : "Vera"}: ${truncate(oneLine(l.text), 300)}`).join("\n"),
+            recent.map((l) => `${l.who === "shawn" ? "Shawn" : (l.persona ?? this.name)}: ${truncate(oneLine(l.text), 300)}`).join("\n"),
         )
       }
     }
@@ -571,6 +584,7 @@ export class Assistant {
     const digest = this.inbox.takeDigest()
     if (digest) parts.push(digest)
     const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    if (persona) parts.push(`[Shawn is talking to ${persona}]`)
     parts.push(`[${time}] Shawn: ${text}`)
     return parts.join("\n\n")
   }
@@ -647,26 +661,86 @@ export class Assistant {
     this.send({ cmd: "error", what, message: truncate(message, 300) })
   }
 
-  /** Her name (`assistant.name`, default Vera): her wake word and what she calls herself. */
+  /** Her first name (`personas[0]`, default Vera): what the App and the prompt's `{{name}}` call her. */
   get name(): string {
-    return validName(this.config.assistant?.name) ?? DEFAULT_NAME
+    return this.personas[0]?.name ?? validName(this.config.assistant?.name) ?? DEFAULT_NAME
+  }
+
+  /** Her names, each with its voice and manner (`assistant.personas`). */
+  get personas(): Persona[] {
+    return personasOf(this.config)
+  }
+
+  /** The persona answering now: the name he last used (the first one until then). */
+  get persona(): Persona {
+    const all = this.personas
+    return all.find((p) => p.name.toLowerCase() === this.activePersona.toLowerCase()) ?? all[0]
+  }
+
+  /** That persona's own voice, if there is such a persona. */
+  findPersonaVoice(name: string): string | undefined {
+    return this.findPersona(name)?.voice
+  }
+
+  private findPersona(name: string): Persona | undefined {
+    const key = name.trim().toLowerCase()
+    return this.personas.find((p) => p.name.toLowerCase() === key)
+  }
+
+  /** Saves her personas (`assistant.name` follows the first), tells the App, restarts the brain before the next turn. */
+  private savePersonas(list: Persona[], from = this.name) {
+    this.config = saveConfigPatch({ assistant: { name: list[0].name, personas: list } })
+    this.send({ cmd: "name", name: list[0].name })
+    this.renamed(from)
   }
 
   /**
-   * "Vera, call yourself Nova": saves `assistant.name`, tells the App (which
-   * applies it: speech to text, the tray, Settings), and restarts the brain
-   * before the next turn with the prompt in the new name. The wake word
-   * changes at once.
+   * "Vera, call yourself Nova" renames the persona he's talking to (`from`
+   * names another one). The wake word changes at once; the App applies it
+   * (speech to text, the tray, Settings); the brain restarts before the
+   * next turn with the prompt in the new name.
    */
-  setName(name: string): { from: string; to: string } {
+  setName(name: string, from?: string): { from: string; to: string } {
     const to = validName(name)
     if (!to) throw new Error(`"${name}" can't be a name: one word of letters, 2 to 20 of them`)
-    const from = this.name
-    if (to === from) return { from, to }
-    this.config = saveConfigPatch({ assistant: { name: to } })
-    this.send({ cmd: "name", name: to })
-    this.renamed(from)
-    return { from, to }
+    const old = from ? this.findPersona(from) : this.persona
+    if (!old) throw new Error(`no persona called "${from}"; have ${this.personas.map((p) => p.name).join(", ")}`)
+    if (to === old.name) return { from: old.name, to }
+    const clash = this.findPersona(to)
+    if (clash && clash.name !== old.name) throw new Error(`there's already a persona called ${clash.name}`)
+    const list = this.personas.map((p) => (p.name === old.name ? { ...p, name: to } : p))
+    if (this.activePersona.toLowerCase() === old.name.toLowerCase()) this.activePersona = to
+    this.savePersonas(list)
+    return { from: old.name, to }
+  }
+
+  /** "Add a persona called Max with the Optimus voice." */
+  addPersona(name: string, voice: string, style?: string): Persona {
+    const n = validName(name)
+    if (!n) throw new Error(`"${name}" can't be a name: one word of letters, 2 to 20 of them`)
+    if (this.findPersona(n)) throw new Error(`there's already a persona called ${n}`)
+    const p: Persona = { name: n, voice, ...(style?.trim() ? { style: style.trim() } : {}) }
+    this.savePersonas([...this.personas, p])
+    return p
+  }
+
+  /** "Remove Buzz." The last persona stays. */
+  removePersona(name: string): Persona {
+    const p = this.findPersona(name)
+    if (!p) throw new Error(`no persona called "${name}"; have ${this.personas.map((x) => x.name).join(", ")}`)
+    const list = this.personas.filter((x) => x.name !== p.name)
+    if (!list.length) throw new Error("that's her only name; rename it instead")
+    if (this.activePersona.toLowerCase() === p.name.toLowerCase()) this.activePersona = list[0].name
+    this.savePersonas(list)
+    return p
+  }
+
+  /** "Make Jarvis use the Eli voice." */
+  setPersonaVoice(name: string, voice: string): Persona {
+    const p = this.findPersona(name)
+    if (!p) throw new Error(`no persona called "${name}"; have ${this.personas.map((x) => x.name).join(", ")}`)
+    this.savePersonas(this.personas.map((x) => (x.name === p.name ? { ...x, voice } : x)))
+    return { ...p, voice }
   }
 
   /** The name changed: the brain restarts before the next turn, with the prompt and tools in it. */
@@ -715,10 +789,11 @@ export class Assistant {
       }
       rec.spoken.push(text)
     }
-    this.lines.push({ who: "assistant", text, at: Date.now() })
+    const persona = (rec?.persona && this.findPersona(rec.persona)) || this.persona
+    this.lines.push({ who: "assistant", text, at: Date.now(), persona: persona.name })
     this.trimLines()
     this.changed()
-    const item = this.mouth.say(text, rec?.id)
+    const item = this.mouth.say(text, rec?.id, persona.voice)
     if (rec) {
       const list = this.speechByTurn.get(rec.id) ?? []
       list.push(item)
@@ -862,18 +937,24 @@ export class Assistant {
     return loadConfig().app?.voiceService?.port ?? 7314
   }
 
-  /** The voice she speaks in now: `app.voice`, else undefined (the service's default). */
-  get currentVoice(): string | undefined {
+  /** The voice override (`app.voice`): every persona speaks in it while set. */
+  get voiceOverride(): string | undefined {
     return loadConfig().app?.voice ?? undefined
   }
 
+  /** The voice she speaks in now: the override, else the active persona's. */
+  get currentVoice(): string | undefined {
+    return this.voiceOverride ?? this.persona.voice
+  }
+
   /**
-   * "Vera, switch to Eli": saves `app.voice` and tells the App, which uses
-   * it from the next line (this turn's next `speak` included).
+   * "Vera, switch to Eli": saves the override `app.voice` (null clears it:
+   * each persona's own voice again) and tells the App, which uses it from
+   * the next line (this turn's next `speak` included).
    */
-  setVoice(id: string) {
+  setVoice(id: string | null) {
     this.config = saveConfigPatch({ app: { voice: id } })
-    this.log(`voice: ${id}`)
+    this.log(`voice override: ${id ?? "none (each persona's own)"}`)
     this.send({ cmd: "voice", voice: id })
   }
 

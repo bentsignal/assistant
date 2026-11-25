@@ -550,3 +550,35 @@ test("'Vera, switch to the next voice and say something': the list comes from th
     voices.close()
   }
 })
+
+test("personas: 'Hey Alfred' answers in Alfred's voice, a follow-up stays Alfred, 'Jarvis' switches; the brain is told who", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [
+      { match: "say hello", steps: [{ tool: "speak", args: { text: "Hello." } }] },
+      { match: "and again", steps: [{ tool: "speak", args: { text: "Again." } }] },
+    ],
+  })
+  try {
+    let m = app.mark
+    await app.say("Hey Alfred, say hello.")
+    const a = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Hello.", 5000, m)) as any
+    assert.equal(a.voice, "alfred")
+    await app.waitFor(isHud("listening"), 5000, m)
+    m = app.mark
+    await app.say("and again")
+    const b = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Again.", 5000, m)) as any
+    assert.equal(b.voice, "alfred", "a follow-up keeps the last persona")
+    await app.waitFor(isHud("idle"), 15000, m)
+    m = app.mark
+    await app.say("Jarvis, say hello.")
+    const c = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Hello.", 5000, m)) as any
+    assert.equal(c.voice, "jarvis")
+    const log = readFileSync(join(app.home, "brain", "script-brain.log.jsonl"), "utf8")
+    assert.match(log, /\[Shawn is talking to Alfred\]/)
+    assert.match(log, /\[Shawn is talking to Jarvis\]/)
+    assert.match(readFileSync(join(app.home, "brain", "script-brain.prompt.md"), "utf8"), /- Jarvis \(voice jarvis\): a crisp/)
+  } finally {
+    await app.stop()
+  }
+})

@@ -133,6 +133,7 @@ impl Controller {
         SettingsView {
             status: self.status(),
             name: self.config.name.clone(),
+            personas: self.config.personas.clone(),
             muted: self.muted,
             microphones: self.microphones.clone(),
             microphone: self.config.microphone.clone(),
@@ -200,7 +201,13 @@ impl Controller {
         } else {
             "listening".into()
         };
-        let mut tooltip = format!("{} \u{00b7} {doing}", self.config.name);
+        let names: Vec<&str> = self
+            .config
+            .personas
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        let mut tooltip = format!("{} \u{00b7} {doing}", names.join(", "));
         if self.badge > 0 {
             tooltip.push_str(&format!(" \u{00b7} {} new", self.badge));
         }

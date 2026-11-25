@@ -130,3 +130,20 @@ test("another name: its exact word wakes anywhere, a near miss only first or las
   assert.equal(stripWakeWord("Variable, what time is it?", { name: "Vera" }).found, true)
   assert.equal(gate({ text: "Nova, stop" }, closed, now, nova).action, "stop")
 })
+
+test("personas: any name wakes her and says which; Vera's mishearings stay Vera's; no cross-matches", () => {
+  const names = ["Vera", "Alfred", "Jarvis", "Optimus", "Buzz", "Saul", "Tony"]
+  const opts = { names }
+  assert.deepEqual(stripWakeWord("Hey Alfred, what's for dinner?", opts), { found: true, name: "Alfred", text: "what's for dinner?" })
+  assert.deepEqual(stripWakeWord("what time is it, Jarvis?", opts), { found: true, name: "Jarvis", text: "what time is it" })
+  assert.deepEqual(stripWakeWord("Vara, set a timer", opts), { found: true, name: "Vera", text: "set a timer" })
+  assert.deepEqual(stripWakeWord("Variable, what time is it?", opts), { found: true, soft: true, name: "Vera", text: "what time is it?" })
+  assert.equal(stripWakeWord("Alfread, the news", opts).name, "Alfred", "a near miss names its persona")
+  for (const t of ["it's tiny", "bless my soul", "fettuccine alfredo", "the onions are very hot"]) {
+    assert.equal(stripWakeWord(t, opts).found, false, t)
+  }
+  const g = gate({ text: "Hey Jarvis, say hello" }, { followUpUntil: 0 }, now, opts)
+  assert.deepEqual(g, { action: "turn", text: "say hello", via: "wake", persona: "Jarvis" })
+  const f = gate({ text: "and the weather", start: now }, { followUpUntil: now + 1000 }, now, opts)
+  assert.equal((f as any).persona, undefined, "a follow-up names nobody (the last persona answers)")
+})

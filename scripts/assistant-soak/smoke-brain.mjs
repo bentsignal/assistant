@@ -10,7 +10,9 @@
 //
 // It talks out loud (it's the real app) and changes things it puts back:
 // the voice (restored at the end), the brain (back to Claude), and the
-// system prompt (an edit, then its revert).
+// system prompt (an edit, then its revert). The persona steps ("Hey Alfred",
+// "Jarvis") pass only when the line Core sends the App carries that
+// persona's voice (`-> app {"cmd":"speak",…,"voice":"alfred"}`).
 
 import { existsSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
@@ -87,8 +89,12 @@ async function post(path, body) {
 
 const FINISHED = /<- app \{"type":"playback".*"state":"finished"/
 
-/** Says `text` and waits until the log shows each tool, a speak, and a finished line after it. */
-async function step(label, text, tools) {
+/**
+ * Says `text` and waits until the log shows each tool, a speak, and a
+ * finished line after it; with `voice`, the speak sent to the App must
+ * carry that voice.
+ */
+async function step(label, text, tools, voice) {
   const read = tail()
   const started = Date.now()
   const turn = post("/api/utterance", { text, wait: true }).catch((err) => ({ error: err.message }))
@@ -108,6 +114,8 @@ async function step(label, text, tools) {
     if (!missing) {
       const speakAt = log.search(/\btool speak\b/)
       if (speakAt < 0) missing = "tool speak"
+      else if (voice && !new RegExp(`-> app \\{"cmd":"speak"[^\\n]*"voice":"${voice}"`).test(log.slice(speakAt)))
+        missing = `a speak in voice ${voice}`
       else if (!FINISHED.test(log.slice(speakAt))) missing = "playback finished"
     }
     if (!missing) {
@@ -133,6 +141,9 @@ try {
 
 results.push(await step("say ready", `${NAME}, say ready.`, ["speak"]))
 results.push(await step("switch to Eli", `${NAME}, switch to Eli.`, ["set_voice"]))
+results.push(await step("own voices again", `${NAME}, use each persona's own voice again.`, ["set_voice"]))
+results.push(await step("Hey Alfred", "Hey Alfred, say hello.", [], "alfred"))
+results.push(await step("Jarvis", "Jarvis, say hello.", [], "jarvis"))
 results.push(await step("use codex", `${NAME}, use codex.`, ["set_brain"]))
 results.push(await step("codex answers", `${NAME}, say ready.`, ["speak"]))
 results.push(await step("use claude", `${NAME}, use claude.`, ["set_brain"]))

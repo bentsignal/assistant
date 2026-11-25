@@ -10,13 +10,18 @@ pub(crate) mod shots;
 
 use std::sync::mpsc::Sender;
 
-use crate::assistant::config::{Brain, Wake};
+use crate::assistant::config::{Brain, Persona, Wake};
 
 /// What the Settings window and the card ask of the runtime.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiAction {
-    /// The assistant's name (applied when Enter is pressed in its field).
-    SetName(String),
+    /// Her names as Settings lists them (renamed, added, or one removed).
+    SetPersonas(Vec<Persona>),
+    /// One persona's voice.
+    SetPersonaVoice {
+        index: usize,
+        voice: String,
+    },
     SetMicrophone(Option<String>),
     /// `done` once the drag ends: only then is it saved.
     SetVolume {
@@ -73,8 +78,10 @@ pub(crate) struct MicrophoneNote {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SettingsView {
     pub(crate) status: Status,
-    /// The assistant's name (`assistant.name`).
+    /// The assistant's name (`assistant.name`): the first persona's.
     pub(crate) name: String,
+    /// Her names, each with its voice (`assistant.personas`).
+    pub(crate) personas: Vec<Persona>,
     pub(crate) muted: bool,
     pub(crate) microphones: Vec<String>,
     pub(crate) microphone: Option<String>,
@@ -102,6 +109,9 @@ impl Default for SettingsView {
                 detail: "Getting ready".into(),
             },
             name: crate::assistant::config::DEFAULT_NAME.into(),
+            personas: crate::assistant::config::default_personas(
+                crate::assistant::config::DEFAULT_NAME,
+            ),
             muted: false,
             microphones: Vec::new(),
             microphone: None,

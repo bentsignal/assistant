@@ -43,16 +43,14 @@ impl Controller {
                 }
             }
             UiAction::SetVolume { level, done } => self.set_volume(level, done, false),
-            UiAction::SetName(name) => match crate::assistant::config::valid_name(&name) {
-                Some(name) if name != self.config.name => {
-                    self.save(|root| *config::slot(root, &["assistant", "name"]) = json!(name));
-                    self.apply_name();
-                    self.tell_core(AppEvent::settings_changed(self.config.volume));
+            UiAction::SetPersonas(personas) => self.set_personas(personas),
+            UiAction::SetPersonaVoice { index, voice } => {
+                let mut personas = self.config.personas.clone();
+                if let Some(persona) = personas.get_mut(index) {
+                    persona.voice = voice;
+                    self.set_personas(personas);
                 }
-                Some(_) => {}
-                // Settings shows the name as it was.
-                None => self.publish(true),
-            },
+            }
             UiAction::SetVoice(voice) => {
                 if voice != self.config.voice {
                     self.save(|root| *config::slot(root, &["app", "voice"]) = json!(voice));
@@ -101,6 +99,23 @@ impl Controller {
             UiAction::Quit => return true,
         }
         false
+    }
+
+    /// Saves her names (the first is `assistant.name` too); the vocabulary,
+    /// tray and Settings follow, and Core rereads them.
+    fn set_personas(&mut self, personas: Vec<crate::assistant::config::Persona>) {
+        if personas.is_empty() || personas == self.config.personas {
+            self.publish(true);
+            return;
+        }
+        let list: Vec<serde_json::Value> = personas.iter().map(|p| p.to_json()).collect();
+        let first = personas[0].name.clone();
+        self.save(|root| {
+            *config::slot(root, &["assistant", "personas"]) = json!(list);
+            *config::slot(root, &["assistant", "name"]) = json!(first);
+        });
+        self.apply_name();
+        self.tell_core(AppEvent::settings_changed(self.config.volume));
     }
 
     fn save(&mut self, edit: impl FnOnce(&mut serde_json::Value)) {

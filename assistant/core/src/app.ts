@@ -24,7 +24,8 @@ export type AppEvent =
   | { type: "ui"; action: UiAction; card_id?: string; volume?: number }
 
 export type CoreCommand =
-  | { cmd: "speak"; speak_id: string; text: string }
+  /** `voice`: the speaking persona's voice (the App's `app.voice` override beats it). */
+  | { cmd: "speak"; speak_id: string; text: string; voice?: string }
   | { cmd: "stop_speaking" }
   | { cmd: "hud"; state: HudState }
   | { cmd: "chime"; kind: ChimeKind }
@@ -36,8 +37,11 @@ export type CoreCommand =
   | { cmd: "error"; what: "brain" | "brain_timeout" | string; message: string }
   /** Her name changed (saved as `assistant.name`); the App applies it everywhere. */
   | { cmd: "name"; name: string }
-  /** Her voice changed (saved as `app.voice`); the App uses it from the next `speak`. */
-  | { cmd: "voice"; voice: string }
+  /**
+   * The voice override changed (saved as `app.voice`): every line uses it
+   * from the next `speak`; null clears it (each persona's own voice again).
+   */
+  | { cmd: "voice"; voice: string | null }
 
 const EVENT_TYPES = new Set(["ready", "speech_start", "partial", "final", "speech_cancel", "barge_in", "playback", "ui"])
 
@@ -98,6 +102,8 @@ export interface SpeechItem {
   id: string
   text: string
   turnId?: number
+  /** The speaking persona's voice, sent with the line. */
+  voice?: string
   state: SpeechState
   sentAt?: number
   startedAt?: number
@@ -172,10 +178,10 @@ export class AppMouth {
   }
 
   /** Queue a sentence. Its `done` resolves when it was played, cut, dropped, or failed. */
-  say(text: string, turnId?: number): SpeechItem {
+  say(text: string, turnId?: number, voice?: string): SpeechItem {
     let resolve!: (i: SpeechItem) => void
     const done = new Promise<SpeechItem>((r) => (resolve = r))
-    const item: Internal = { id: `s${++this.seq}`, text, turnId, state: "queued", done, resolve }
+    const item: Internal = { id: `s${++this.seq}`, text, turnId, ...(voice ? { voice } : {}), state: "queued", done, resolve }
     this.items.set(item.id, item)
     if (this.items.size > 200) this.items.delete(this.items.keys().next().value!)
     this.queue.push(item)
@@ -213,7 +219,9 @@ export class AppMouth {
       this.log(`speech ${item.id}: no playback started after ${this.startTimeoutMs} ms; skipping it`)
       this.giveUp(item)
     }, this.startTimeoutMs)
-    this.link.send({ cmd: "speak", speak_id: item.id, text: item.text })
+    const cmd: CoreCommand = { cmd: "speak", speak_id: item.id, text: item.text, ...(item.voice ? { voice: item.voice } : {}) }
+    this.log(`-> app ${JSON.stringify({ ...cmd, text: item.text.length > 80 ? item.text.slice(0, 80) + "…" : item.text })}`)
+    this.link.send(cmd)
   }
 
   /** A `playback` event from the App. */

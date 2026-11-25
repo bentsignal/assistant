@@ -69,7 +69,7 @@ pub(super) fn audio_config(config: &Config) -> AudioConfig {
         voice_url: config.voice_url(),
         voice: config.voice.clone(),
         ears: crate::assistant_ears::EarsSettings {
-            vocabulary: vec![config.name.clone()],
+            vocabulary: config.personas.iter().map(|p| p.name.clone()).collect(),
             ..Default::default()
         },
         ..AudioConfig::default()

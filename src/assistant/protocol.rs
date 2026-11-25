@@ -9,6 +9,9 @@ pub(crate) enum CoreCommand {
     Speak {
         speak_id: String,
         text: String,
+        /// The waking persona's voice; `app.voice`, when set, overrides it.
+        #[serde(default)]
+        voice: Option<String>,
     },
     StopSpeaking,
     Hud {
@@ -51,8 +54,10 @@ pub(crate) enum CoreCommand {
     },
     /// Core switched the voice (Shawn asked, by voice) and saved it as
     /// `app.voice`; the next line uses it.
+    /// `None`: the override is cleared (each persona's own voice again).
     Voice {
-        voice: String,
+        #[serde(default)]
+        voice: Option<String>,
     },
 }
 
@@ -169,6 +174,7 @@ mod tests {
         assert_eq!(
             parse(r#"{"cmd":"speak","speak_id":"s12","text":"On it."}"#),
             Some(CoreCommand::Speak {
+                voice: None,
                 speak_id: "s12".into(),
                 text: "On it.".into()
             })
@@ -213,7 +219,19 @@ mod tests {
         assert_eq!(
             parse(r#"{"cmd":"voice","voice":"eli"}"#),
             Some(CoreCommand::Voice {
-                voice: "eli".into()
+                voice: Some("eli".into())
+            })
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"voice","voice":null}"#),
+            Some(CoreCommand::Voice { voice: None })
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"speak","speak_id":"s1","text":"Hi.","voice":"alfred"}"#),
+            Some(CoreCommand::Speak {
+                speak_id: "s1".into(),
+                text: "Hi.".into(),
+                voice: Some("alfred".into())
             })
         );
         assert_eq!(parse("Core v2 ready"), None);

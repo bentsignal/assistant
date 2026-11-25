@@ -32,7 +32,9 @@ export const DEFAULT_NAME = "Vera"
 const COMMON = new Set(
   (
     "a about after again all also am an and any are as at back be been but by call came can come could day did do does done down each even few find first for from get give go good got had has have he her here him his how if in into is it its just know last like look made make man many may me more most much must my new no not now of off oh old on one only or other our out over own part people say said same see she should so some take than that the their them then there these they thing think this those time to too two up us use very want was way we well went were what when where which who why will with work would year yes yet you your " +
-    "safe sake sale save page cage wage rage case cave game came name same tame lame fame dame over nose note none nine line lime mine fine wine vine wire were wore more mode node code rode hope rope cope dope sane lane cane pane wane vane"
+    "safe sake sale save page cage wage rage case cave game came name same tame lame fame dame over nose note none nine line lime mine fine wine vine wire were wore more mode node code rode hope rope cope dope sane lane cane pane wane vane " +
+    // Near misses of the default personas' names (Saul, Tony, Alfred, Buzz, Jarvis).
+    "soul sail seal sall tiny tone tons toni tory alfredo buzzy busy jarvi"
   ).split(/\s+/),
 )
 
@@ -133,6 +135,17 @@ export function normalizeWord(w: string): string {
     .replace(/[^a-z0-9']/g, "")
 }
 
+/** How a word matches any of her names: the best match and which name it was. */
+function matchNames(word: string, names: string[], extra: string[]): { kind: "exact" | "near"; name: string } | null {
+  let near: string | null = null
+  for (const [i, name] of names.entries()) {
+    const m = wakeMatch(word, name, i === 0 ? extra : [])
+    if (m === "exact") return { kind: "exact", name }
+    if (m === "near" && near === null) near = name
+  }
+  return near === null ? null : { kind: "near", name: near }
+}
+
 /** The wake word itself (an exact match), for her name (default Vera). */
 export function isWakeWord(word: string, extra: string[] = [], name: string = DEFAULT_NAME): boolean {
   return wakeMatch(word, name, extra) === "exact"
@@ -161,11 +174,18 @@ export interface WakeMatch {
   text: string
   /** Matched only through a soft wake word (a misheard "Vera"). */
   soft?: boolean
+  /** Which of her names woke her (when `found` and `names` was given). */
+  name?: string
 }
 
 export interface WakeOptions {
   /** Her name (default Vera): the wake word. Vera's tuned mishearings apply only to Vera. */
   name?: string
+  /**
+   * All her names (personas), any of which wakes her; overrides `name`.
+   * Each gets the same fuzzy matching; `extra` words count as the first.
+   */
+  names?: string[]
   extra?: string[]
   maxLeadingWords?: number
   /** Accept soft wake words ("Variable, ..."). Default true. */
@@ -182,13 +202,21 @@ function vocativeEnd(words: string[], i: number): boolean {
 
 /** Find and strip the wake word. */
 export function stripWakeWord(text: string, opts: WakeOptions = {}): WakeMatch {
+  const m = stripWake(text, opts)
+  // Which name woke her is reported only to callers that gave several (personas).
+  if (!opts.names?.length && m.name !== undefined) delete m.name
+  return m
+}
+
+function stripWake(text: string, opts: WakeOptions): WakeMatch {
   const extra = (opts.extra ?? []).map((w) => w.toLowerCase())
-  const name = opts.name || DEFAULT_NAME
-  const isVera = nameKey(name) === "vera"
+  const names = opts.names?.filter(Boolean).length ? opts.names.filter(Boolean) : [opts.name || DEFAULT_NAME]
+  const vera = names.find((n) => nameKey(n) === "vera")
   const maxLeading = opts.maxLeadingWords ?? 3
   const words = text.trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return { found: false, text: "" }
-  const match = (w: string) => wakeMatch(w, name, extra)
+  const found = (w: string) => matchNames(w, names, extra)
+  const match = (w: string) => found(w)?.kind ?? null
 
   // Leading: up to maxLeading filler words, then the wake word (a near
   // match of the name counts here too: "Noba, what time is it?").
@@ -197,34 +225,35 @@ export function stripWakeWord(text: string, opts: WakeOptions = {}): WakeMatch {
     if (m && (m === "exact" || opts.soft !== false)) {
       const before = words.slice(0, i).map(normalizeWord)
       if (before.every((w) => FILLERS.has(w))) {
-        return { found: true, text: afterWake(words, i + 1), ...(m === "near" ? { soft: true } : {}) }
+        return { found: true, name: found(words[i])!.name, text: afterWake(words, i + 1), ...(m === "near" ? { soft: true } : {}) }
       }
     }
   }
   // Vera's tuned mishearings ("Variable,", "Hey there,") are hers alone.
-  if (isVera && opts.soft !== false) {
+  if (vera && opts.soft !== false) {
     // Soft: first non-filler word, as a vocative.
     let i = 0
     while (i < words.length - 1 && i < maxLeading && FILLERS.has(normalizeWord(words[i]))) i++
     if (SOFT_WAKE.has(normalizeWord(words[i])) && vocativeEnd(words, i)) {
-      return { found: true, soft: true, text: afterWake(words, i + 1) }
+      return { found: true, soft: true, name: vera, text: afterWake(words, i + 1) }
     }
     // Warm: "Hey there, ..." only right after Vera was active.
     if (opts.recentlyActive && words.length >= 2) {
       const a = normalizeWord(words[0])
       const b = normalizeWord(words[1])
       if (WARM_WAKE.some(([x, y]) => x === a && y === b) && vocativeEnd(words, 1)) {
-        return { found: true, soft: true, text: afterWake(words, 2) }
+        return { found: true, soft: true, name: vera, text: afterWake(words, 2) }
       }
     }
   }
   // Trailing vocative: "what's the time, Vera?"
-  const last = match(words[words.length - 1])
-  if (last === "exact" || (last === "near" && opts.soft !== false)) {
-    return { found: true, text: cleanEdges(words.slice(0, -1).join(" ")) }
+  const last = found(words[words.length - 1])
+  if (last && (last.kind === "exact" || opts.soft !== false)) {
+    return { found: true, name: last.name, text: cleanEdges(words.slice(0, -1).join(" ")) }
   }
   // Anywhere else: keep the sentence as said (the name itself only).
-  if (words.some((w) => match(w) === "exact")) return { found: true, text: text.trim() }
+  const inside = words.map(found).find((m) => m?.kind === "exact")
+  if (inside) return { found: true, name: inside.name, text: text.trim() }
   return { found: false, text: text.trim() }
 }
 
@@ -251,11 +280,12 @@ export interface GateState {
   followUpUntil: number
 }
 
+/** `persona`: which of her names woke her (absent for follow-ups and direct turns). */
 export type GateResult =
   | { action: "ignore"; reason: string }
-  | { action: "wake"; text: "" } // bare wake word: listen for the next utterance
-  | { action: "stop"; text: string }
-  | { action: "turn"; text: string; via: "wake" | "followup" | "direct" }
+  | { action: "wake"; text: ""; persona?: string } // bare wake word: listen for the next utterance
+  | { action: "stop"; text: string; persona?: string }
+  | { action: "turn"; text: string; via: "wake" | "followup" | "direct"; persona?: string }
 
 export function gate(
   input: GateInput,
@@ -272,7 +302,8 @@ export function gate(
   if (!via) return { action: "ignore", reason: "no wake word" }
 
   const text = m.found ? m.text : raw
-  if (!text) return { action: "wake", text: "" }
-  if (isStopPhrase(text)) return { action: "stop", text }
-  return { action: "turn", text, via }
+  const persona = m.found && m.name ? { persona: m.name } : {}
+  if (!text) return { action: "wake", text: "", ...persona }
+  if (isStopPhrase(text)) return { action: "stop", text, ...persona }
+  return { action: "turn", text, via, ...persona }
 }

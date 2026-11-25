@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unwatchFile, watchFile, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import type { Persona } from "./config.ts"
 
 /**
  * The brain's system prompt, editable by voice. Every edit backs up the
@@ -11,8 +12,17 @@ import { join } from "node:path"
  * as `-pre-revert.md` (kept for safety, never restored automatically).
  */
 /** The prompt as the brain gets it: `{{name}}` is her name. A prompt without it works as written. */
-export function renderPrompt(text: string, name: string): string {
-  return text.replace(/\{\{\s*name\s*\}\}/g, name)
+export function renderPrompt(text: string, name: string, personas: Persona[] = []): string {
+  return text
+    .replace(/\{\{\s*name\s*\}\}/g, name)
+    .replace(/\{\{\s*personas\s*\}\}/g, describePersonas(personas.length ? personas : [{ name, voice: "" }]))
+}
+
+/** One line per persona for the prompt: "- Alfred (voice alfred): a dry, courteous English butler". */
+export function describePersonas(personas: Persona[]): string {
+  return personas
+    .map((p) => `- ${p.name}${p.voice ? ` (voice ${p.voice})` : ""}${p.style ? `: ${p.style}` : ""}`)
+    .join("\n")
 }
 
 export class SystemPrompt {

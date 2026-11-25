@@ -140,8 +140,62 @@ pub(crate) struct Config {
     pub(crate) brain: Brain,
     pub(crate) model: Option<String>,
     pub(crate) wake: Wake,
-    /// The assistant's name (`assistant.name`).
+    /// The assistant's name (`assistant.name`): the first persona's.
     pub(crate) name: String,
+    /// Her names, each with its own voice (`assistant.personas`). Any of
+    /// them wakes her; the reply speaks in the waking one's voice.
+    pub(crate) personas: Vec<Persona>,
+    /// `assistant.personas` was in the file (else `personas` are defaults).
+    pub(crate) has_personas: bool,
+}
+
+/// One of her names and the voice it speaks in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Persona {
+    pub(crate) name: String,
+    pub(crate) voice: String,
+    pub(crate) style: Option<String>,
+}
+
+impl Persona {
+    fn new(name: &str, voice: &str, style: Option<&str>) -> Self {
+        Self {
+            name: name.into(),
+            voice: voice.into(),
+            style: style.map(str::to_owned),
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Value {
+        let mut value = json!({ "name": self.name, "voice": self.voice });
+        if let Some(style) = &self.style {
+            value["style"] = json!(style);
+        }
+        value
+    }
+}
+
+/// The personas a config without `assistant.personas` starts with: her
+/// current name (Vera, with Isla's voice), then the stock ones.
+pub(crate) fn default_personas(name: &str) -> Vec<Persona> {
+    let mut list = vec![Persona::new(name, "isla", None)];
+    for (name, voice, style) in [
+        ("Alfred", "alfred", "a dry, courteous English butler"),
+        (
+            "Jarvis",
+            "jarvis",
+            "a crisp, unflappable AI aide with polite wit",
+        ),
+        ("Optimus", "optimus", "a calm, noble commander of few words"),
+        ("Buzz", "buzz", "an earnest, upbeat space ranger"),
+        ("Saul", "saul", "a quick, persuasive fixer with a wink"),
+        ("Tony", "tony", "a quick, confident inventor with a wry edge"),
+    ] {
+        if !list.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
+            list.push(Persona::new(name, voice, Some(style)));
+        }
+    }
+    list
 }
 
 impl Default for Config {
@@ -163,6 +217,8 @@ impl Default for Config {
             model: None,
             wake: Wake::default(),
             name: DEFAULT_NAME.into(),
+            personas: default_personas(DEFAULT_NAME),
+            has_personas: false,
         }
     }
 }
@@ -234,6 +290,29 @@ impl Config {
                 None => tracing::warn!(name, "assistant.name isn't a name; using {DEFAULT_NAME}"),
             }
         }
+        let personas: Vec<Persona> = root["assistant"]["personas"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|p| {
+                        let name = valid_name(p["name"].as_str()?)?;
+                        let voice = string(&p["voice"]).unwrap_or_else(|| "isla".into());
+                        Some(Persona {
+                            name,
+                            voice,
+                            style: string(&p["style"]),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if personas.is_empty() {
+            config.personas = default_personas(&config.name);
+        } else {
+            config.has_personas = true;
+            config.name = personas[0].name.clone();
+            config.personas = personas;
+        }
         config
     }
 
@@ -303,6 +382,23 @@ pub(crate) fn slot<'a>(root: &'a mut Value, keys: &[&str]) -> &'a mut Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personas_default_from_the_name_and_load_when_set() {
+        let config = Config::from_value(&json!({ "assistant": { "name": "Nova" } }));
+        assert!(!config.has_personas);
+        assert_eq!(config.personas[0], Persona::new("Nova", "isla", None));
+        assert_eq!(config.personas[1].voice, "alfred");
+        assert_eq!(config.personas.len(), 7);
+        let config = Config::from_value(&json!({ "assistant": { "name": "Vera", "personas": [
+            { "name": "Max", "voice": "optimus" }, { "name": "not a name!", "voice": "x" },
+            { "name": "Jarvis", "voice": "eli", "style": "crisp" } ] } }));
+        assert!(config.has_personas);
+        assert_eq!(config.name, "Max");
+        assert_eq!(config.personas.len(), 2);
+        assert_eq!(config.personas[1].style.as_deref(), Some("crisp"));
+        assert_eq!(config.personas[1].to_json()["voice"], "eli");
+    }
 
     #[test]
     fn reads_the_app_section_and_cores_keys() {

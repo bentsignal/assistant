@@ -260,6 +260,13 @@ impl AssistantAudio {
         });
     }
 
+    /// Says `text` in `voice` (`None`: the service's default). The voice
+    /// holds for later `speak`s until another is set.
+    pub(crate) fn speak_as(&self, speak_id: &str, text: &str, voice: Option<String>) {
+        let _ = self.requests.send(Request::Voice(voice));
+        self.speak(speak_id, text);
+    }
+
     /// Plays mono PCM at `rate` as an utterance, without the voice service.
     pub(crate) fn speak_pcm(&self, speak_id: impl Into<String>, samples: Vec<f32>, rate: u32) {
         let _ = self.requests.send(Request::SpeakPcm {
