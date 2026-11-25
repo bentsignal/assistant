@@ -709,7 +709,7 @@ fn tray_view_for(published: &Published, dictation_audio: Option<bool>) -> TrayVi
 /// build.rs) for the taskbar, Alt-Tab, and the caption, so they match the
 /// exe in Explorer and Task Manager. Windows picks the frame that fits each
 /// size and DPI.
-fn apply_window_icon(hwnd: HWND) {
+pub(crate) fn apply_window_icon(hwnd: HWND) {
     const APP_ICON: u16 = 1;
     unsafe {
         let module = GetWindowLongPtrW(hwnd, GWLP_HINSTANCE) as HINSTANCE;
@@ -799,7 +799,7 @@ const CAPTION_SUBCLASS: usize = 1;
 /// window's background color once a frame has named it, and draws its text
 /// and buttons in the window's light or dark mode. The caption keeps its
 /// icon and title, the frame, its resize edges, and the caption buttons.
-fn blend_title_bar(hwnd: HWND) {
+pub(crate) fn blend_title_bar(hwnd: HWND) {
     TITLED_WINDOW.store(hwnd, Ordering::Relaxed);
     // SAFETY: `hwnd` is the settings window Rune just created, and the proc
     // outlives it. Installing the same proc and id on the same window again

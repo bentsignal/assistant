@@ -81,6 +81,9 @@ mod shortcut_pause;
 mod suppression;
 mod transcription;
 mod updater;
+/// Vera (VERA.md): the `vera` executable built from this crate.
+#[cfg(target_os = "windows")]
+mod vera;
 #[cfg(target_os = "windows")]
 mod vera_ears;
 #[cfg(target_os = "windows")]
@@ -939,6 +942,10 @@ fn main() -> Result<()> {
 fn main() -> Result<()> {
     // DLL search hardening first: the CPU check's message box loads DLLs.
     let dll_search = windows::restrict_dll_search();
+    // `vera.exe` is this crate's other executable (Cargo.toml).
+    if vera::IS_VERA {
+        return vera::main(dll_search);
+    }
     // Then, before anything prints, join the terminal that ran `hex`.
     windows::attach_parent_console();
     if let Err(error) = dll_search {

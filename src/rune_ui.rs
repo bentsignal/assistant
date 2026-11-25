@@ -1661,6 +1661,10 @@ fn faded_body(k: &rune_kit::Kit, key: &str, content: El, fades: (f32, f32)) -> E
     list_detail::faded_body_sticky(k, key, content, fades, false)
 }
 
+/// Vera's Settings window and card (`crate::vera`).
+#[cfg(target_os = "windows")]
+pub(crate) mod vera;
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
 

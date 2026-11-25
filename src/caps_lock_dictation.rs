@@ -172,7 +172,8 @@ impl LedModel {
             DictationIndicatorEvent::ConfigureDotScope(_)
             | DictationIndicatorEvent::DemoVoice
             | DictationIndicatorEvent::Transcribing { .. }
-            | DictationIndicatorEvent::Processing { .. } => {}
+            | DictationIndicatorEvent::Processing { .. }
+            | DictationIndicatorEvent::Vera(_) => {}
         }
     }
 

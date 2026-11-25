@@ -730,6 +730,20 @@ pub(super) fn inline_slider(
     width: f32,
     set: impl Fn(&mut Ui, f32, bool) + 'static,
 ) -> El {
+    inline_slider_in(p, key, label, value, display, width, set)
+}
+
+/// An [`inline_slider`] for a window whose state isn't [`Ui`] (Vera's
+/// Settings).
+pub(super) fn inline_slider_in<S: 'static>(
+    p: Paint,
+    key: &str,
+    label: &str,
+    value: f32,
+    display: String,
+    width: f32,
+    set: impl Fn(&mut S, f32, bool) + 'static,
+) -> El {
     row()
         .key(key)
         .center_y()

@@ -61,6 +61,9 @@ pub enum Stage {
     Processing,
     Done,
     Failed,
+    /// Vera speaking (VERA.md): the recording braid, following the voice's
+    /// own output level, in the agent's blue.
+    Speaking,
 }
 
 /// What the HUD wants this frame.
@@ -643,7 +646,7 @@ impl Scope {
     fn step(&mut self, frame: Frame) {
         let h = STEP;
         let tuning = self.tuning;
-        let recording = self.stage == Stage::Recording && frame.visible;
+        let recording = matches!(self.stage, Stage::Recording | Stage::Speaking) && frame.visible;
         let level = if recording {
             self.level = if tuning.auto_level {
                 self.auto
@@ -681,11 +684,14 @@ impl Scope {
         self.carrier = (self.carrier + h * TAU * turn * speed) % TAU;
 
         let width = match self.stage {
-            Stage::Recording => tuning.width,
+            Stage::Recording | Stage::Speaking => tuning.width,
             Stage::Processing | Stage::Done => tuning.processing_width,
             Stage::Failed => self.width.target,
         };
-        let cool = if matches!(self.stage, Stage::Processing | Stage::Done) {
+        let cool = if matches!(
+            self.stage,
+            Stage::Processing | Stage::Done | Stage::Speaking
+        ) {
             1.0
         } else {
             0.0
@@ -801,7 +807,7 @@ impl Scope {
         match self.stage {
             Stage::Failed => still(1.0),
             _ if self.reduce_motion => still(1.0),
-            Stage::Recording => Scan {
+            Stage::Recording | Stage::Speaking => Scan {
                 helix: 1.0,
                 decay: 1.0,
                 tail: 1.0,
