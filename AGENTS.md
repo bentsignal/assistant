@@ -1,24 +1,29 @@
 <!-- tallow -->
-# Vera fork: read this first
+# Assistant fork: read this first
 
-This repo is **vera-voice**, Shawn's fork of Hex that becomes **Vera**: a
-hands-free voice front end for coding agents. Read [`VERA.md`](VERA.md) for
-the design and the contracts between the App (`vera.exe`), Core, and the
-voice service ([`docs/vera-app.md`](docs/vera-app.md) for the app).
+This repo is **assistant** (GitHub `bentsignal/assistant`; the local folder may
+still be `vera-voice`), Shawn's fork of Hex that becomes **Assistant**: a
+hands-free voice front end for coding agents. The persona's name is a setting
+(`assistant.name`, default "Vera"): code and docs say Assistant for the
+product and use the configured name for her. Read [`DESIGN.md`](DESIGN.md) for
+the design and the contracts between the App (`assistant.exe`), Core, and the
+voice service ([`docs/assistant-app.md`](docs/assistant-app.md) for the app).
 
 These rules override the upstream Hex guide below:
 
-- Our branch is `main` (remote `origin` = bentsignal/vera-voice, private).
+- Our branch is `main` (remote `origin` = bentsignal/assistant, private).
   `upstream` = anomalyco/hex. Ignore the upstream process rules: no PRs to
   `dev`, no Dax rulesets, no `production`, no Labs website JSON, and no golden
   regeneration requirement. Keep Hex's own dictation working. Don't break it
   for no reason.
 - Development machine is **Windows 11 x64**. Build and test here.
-- Vera's app is `vera.exe`, a second binary of this crate (`src/vera.rs`,
-  `src/vera/`, `src/rune_ui/vera/`; `scripts/vera-app-build.sh`). Core is
-  TypeScript in `vera/core` (a pnpm workspace on Node 22); the voice service
-  is Python in `vera/voice`.
-- Never commit secrets or anything from `~/.vera/`.
+- The app is `assistant.exe`, a second binary of this crate (`src/assistant.rs`,
+  `src/assistant/`, `src/assistant_ears*`, `src/rune_ui/assistant/`;
+  `scripts/assistant-build.sh`). Its data folder is `~/.assistant` (moved from
+  `~/.vera` on first launch); env vars are `ASSISTANT_*`. Core is
+  TypeScript in `assistant/core` (a pnpm workspace on Node 22); the voice service
+  is Python in `assistant/voice`.
+- Never commit secrets or anything from `~/.assistant/`.
 - Don't push to the upstream remote.
 
 # Hex Agent Guide

@@ -19,12 +19,12 @@ pub(crate) mod hud_placement;
 mod macos;
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{activation_policy_changed, pointer_screen, screen_number};
+/// Vera's HUD looks drawn offscreen (`vera shots`).
+#[cfg(target_os = "windows")]
+pub(crate) mod assistant_shots;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod rehome;
 pub(crate) mod spring;
-/// Vera's HUD looks drawn offscreen (`vera shots`).
-#[cfg(target_os = "windows")]
-pub(crate) mod vera_shots;
 /// Windows' first-frame watch and its failure backoff; see its module docs.
 mod watch;
 /// Windows' own HUD frame pacing; see its module docs.
@@ -40,7 +40,9 @@ use rune::{Cx, El, LiveRegion, OverlayHandle, OverlayOptions, OverlaySpec, Scree
 
 use crate::app_settings::IndicatorPosition;
 use crate::desktop::i18n::tr;
-use crate::dictation::indicator::{DictationIndicatorEvent, DotFrame, IndicatorModel, VeraLook};
+use crate::dictation::indicator::{
+    AssistantLook, DictationIndicatorEvent, DotFrame, IndicatorModel,
+};
 use crate::rune_hud::dot_scope::MAX_DOTS;
 #[cfg(not(target_os = "macos"))]
 use crate::rune_hud::dot_scope::PLATE_HEIGHT;
@@ -438,7 +440,7 @@ impl Hud {
         // Vera's looks come from any state, so one shows the HUD when it is
         // not already up (Idle only lets it leave).
         let starts = matches!(&event, HudEvent::Started)
-            || (matches!(&event, HudEvent::Vera(look) if *look != VeraLook::Idle)
+            || (matches!(&event, HudEvent::Assistant(look) if *look != AssistantLook::Idle)
                 && !self.is_shown());
         let meter = matches!(&event, HudEvent::Meter { .. });
         // A capture's start (or dot-scope change) sends the display and

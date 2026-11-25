@@ -1,0 +1,997 @@
+import { randomBytes } from "node:crypto"
+import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { pathToFileURL } from "node:url"
+import { CORE_DIR, DEFAULT_NAME, loadConfig, paths, saveConfigPatch, validName, type BrainHarness, type AssistantConfig } from "./config.ts"
+import { gate, stripWakeWord, type GateResult } from "./gate.ts"
+import { Inbox, oneLine, truncate } from "./inbox.ts"
+import { SystemPrompt, renderPrompt } from "./prompt.ts"
+import { Jobs, type Job } from "./jobs.ts"
+import { T3, T3Watcher, isBusy } from "./t3.ts"
+import { AppMouth, type AppEvent, type AppLink, type ChimeKind, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
+import { createBrain, type Brain, type TurnResult } from "./brain/index.ts"
+
+export type Status = HudState
+
+export interface Card {
+  id: string
+  title: string
+  markdown: string
+  at: number
+  open: boolean
+}
+
+export interface Line {
+  who: "shawn" | "assistant"
+  text: string
+  at: number
+}
+
+export interface TurnRecord {
+  id: number
+  text: string
+  via: string
+  brain: string
+  startedAt: number
+  /** ms from the turn being sent to the brain until its first `speak` call. */
+  firstSpeakMs?: number
+  /** When Shawn stopped speaking (final.end), for heard turns. */
+  heardEndAt?: number
+  /** ms from the end of Shawn's speech to Vera's first audio. */
+  endToAudioMs?: number
+  durationMs?: number
+  spoken: string[]
+  /** Tool names the brain called, in order. */
+  tools: string[]
+  output: string
+  ok?: boolean
+  error?: string
+  interrupted?: boolean
+  /** Shawn talked over this turn's speech (or stopped it): further speech is dropped. */
+  muted?: boolean
+}
+
+export interface UtteranceInput {
+  text: string
+  start?: number
+  /** When the speech ended (epoch ms), for latency. */
+  end?: number
+  direct?: boolean
+  source?: "app" | "api"
+  /** Heard while Vera was playing: an in-conversation turn. */
+  duringPlayback?: boolean
+}
+
+/** What Vera was saying when Shawn talked over her, for the next turn's note. */
+interface Interruption {
+  at: number
+  said: string[]
+  cut?: { text: string; playedMs: number }
+  unsaid: string[]
+}
+
+/** Epoch ms look like this; anything smaller is some other clock. */
+const EPOCH_MS = 1e12
+
+/**
+ * Vera's volume is the App's 0-1 level, where level v is 40 × (v − 1) dB
+ * (1 is the voice service's own level, 0 is silent). A relative step is
+ * 0.15 (6 dB), a big one 0.3 (12 dB), and stays within [0.1, 1].
+ */
+const VOLUME_STEP = 0.15
+const VOLUME_BIG_STEP = 0.3
+const VOLUME_MIN_STEPPED = 0.1
+
+/**
+ * Vera's conversation loop: gate -> brain turn -> tools -> speech, with the
+ * inbox, jobs, T3 watches and the HUD around it. The App (over `link`) owns
+ * the microphone, playback, the HUD, cards and the tray.
+ *
+ * Turn policy: one brain turn at a time. Utterances that pass the gate while
+ * a turn is in flight are QUEUED and sent together as the next turn (Shawn
+ * often adds a thought while Vera is thinking; dropping it would be worse).
+ * "Vera, stop" / "never mind" is never queued: it stops speech, interrupts
+ * the turn, and clears the queue.
+ */
+export class Assistant {
+  config: AssistantConfig
+  readonly token = randomBytes(16).toString("hex")
+  /** Port the HTTP server ended up on (MCP tool calls come back through it). */
+  port: number
+  inbox: Inbox
+  prompt: SystemPrompt
+  jobs: Jobs
+  t3: T3
+  watcher: T3Watcher
+  /** Speech through the App: one `speak` at a time, `playback` events back. */
+  readonly mouth: AppMouth
+  brain: Brain | null = null
+  readonly link: AppLink
+
+  cards: Card[] = []
+  lines: Line[] = []
+  turns: TurnRecord[] = []
+  lastHeard = ""
+  partial = ""
+  followUpUntil = 0
+  /** Vera's own output level (0-1, see VOLUME_STEP). The App applies and persists it. */
+  volume: number
+  /** Microphone muted from the tray: nothing heard counts. */
+  micMuted = false
+  hud: HudState = "idle"
+  private badgeCount = -1
+  private cardSeq = 0
+  private turnSeq = 0
+  private current: TurnRecord | null = null
+  private queue: UtteranceInput[] = []
+  private brainDirty = false
+  /** Recent lines to replay into a brain that starts a fresh conversation. */
+  private recapNext = false
+  /** Speech started and the final or cancel hasn't come yet. */
+  private inSpeech = false
+  /** When the current utterance started (local clock), and whether it's addressed to Vera. */
+  private speechStartedAt = 0
+  private speechEngaged = false
+  private deferredChimes: ChimeKind[] = []
+  /** Last time Vera spoke, woke, or took a turn (warm wake words). */
+  private lastActiveAt = 0
+  /** Turn waiting for its first audio, to measure end-of-speech -> audio. */
+  private awaitingAudio: TurnRecord | null = null
+  /** Barge-in happened; the next final is Shawn's reply. */
+  private interruption: Interruption | null = null
+  private bargePending = false
+  private bargeTimer: NodeJS.Timeout | null = null
+  private speechByTurn = new Map<number, SpeechItem[]>()
+  private syncJobs = new Set<string>()
+  private turnWaiters = new Map<number, (t: TurnRecord) => void>()
+  private followUpTimer: NodeJS.Timeout | null = null
+  /** Ends an utterance whose final never came (the App always sends one; this is the backstop). */
+  private speechTimer: NodeJS.Timeout | null = null
+  /** The last turn was cut short because Shawn spoke again: the next turn's message says so. */
+  private superseded: string | null = null
+  private logFile: string
+
+  constructor(link: AppLink) {
+    this.link = link
+    this.config = loadConfig()
+    this.port = this.config.port
+    this.logFile = join(paths.logs, `core-${new Date().toISOString().slice(0, 10)}.log`)
+    this.mouth = new AppMouth(link, (l) => this.log(l))
+    this.volume = this.loadState().volume ?? this.config.voice.defaultVolume
+    this.inbox = new Inbox(paths.inbox)
+    this.prompt = new SystemPrompt(paths.systemPrompt, paths.promptHistory)
+    const upgrade = this.prompt.upgradeSeed(previousSeeds(), readFileSync(paths.seedPrompt, "utf8"))
+    if (upgrade === "upgraded") this.log("system prompt: upgraded the stock prompt to the current one (revert_system_prompt undoes it)")
+    if (upgrade === "custom") this.log("system prompt: customised, left as is (prompts/system.md has the current stock prompt)")
+    this.jobs = new Jobs(paths.jobs, () => this.config.jobs)
+    this.t3 = new T3(paths.home, this.config.t3.cli)
+    this.watcher = new T3Watcher(
+      this.t3,
+      paths.watches,
+      (e) => {
+        const what = e.kind === "waiting" ? "needs your input" : e.kind === "failed" ? "failed" : "finished"
+        this.notify({ kind: "t3", title: `T3 "${e.watch.title}" ${what}`, summary: e.message || e.status, ref: e.watch.threadId })
+      },
+      () => this.changed(),
+    )
+    this.inbox.onChange(() => this.changed())
+    this.prompt.onChange(() => {
+      this.brainDirty = true
+      this.log("system prompt changed; brain restarts before the next turn")
+    })
+    this.jobs.on((job, ev) => {
+      if (ev === "end") setTimeout(() => this.jobEnded(job), 50)
+      this.changed()
+    })
+  }
+
+  log(line: string) {
+    const stamped = `${new Date().toISOString()} ${line}`
+    process.stderr.write(stamped + "\n")
+    try {
+      appendFileSync(this.logFile, stamped + "\n")
+    } catch {}
+  }
+
+  private send(cmd: CoreCommand) {
+    if (cmd.cmd !== "hud" && cmd.cmd !== "badge") this.log(`-> app ${truncate(JSON.stringify(cmd), 300)}`)
+    this.link.send(cmd)
+  }
+
+  async start(): Promise<void> {
+    this.mouth.on("start", () => this.onSpeechStart())
+    this.mouth.on("end", () => this.onSpeechEnd())
+    this.mouth.on("stuck", (item: SpeechItem) =>
+      this.alert("speech", `the App never ${item.state === "sent" ? "started" : "finished"} a line; it was skipped`),
+    )
+    // Events the App sent while Core was starting were buffered; they arrive now.
+    this.link.on("event", (ev: AppEvent) => this.onAppEvent(ev))
+    this.syncHud(true)
+    this.syncBadge()
+    this.watcher.start(this.config.t3.pollSeconds * 1000)
+    // Warm the brain so the first turn doesn't pay for process start.
+    this.ensureBrain().catch((err) => this.log(`brain failed to start: ${err.message}`))
+  }
+
+  // ---- the App --------------------------------------------------------------
+
+  private onAppEvent(ev: AppEvent) {
+    if (ev.type !== "partial") this.log(`<- app ${truncate(JSON.stringify(ev), 300)}`)
+    switch (ev.type) {
+      case "ready":
+        this.log(`app ready: mic ${ev.mic ?? "?"}, engine ${ev.engine ?? "?"}, volume ${ev.volume ?? "?"}`)
+        if (typeof ev.volume === "number") this.adoptVolume(ev.volume)
+        this.syncHud(true)
+        this.syncBadge(true)
+        break
+      case "speech_start":
+        this.speechStarted()
+        break
+      case "partial":
+        if (!this.inSpeech) this.speechStarted()
+        this.partial = ev.text
+        if (!this.speechEngaged && !this.micMuted && this.wakeIn(ev.text)) this.speechEngaged = true
+        break
+      case "final": {
+        const start = this.appTime(ev.start) ?? (this.inSpeech ? this.speechStartedAt : Date.now())
+        const end = this.appTime(ev.end) ?? Date.now()
+        this.speechEnded()
+        if (this.micMuted) {
+          this.log(`ignored (microphone muted): ${ev.text}`)
+          break
+        }
+        if (ev.during_playback && this.mouth.speaking) this.bargeIn(undefined, "final during playback")
+        this.log(`heard: "${ev.text}"${ev.during_playback ? " (during playback)" : ""}`)
+        void this.utterance({ text: ev.text, start, end, source: "app", duringPlayback: !!ev.during_playback })
+        break
+      }
+      case "speech_cancel":
+        this.speechEnded()
+        if (this.bargePending) {
+          // Talked over Vera, then nothing usable: keep listening a normal follow-up window.
+          this.bargePending = false
+          this.openFollowUp()
+        }
+        break
+      case "barge_in":
+        this.bargeIn(ev.speak_id, "barge_in")
+        break
+      case "playback":
+        this.mouth.onPlayback(ev.speak_id, ev.state)
+        break
+      case "ui":
+        this.onUi(ev)
+        break
+    }
+    this.changed()
+  }
+
+  private onUi(ev: Extract<AppEvent, { type: "ui" }>) {
+    switch (ev.action) {
+      case "stop_talking":
+        this.stop("tray: stop talking")
+        break
+      case "mute":
+        this.micMuted = true
+        this.followUpUntil = 0
+        this.speechEnded()
+        break
+      case "unmute":
+        this.micMuted = false
+        break
+      case "settings_changed": {
+        const before = this.name
+        this.config = loadConfig()
+        if (typeof ev.volume === "number") this.adoptVolume(ev.volume)
+        this.log("settings changed; config reloaded")
+        if (this.name !== before) this.renamed(before)
+        break
+      }
+        break
+      case "card_closed":
+        for (const c of this.cards) if (c.open && (!ev.card_id || c.id === ev.card_id)) c.open = false
+        break
+    }
+  }
+
+  /** App timestamps are epoch ms; anything else is ignored in favour of our own clock. */
+  private appTime(t: unknown): number | undefined {
+    return typeof t === "number" && t > EPOCH_MS ? t : undefined
+  }
+
+  private speechStarted() {
+    this.inSpeech = true
+    this.speechStartedAt = Date.now()
+    this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil > Date.now() || this.mouth.speaking)
+    this.partial = "…"
+    // Nobody talks for a minute straight: if no final comes, the HUD stops listening.
+    if (this.speechTimer) clearTimeout(this.speechTimer)
+    const startedAt = this.speechStartedAt
+    this.speechTimer = setTimeout(() => {
+      if (!this.inSpeech || this.speechStartedAt !== startedAt) return
+      this.log("speech: no final after 60 s; treating the utterance as over")
+      this.speechEnded()
+      this.changed()
+    }, 60_000)
+    this.speechTimer.unref()
+  }
+
+  private speechEnded() {
+    if (this.speechTimer) clearTimeout(this.speechTimer)
+    this.speechTimer = null
+    this.inSpeech = false
+    this.speechEngaged = false
+    this.partial = ""
+    this.flushChimes()
+  }
+
+  private wakeIn(text: string): boolean {
+    const m = stripWakeWord(text, {
+      name: this.name,
+      extra: this.config.wake.words,
+      maxLeadingWords: this.config.wake.maxLeadingWords,
+      soft: this.config.wake.soft,
+      recentlyActive: Date.now() - this.lastActiveAt < this.config.wake.warmSeconds * 1000,
+    })
+    return m.found
+  }
+
+  /**
+   * Shawn talked over Vera. The App has already stopped playback. Cut the
+   * rest of this turn's speech, interrupt the brain, and treat what he says
+   * next as part of the conversation.
+   */
+  private bargeIn(speakId: string | undefined, why: string) {
+    const m = this.mouth
+    const playing = m.playing
+    const item = (speakId && m.get(speakId)) || playing
+    const turnId = item?.turnId
+    this.log(`barge-in (${why}) on ${speakId ?? playing?.id ?? "nothing playing"}`)
+    this.bargePending = true
+    // If no final ever comes, stop showing "listening" once the window would have closed.
+    if (this.bargeTimer) clearTimeout(this.bargeTimer)
+    this.bargeTimer = setTimeout(() => {
+      this.bargePending = false
+      this.changed()
+    }, Math.max(20, this.config.wake.followUpSeconds) * 1000 + 50)
+    this.bargeTimer.unref()
+    this.speechEngaged = this.inSpeech || this.speechEngaged
+    this.followUpUntil = Date.now() + Math.max(20, this.config.wake.followUpSeconds) * 1000
+    m.cut(false) // usually already done: the App's `playback interrupted` tends to come first
+    if (turnId !== undefined) {
+      const rec = this.turns.find((t) => t.id === turnId)
+      if (rec) rec.muted = true
+      const items = this.speechByTurn.get(turnId) ?? []
+      const cutItem = items.find((i) => i.state === "cut")
+      this.interruption = {
+        at: Date.now(),
+        said: items.filter((i) => i.state === "done").map((i) => i.text),
+        cut: cutItem ? { text: cutItem.text, playedMs: (cutItem.endedAt ?? Date.now()) - (cutItem.startedAt ?? Date.now()) } : undefined,
+        unsaid: items.filter((i) => i.state === "dropped" || i.state === "queued").map((i) => i.text),
+      }
+      if (this.current?.id === turnId) {
+        this.current.muted = true
+        void this.brain?.interrupt()
+      }
+    }
+    this.changed()
+  }
+
+  // ---- brain ----------------------------------------------------------------
+
+  private mcpLaunch(harness: BrainHarness) {
+    // node --import tsx runs the TypeScript server in one process (tsx's CLI would add a second).
+    const tsx = pathToFileURL(join(CORE_DIR, "node_modules", "tsx", "dist", "loader.mjs")).href
+    return {
+      command: process.execPath,
+      args: ["--import", tsx, join(CORE_DIR, "src", "mcp", "server.ts")],
+      env: { ASSISTANT_URL: `http://127.0.0.1:${this.port}`, ASSISTANT_TOKEN: this.token, ASSISTANT_BRAIN: harness, ASSISTANT_NAME: this.name },
+    }
+  }
+
+  async ensureBrain(): Promise<Brain> {
+    if (this.brain && !this.brainDirty) return this.brain
+    const old = this.brain
+    const harness = this.config.brain.harness
+    const settings = this.config.brain[harness] ?? {}
+    const sameHarness = old?.harness === harness
+    if (old) {
+      this.brain = null
+      await old.close()
+    }
+    this.brainDirty = false
+    const brain = createBrain(harness, {
+      model: settings.model,
+      effort: settings.effort,
+      systemPrompt: renderPrompt(this.prompt.read(), this.name),
+      mcp: this.mcpLaunch(harness),
+      cwd: paths.brainDir,
+      stateDir: paths.brainDir,
+      log: (l) => this.log(l),
+      // Same harness, new process (prompt edit): keep the conversation when the adapter can resume.
+      resume: sameHarness ? old?.sessionId : undefined,
+    })
+    if (old && !(sameHarness && brain.sessionId && brain.sessionId === old.sessionId)) this.recapNext = true
+    brain.on("text", (chunk: string) => {
+      if (this.current) this.current.output += chunk
+      this.changed()
+    })
+    brain.on("exit", () => {
+      if (this.brain === brain && harness !== "claude-code") this.recapNext = true
+    })
+    this.brain = brain
+    this.log(`brain: ${brain.label}`)
+    await brain.start()
+    this.changed()
+    return brain
+  }
+
+  // ---- utterances and turns -------------------------------------------------
+
+  /** Feed one utterance (heard, typed, or injected). */
+  async utterance(input: UtteranceInput): Promise<GateResult & { turnId?: number }> {
+    const now = Date.now()
+    // While Vera is talking (or was just talked over) the window is open; it opens fully when she stops.
+    const open = this.mouth.speaking || input.duringPlayback || this.bargePending
+    const followUpUntil = open ? Number.MAX_SAFE_INTEGER : this.followUpUntil
+    const g = gate(input, { followUpUntil }, now, {
+      name: this.name,
+      extra: this.config.wake.words,
+      maxLeadingWords: this.config.wake.maxLeadingWords,
+      soft: this.config.wake.soft,
+      recentlyActive: now - this.lastActiveAt < this.config.wake.warmSeconds * 1000,
+    })
+    const wasBarge = this.bargePending
+    this.bargePending = false
+    this.lastHeard = input.text
+    switch (g.action) {
+      case "ignore":
+        this.log(`ignored (${g.reason}): ${input.text}`)
+        this.changed()
+        return g
+      case "wake":
+        this.lastActiveAt = now
+        this.openFollowUp()
+        this.chime("listening")
+        this.changed()
+        return g
+      case "stop":
+        this.stop(`heard "${input.text}"`)
+        return g
+      case "turn": {
+        this.lines.push({ who: "shawn", text: g.text, at: now })
+        this.trimLines()
+        if (this.current) {
+          // Shawn spoke again before Vera answered: what she was going to
+          // say is stale. Cut it, stop the brain, and answer this instead
+          // (the new turn starts as soon as the old one winds down).
+          this.queue.push({ ...input, text: g.text })
+          this.supersede(this.current, g.text)
+          this.changed()
+          return g
+        }
+        const rec = this.beginTurn(g.text, wasBarge ? "barge-in" : g.via, input.end)
+        return { ...g, turnId: rec.id }
+      }
+    }
+  }
+
+  get currentTurnId(): number | null {
+    return this.current?.id ?? null
+  }
+
+  get currentTurn(): TurnRecord | null {
+    return this.current
+  }
+
+  /** Resolves when the given turn ends. */
+  waitTurn(id: number): Promise<TurnRecord> {
+    const done = this.turns.find((t) => t.id === id && t.durationMs !== undefined)
+    if (done) return Promise.resolve(done)
+    return new Promise((resolve) => this.turnWaiters.set(id, resolve))
+  }
+
+  private beginTurn(text: string, via: string, heardEndAt?: number): TurnRecord {
+    const rec: TurnRecord = {
+      id: ++this.turnSeq,
+      text,
+      via,
+      brain: "",
+      startedAt: Date.now(),
+      heardEndAt,
+      spoken: [],
+      tools: [],
+      output: "",
+    }
+    this.lastActiveAt = Date.now()
+    this.current = rec
+    this.followUpUntil = 0
+    // Nothing from an earlier turn plays after this one began.
+    const stale = this.mouth.dropStale(rec.id)
+    if (stale.length) this.log(`turn ${rec.id}: dropped ${stale.length} stale line(s): ${stale.map((i) => `${i.id} "${truncate(i.text, 60)}"`).join(", ")}`)
+    this.turns.push(rec)
+    if (this.turns.length > 50) this.turns.shift()
+    this.changed()
+    void this.runTurn(rec)
+    return rec
+  }
+
+  private async runTurn(rec: TurnRecord) {
+    let result: TurnResult
+    let timedOut: string | null = null
+    try {
+      const brain = await this.ensureBrain()
+      rec.brain = brain.label
+      const msg = this.composeTurn(rec.text)
+      rec.startedAt = Date.now() // measure from hand-off, not from brain start
+      this.log(`turn ${rec.id} -> ${brain.label}: ${truncate(oneLine(msg), 400)}`)
+      result = await this.withDeadline(rec, brain, brain.turn(msg), (why) => (timedOut = why))
+    } catch (err) {
+      result = { ok: false, text: "", error: (err as Error).message }
+    }
+    rec.durationMs = Date.now() - rec.startedAt
+    rec.ok = result.ok
+    rec.error = result.error
+    rec.interrupted = result.interrupted
+    if (!rec.output && result.text) rec.output = result.text
+    this.log(
+      `turn ${rec.id} done in ${rec.durationMs} ms (first speak ${rec.firstSpeakMs ?? "-"} ms; tools ${rec.tools.join(", ") || "none"})${result.error ? " error: " + result.error : ""}`,
+    )
+    // A timeout was already reported the moment it hit.
+    if (!timedOut && !result.ok && !result.interrupted) this.alert("brain", result.error ?? "the brain failed")
+    this.current = null
+    this.turnWaiters.get(rec.id)?.(rec)
+    this.turnWaiters.delete(rec.id)
+    this.changed()
+    if (this.queue.length) {
+      const q = this.queue.splice(0)
+      this.beginTurn(q.map((u) => u.text).join(" … "), "queued", q[q.length - 1].end)
+    }
+  }
+
+  private composeTurn(text: string): string {
+    const parts: string[] = []
+    if (this.recapNext) {
+      this.recapNext = false
+      const recent = this.lines.slice(-9, -1)
+      if (recent.length) {
+        parts.push(
+          "[You just took over this conversation from another session. Recent lines, for context:]\n" +
+            recent.map((l) => `${l.who === "shawn" ? "Shawn" : "Vera"}: ${truncate(oneLine(l.text), 300)}`).join("\n"),
+        )
+      }
+    }
+    const note = this.takeInterruptionNote()
+    if (note) parts.push(note)
+    if (this.superseded) {
+      parts.push(this.superseded)
+      this.superseded = null
+    }
+    const digest = this.inbox.takeDigest()
+    if (digest) parts.push(digest)
+    const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    parts.push(`[${time}] Shawn: ${text}`)
+    return parts.join("\n\n")
+  }
+
+  /** "[Shawn talked over you ...]" for the turn after a barge-in, once, if recent. */
+  private takeInterruptionNote(): string | null {
+    const i = this.interruption
+    this.interruption = null
+    if (!i || Date.now() - i.at > 60_000) return null
+    const bits: string[] = []
+    if (i.said.length) bits.push(`He heard: "${truncate(i.said.join(" "), 300)}".`)
+    if (i.cut) bits.push(`You were cut off ${heardPrefix(i.cut.text, i.cut.playedMs)}.`)
+    if (i.unsaid.length) bits.push(`Never said: "${truncate(i.unsaid.join(" "), 200)}".`)
+    return `[Shawn talked over you and you stopped. ${bits.join(" ")} Answer what he says now; don't repeat yourself unless he asks.]`
+  }
+
+  /**
+   * Shawn spoke again while `rec` was still running: its speech (playing or
+   * queued) is cut, anything it says from now on is dropped, and the brain
+   * is interrupted so his new words are answered next.
+   */
+  private supersede(rec: TurnRecord, text: string) {
+    this.log(`turn ${rec.id} superseded by: ${truncate(text, 120)}`)
+    rec.muted = true
+    const { cut, dropped } = this.mouth.cut(true)
+    if (cut || dropped.length) this.log(`turn ${rec.id}: cut ${[cut, ...dropped].filter(Boolean).map((i) => i!.id).join(", ")}`)
+    this.superseded = "[He said this before you finished answering his previous message; that answer was cut off. Answer this now.]"
+    void this.brain?.interrupt()
+  }
+
+  /**
+   * Races a brain turn against Vera's patience: no `speak` within
+   * `firstSpeakTimeoutSeconds`, or no end within `turnTimeoutSeconds`,
+   * interrupts the brain; one that still doesn't stop is closed (it
+   * restarts before the next turn). Never a turn that never ends.
+   */
+  private withDeadline(rec: TurnRecord, brain: Brain, turn: Promise<TurnResult>, onTimeout: (why: string) => void): Promise<TurnResult> {
+    const firstMs = (this.config.brain.firstSpeakTimeoutSeconds ?? 45) * 1000
+    const totalMs = (this.config.brain.turnTimeoutSeconds ?? 150) * 1000
+    return new Promise<TurnResult>((resolve) => {
+      let settled = false
+      let forced: NodeJS.Timeout | null = null
+      const finish = (r: TurnResult) => {
+        if (settled) return
+        settled = true
+        clearInterval(watch)
+        if (forced) clearTimeout(forced)
+        resolve(r)
+      }
+      const watch = setInterval(() => {
+        const waited = Date.now() - rec.startedAt
+        let why: string | null = null
+        if (rec.firstSpeakMs === undefined && !rec.muted && waited >= firstMs) why = `no answer after ${Math.round(waited / 1000)} s`
+        else if (waited >= totalMs) why = `the turn ran ${Math.round(waited / 1000)} s`
+        if (!why || forced) return
+        this.log(`turn ${rec.id}: ${why}; interrupting the brain`)
+        onTimeout(why)
+        this.alert("brain_timeout", `Vera's brain didn't answer: ${why}`)
+        rec.muted = true
+        void brain.interrupt()
+        forced = setTimeout(() => {
+          this.log(`turn ${rec.id}: the brain didn't stop; restarting it`)
+          this.brainDirty = true
+          void brain.close().catch(() => {})
+          finish({ ok: false, text: rec.output, error: why!, interrupted: true })
+        }, 5_000)
+      }, 250)
+      turn.then(finish, (err) => finish({ ok: false, text: "", error: (err as Error).message }))
+    })
+  }
+
+  /** Something failed: the App chimes, flashes the HUD, and shows it in Settings and the tray. */
+  alert(what: string, message: string) {
+    this.send({ cmd: "error", what, message: truncate(message, 300) })
+  }
+
+  /** Her name (`assistant.name`, default Vera): her wake word and what she calls herself. */
+  get name(): string {
+    return validName(this.config.assistant?.name) ?? DEFAULT_NAME
+  }
+
+  /**
+   * "Vera, call yourself Nova": saves `assistant.name`, tells the App (which
+   * applies it: speech to text, the tray, Settings), and restarts the brain
+   * before the next turn with the prompt in the new name. The wake word
+   * changes at once.
+   */
+  setName(name: string): { from: string; to: string } {
+    const to = validName(name)
+    if (!to) throw new Error(`"${name}" can't be a name: one word of letters, 2 to 20 of them`)
+    const from = this.name
+    if (to === from) return { from, to }
+    this.config = saveConfigPatch({ assistant: { name: to } })
+    this.send({ cmd: "name", name: to })
+    this.renamed(from)
+    return { from, to }
+  }
+
+  /** The name changed: the brain restarts before the next turn, with the prompt and tools in it. */
+  private renamed(from: string) {
+    this.log(`name: ${from} -> ${this.name}`)
+    this.brainDirty = true
+    this.changed()
+  }
+
+  /** "Vera, stop" / tray Stop talking: silence, interrupt, forget the queue. */
+  stop(reason = "stop") {
+    this.log(`stop (${reason})`)
+    this.queue = []
+    this.bargePending = false
+    this.interruption = null
+    this.superseded = null
+    if (this.current) this.current.muted = true
+    this.mouth.stop()
+    this.followUpUntil = 0
+    void this.brain?.interrupt()
+    this.changed()
+  }
+
+  /** Bare wake word, or Vera stopped speaking: the next utterance needs no wake word. */
+  openFollowUp(seconds = this.config.wake.followUpSeconds) {
+    this.followUpUntil = Date.now() + seconds * 1000
+    if (this.followUpTimer) clearTimeout(this.followUpTimer)
+    this.followUpTimer = setTimeout(() => this.changed(), seconds * 1000 + 20)
+    this.followUpTimer.unref()
+    this.changed()
+  }
+
+  // ---- speech ---------------------------------------------------------------
+
+  /** The speak tool. Returns false when the turn was talked over (nothing is said). */
+  say(text: string): boolean {
+    const rec = this.current
+    if (rec?.muted) {
+      this.log(`not spoken (turn ${rec.id} was interrupted): ${text}`)
+      return false
+    }
+    if (rec) {
+      if (rec.firstSpeakMs === undefined) {
+        rec.firstSpeakMs = Date.now() - rec.startedAt
+        if (rec.heardEndAt) this.awaitingAudio = rec
+      }
+      rec.spoken.push(text)
+    }
+    this.lines.push({ who: "assistant", text, at: Date.now() })
+    this.trimLines()
+    this.changed()
+    const item = this.mouth.say(text, rec?.id)
+    if (rec) {
+      const list = this.speechByTurn.get(rec.id) ?? []
+      list.push(item)
+      this.speechByTurn.set(rec.id, list)
+      if (this.speechByTurn.size > 20) this.speechByTurn.delete(this.speechByTurn.keys().next().value!)
+    }
+    return true
+  }
+
+  private onSpeechStart() {
+    const rec = this.awaitingAudio
+    if (rec?.heardEndAt) {
+      rec.endToAudioMs = Date.now() - rec.heardEndAt
+      this.log(`turn ${rec.id}: end of speech -> first audio ${rec.endToAudioMs} ms`)
+    }
+    this.awaitingAudio = null
+    this.changed()
+  }
+
+  private onSpeechEnd() {
+    this.lastActiveAt = Date.now()
+    // Talked over: the barge-in window is already open; otherwise the follow-up opens now.
+    if (!this.bargePending) this.openFollowUp()
+    this.changed()
+  }
+
+  /** Play a chime (the App plays it). An inbox ping while Shawn is mid-sentence waits until he's done. */
+  chime(kind: ChimeKind): void {
+    if (kind === "notify" && this.inSpeech) {
+      if (!this.deferredChimes.includes(kind)) this.deferredChimes.push(kind)
+      this.log("chime notify waits until Shawn finishes speaking")
+      return
+    }
+    this.mouth.chime(kind)
+  }
+
+  private flushChimes() {
+    for (const kind of this.deferredChimes.splice(0)) this.chime(kind)
+  }
+
+  // ---- volume ---------------------------------------------------------------
+
+  private loadState(): { volume?: number } {
+    try {
+      return JSON.parse(readFileSync(paths.state, "utf8"))
+    } catch {
+      return {}
+    }
+  }
+
+  private saveState() {
+    try {
+      writeFileSync(paths.state, JSON.stringify({ ...this.loadState(), volume: this.volume }, null, 2) + "\n")
+    } catch {}
+  }
+
+  /** The App reported its volume (it owns it): remember it, don't echo it back. */
+  private adoptVolume(level: number) {
+    this.volume = round2(clamp01(level))
+    this.saveState()
+  }
+
+  /** Vera's own output volume. Never the computer's. */
+  setVolume(change: { level?: number; relative?: "quieter" | "louder"; a_lot?: boolean }): { from: number; to: number } {
+    const from = this.volume
+    let to: number
+    if (typeof change.level === "number" && Number.isFinite(change.level)) {
+      to = clamp01(change.level > 1 ? change.level / 100 : change.level) // "set it to 30" means 30%
+    } else if (change.relative === "quieter" || change.relative === "louder") {
+      const step = change.a_lot ? VOLUME_BIG_STEP : VOLUME_STEP
+      // Within [0.1, 1], and never the wrong way (quieter from below 0.1 stays put).
+      to =
+        change.relative === "quieter"
+          ? Math.min(from, Math.max(VOLUME_MIN_STEPPED, from - step))
+          : Math.max(from, Math.min(1, from + step))
+    } else throw new Error("give level (0-1) or relative: quieter | louder")
+    to = round2(to)
+    this.volume = to
+    this.saveState()
+    this.send({ cmd: "set_volume", level: to })
+    this.changed()
+    return { from, to }
+  }
+
+  // ---- background work ------------------------------------------------------
+
+  notify(item: { kind: "job" | "t3" | "system"; title: string; summary: string; ref?: string }) {
+    this.inbox.add(item)
+    this.log(`inbox: ${item.title}`)
+    this.chime("notify")
+  }
+
+  markJobSync(id: string) {
+    this.syncJobs.add(id)
+  }
+
+  private jobEnded(job: Job) {
+    if (this.syncJobs.has(job.id)) return // the brain already got the answer in the tool result
+    if (job.status === "cancelled") return
+    const ok = job.status === "done"
+    this.notify({
+      kind: "job",
+      title: `${job.agent} job ${job.id} ${ok ? "finished" : "failed"}`,
+      summary: ok ? (job.result ?? "(no output)") : (job.error ?? "failed"),
+      ref: job.id,
+    })
+  }
+
+  /** Background work Vera started that's still going: jobs, and T3 threads she watches. */
+  backgroundBusy(): boolean {
+    if (this.jobs.list(50).some((j) => j.status === "running" && !this.syncJobs.has(j.id))) return true
+    for (const w of this.watcher.watches.values()) if (isBusy(w.lastStatus) || w.expectRun) return true
+    return false
+  }
+
+  // ---- cards ----------------------------------------------------------------
+
+  addCard(title: string, markdown: string): Card {
+    const card: Card = { id: `c${++this.cardSeq}`, title, markdown: truncate(markdown, 6000), at: Date.now(), open: true }
+    this.cards.unshift(card)
+    if (this.cards.length > 30) this.cards.pop()
+    this.send({ cmd: "show", card_id: card.id, title: card.title, markdown: card.markdown })
+    this.changed()
+    return card
+  }
+
+  /** Close one card, or every open one. Returns the ids closed. */
+  hideCard(id?: string): string[] {
+    const want = id ? (id.startsWith("c") ? id : `c${id}`) : null
+    const closing = this.cards.filter((c) => c.open && (!want || c.id === want))
+    for (const c of closing) {
+      c.open = false
+      this.send({ cmd: "hide", card_id: c.id })
+    }
+    this.changed()
+    return closing.map((c) => c.id)
+  }
+
+  setBrain(harness: BrainHarness, model?: string, effort?: string): string {
+    const patch: any = { brain: { harness } }
+    if (model || effort) patch.brain[harness] = { ...(model ? { model } : {}), ...(effort ? { effort } : {}) }
+    this.config = saveConfigPatch(patch)
+    this.brainDirty = true
+    const s = this.config.brain[harness]
+    return `${harness} ${s.model ?? "default"}/${s.effort ?? "default"}`
+  }
+
+  // ---- state: HUD, badge, snapshot ------------------------------------------
+
+  status(): HudState {
+    const now = Date.now()
+    if (this.mouth.speaking) return "speaking"
+    if (this.micMuted) return this.current ? "thinking" : this.backgroundBusy() ? "working" : "idle"
+    // Shawn is talking to Vera (after the wake word, in the window, or over her).
+    if (this.bargePending || (this.inSpeech && this.speechEngaged)) return "listening"
+    if (this.current || this.queue.length || this.mouth.pendingStart) return "thinking"
+    if (this.followUpUntil > now) return "listening"
+    if (this.backgroundBusy()) return "working"
+    return "idle"
+  }
+
+  private syncHud(force = false) {
+    const s = this.status()
+    if (s === this.hud && !force) return
+    this.hud = s
+    this.send({ cmd: "hud", state: s })
+  }
+
+  private syncBadge(force = false) {
+    const n = this.inbox.unread().length
+    if (n === this.badgeCount && !force) return
+    this.badgeCount = n
+    this.send({ cmd: "badge", count: n })
+  }
+
+  /** GET /api/state (debug and tests). */
+  snapshot() {
+    const lastSaid = [...this.lines].reverse().find((l) => l.who === "assistant")?.text ?? ""
+    return {
+      status: this.status(),
+      hud: this.hud,
+      volume: this.volume,
+      micMuted: this.micMuted,
+      badge: this.inbox.unread().length,
+      brain: this.brain?.label ?? `${this.config.brain.harness} (starting)`,
+      lastHeard: this.lastHeard,
+      partial: this.partial,
+      lastSaid,
+      followUpUntil: this.followUpUntil,
+      queue: this.queue.map((q) => q.text),
+      current: this.current && { id: this.current.id, text: this.current.text, output: truncate(this.current.output, 2000) },
+      cards: this.cards.slice(0, 12),
+      jobs: this.jobs.list(12).map((j) => ({
+        id: j.id,
+        agent: j.agent,
+        task: truncate(oneLine(j.task), 160),
+        status: j.status,
+        startedAt: j.startedAt,
+        endedAt: j.endedAt,
+        progress: j.progress && truncate(oneLine(j.progress), 160),
+        result: j.result && truncate(j.result, 600),
+        error: j.error && truncate(j.error, 300),
+      })),
+      inbox: [...this.inbox.items].reverse().slice(0, 20),
+      watches: [...this.watcher.watches.values()],
+      lines: this.lines.slice(-12),
+      turns: this.turns.slice(-8).map((t) => ({
+        id: t.id,
+        text: t.text,
+        via: t.via,
+        brain: t.brain,
+        tools: t.tools,
+        spoken: t.spoken,
+        firstSpeakMs: t.firstSpeakMs,
+        endToAudioMs: t.endToAudioMs,
+        durationMs: t.durationMs,
+        ok: t.ok,
+        interrupted: t.interrupted,
+        muted: t.muted,
+      })),
+    }
+  }
+
+  private changeTimer: NodeJS.Timeout | null = null
+  changed() {
+    // The HUD and badge follow state at once, and the HUD is checked again
+    // shortly after, for state that settles right after a change.
+    this.syncHud()
+    this.syncBadge()
+    if (this.changeTimer) return
+    this.changeTimer = setTimeout(() => {
+      this.changeTimer = null
+      this.syncHud()
+    }, 30)
+  }
+
+  private trimLines() {
+    if (this.lines.length > 100) this.lines.splice(0, this.lines.length - 100)
+  }
+
+  async close() {
+    this.watcher.stop()
+    this.jobs.shutdown()
+    this.mouth.close()
+    await this.brain?.close().catch(() => {})
+  }
+}
+
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n))
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
+/** Roughly what Shawn heard of a sentence cut after `playedMs` (speech runs about 15 characters a second). */
+export function heardPrefix(text: string, playedMs: number): string {
+  const chars = Math.round((playedMs / 1000) * 15)
+  if (chars >= text.length) return `at the end of "${text}"`
+  if (chars < 8) return `right at the start of "${truncate(text, 200)}"`
+  const cut = text.lastIndexOf(" ", chars)
+  const heard = text.slice(0, cut > 0 ? cut : chars)
+  return `after "${heard}…" (of "${truncate(text, 200)}")`
+}
+
+/** Earlier stock prompts (prompts/previous/*.md), so an unedited copy in ~/.assistant is upgraded. */
+function previousSeeds(): string[] {
+  const dir = join(CORE_DIR, "prompts", "previous")
+  try {
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".md"))
+      .map((f) => readFileSync(join(dir, f), "utf8"))
+  } catch {
+    return []
+  }
+}

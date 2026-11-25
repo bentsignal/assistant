@@ -20,6 +20,11 @@ mod apple_intelligence;
 #[cfg(target_os = "macos")]
 mod apple_speech;
 mod application_catalog;
+/// Vera (DESIGN.md): the `vera` executable built from this crate.
+#[cfg(target_os = "windows")]
+mod assistant;
+#[cfg(target_os = "windows")]
+mod assistant_ears;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
 mod audio;
 #[cfg_attr(any(target_os = "linux", target_os = "windows"), allow(dead_code))]
@@ -81,11 +86,6 @@ mod shortcut_pause;
 mod suppression;
 mod transcription;
 mod updater;
-/// Vera (VERA.md): the `vera` executable built from this crate.
-#[cfg(target_os = "windows")]
-mod vera;
-#[cfg(target_os = "windows")]
-mod vera_ears;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -942,9 +942,9 @@ fn main() -> Result<()> {
 fn main() -> Result<()> {
     // DLL search hardening first: the CPU check's message box loads DLLs.
     let dll_search = windows::restrict_dll_search();
-    // `vera.exe` is this crate's other executable (Cargo.toml).
-    if vera::IS_VERA {
-        return vera::main(dll_search);
+    // `assistant.exe` is this crate's other executable (Cargo.toml).
+    if assistant::IS_ASSISTANT {
+        return assistant::main(dll_search);
     }
     // Then, before anything prints, join the terminal that ran `hex`.
     windows::attach_parent_console();
@@ -955,9 +955,9 @@ fn main() -> Result<()> {
     // below read markers there.
     if std::env::args_os()
         .nth(1)
-        .is_some_and(|command| command == "ears" || command == "vera-audio")
+        .is_some_and(|command| command == "ears" || command == "assistant-audio")
     {
-        vera_ears::isolate();
+        assistant_ears::isolate();
     }
     windows::vulkan::check();
     windows::gpu_fallback::choose();

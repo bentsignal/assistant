@@ -25,8 +25,8 @@ const COMPLETED_VISIBLE_DURATION: Duration = Duration::from_millis(100);
 const EARS_COMPLETED_VISIBLE_DURATION: Duration = Duration::from_millis(700);
 const FAILED_VISIBLE_DURATION: Duration = Duration::from_millis(600);
 /// Vera's error look stays a little longer than a failed dictation, so a
-/// glance at the screen catches it (VERA.md: never fail silently).
-const VERA_ERROR_VISIBLE_DURATION: Duration = Duration::from_millis(1600);
+/// glance at the screen catches it (DESIGN.md: never fail silently).
+const ASSISTANT_ERROR_VISIBLE_DURATION: Duration = Duration::from_millis(1600);
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug)]
@@ -76,17 +76,17 @@ pub enum DictationIndicatorEvent {
         /// Why it failed, for Labs › Failure notices; the HUD ignores it.
         message: Option<String>,
     },
-    /// Vera (VERA.md) sets the HUD's look directly, from any state, with no
+    /// Vera (DESIGN.md) sets the HUD's look directly, from any state, with no
     /// dictation lifecycle; meters follow whichever voice the look shows.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    Vera(VeraLook),
+    Assistant(AssistantLook),
 }
 
 /// What Vera's HUD shows: Hex's own looks, with Vera speaking as the
 /// recording braid in the agent's blue (`Stage::Speaking`).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VeraLook {
+pub enum AssistantLook {
     /// Shawn's voice: the recording look, following the microphone.
     Listening,
     /// The processing look.
@@ -102,7 +102,7 @@ pub enum VeraLook {
 }
 
 /// The job a Vera thinking look stands for, which no dictation uses.
-const VERA_JOB: u64 = u64::MAX;
+const ASSISTANT_JOB: u64 = u64::MAX;
 
 impl DictationIndicatorEvent {
     /// A `Meter` event from captured samples: their RMS and absolute peak
@@ -426,13 +426,13 @@ impl IndicatorModel {
             DictationIndicatorEvent::Failed { .. } => {
                 self.finish_capture(now, true);
             }
-            DictationIndicatorEvent::Vera(look) => self.vera(look, now, reduce),
+            DictationIndicatorEvent::Assistant(look) => self.vera(look, now, reduce),
         }
     }
 
     /// Vera's look, from whatever shows: a hidden or leaving HUD enters
     /// afresh, and one already up moves to the new look in place.
-    fn vera(&mut self, look: VeraLook, now: Instant, reduce: bool) {
+    fn vera(&mut self, look: AssistantLook, now: Instant, reduce: bool) {
         let entering = matches!(
             self.state,
             HudState::Hidden | HudState::Completed { .. } | HudState::Failed { .. }
@@ -445,7 +445,7 @@ impl IndicatorModel {
             }
         };
         match look {
-            VeraLook::Listening => {
+            AssistantLook::Listening => {
                 enter(self);
                 if !matches!(self.state, HudState::Recording { .. }) {
                     self.loudness = SILENT;
@@ -454,32 +454,32 @@ impl IndicatorModel {
                     jobs: BTreeSet::new(),
                 };
             }
-            VeraLook::Thinking => {
+            AssistantLook::Thinking => {
                 enter(self);
                 let working_since = match self.state {
                     HudState::Transcribing { working_since, .. } => working_since,
                     _ => now,
                 };
                 self.state = HudState::Transcribing {
-                    jobs: BTreeSet::from([VERA_JOB]),
+                    jobs: BTreeSet::from([ASSISTANT_JOB]),
                     working_since,
                 };
             }
-            VeraLook::Speaking => {
+            AssistantLook::Speaking => {
                 enter(self);
                 if self.state != HudState::Speaking {
                     self.loudness = SILENT;
                 }
                 self.state = HudState::Speaking;
             }
-            VeraLook::Error => {
+            AssistantLook::Error => {
                 enter(self);
                 self.state = HudState::Failed {
                     started: now,
-                    visible: VERA_ERROR_VISIBLE_DURATION,
+                    visible: ASSISTANT_ERROR_VISIBLE_DURATION,
                 };
             }
-            VeraLook::Idle => {
+            AssistantLook::Idle => {
                 self.state = match std::mem::replace(&mut self.state, HudState::Hidden) {
                     HudState::Transcribing { working_since, .. }
                     | HudState::Completing { working_since } => {
@@ -719,16 +719,16 @@ mod tests {
     /// from listening), then hide.
     #[test]
     fn vera_looks_enter_move_and_leave() {
-        use DictationIndicatorEvent::Vera;
+        use DictationIndicatorEvent::Assistant;
         let start = Instant::now();
         let mut model = IndicatorModel::new(Tuning::default(), start);
-        model.handle(Vera(VeraLook::Listening), start, false);
+        model.handle(Assistant(AssistantLook::Listening), start, false);
         assert_eq!(model.status(), Some("Recording"));
         assert!(model.recording());
-        model.handle(Vera(VeraLook::Thinking), start, false);
+        model.handle(Assistant(AssistantLook::Thinking), start, false);
         assert_eq!(model.status(), Some("Transcribing"));
         assert!(!model.recording());
-        model.handle(Vera(VeraLook::Speaking), start, false);
+        model.handle(Assistant(AssistantLook::Speaking), start, false);
         assert_eq!(model.status(), Some("Speaking"));
         assert!(model.recording(), "speaking is metered, like recording");
         let mut now = start;
@@ -737,7 +737,7 @@ mod tests {
             model.step(now, 0.016, false);
         }
         assert!(model.frame().pose.cool > 0.5, "Vera's voice is agent blue");
-        model.handle(Vera(VeraLook::Idle), now, false);
+        model.handle(Assistant(AssistantLook::Idle), now, false);
         assert_eq!(model.status(), None);
         for _ in 0..120 {
             now += Duration::from_millis(16);
@@ -745,8 +745,8 @@ mod tests {
         }
         assert!(!model.active(), "the HUD settled out of sight");
         // Idle from listening fades without the done wipe.
-        model.handle(Vera(VeraLook::Listening), now, false);
-        model.handle(Vera(VeraLook::Idle), now, false);
+        model.handle(Assistant(AssistantLook::Listening), now, false);
+        model.handle(Assistant(AssistantLook::Idle), now, false);
         assert_eq!(model.status(), None);
     }
 
@@ -934,13 +934,13 @@ mod tests {
         let start = Instant::now();
         let mut model = IndicatorModel::new(Tuning::default(), start);
         model.handle(
-            DictationIndicatorEvent::Vera(VeraLook::Thinking),
+            DictationIndicatorEvent::Assistant(AssistantLook::Thinking),
             start,
             false,
         );
         run(&mut model, start, 0.0, 0.3);
         model.handle(
-            DictationIndicatorEvent::Vera(VeraLook::Error),
+            DictationIndicatorEvent::Assistant(AssistantLook::Error),
             at(start, 0.3),
             false,
         );
@@ -953,7 +953,7 @@ mod tests {
         assert!(!model.active());
         // From hidden too.
         model.handle(
-            DictationIndicatorEvent::Vera(VeraLook::Error),
+            DictationIndicatorEvent::Assistant(AssistantLook::Error),
             at(start, 3.5),
             false,
         );

@@ -61,7 +61,7 @@ pub enum Stage {
     Processing,
     Done,
     Failed,
-    /// Vera speaking (VERA.md): the recording braid, following the voice's
+    /// Vera speaking (DESIGN.md): the recording braid, following the voice's
     /// own output level, in the agent's blue.
     Speaking,
 }

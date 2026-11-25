@@ -1,9 +1,12 @@
-# Vera: try it
+# Assistant: try it
 
-This fork is **Vera**, a hands-free voice front end for coding agents (design:
-[`VERA.md`](VERA.md)). Hex's own README follows below.
+This fork is **Assistant**, a hands-free voice front end for coding agents
+(design: [`DESIGN.md`](DESIGN.md)). She's called **Vera** by default; to
+rename her, type a new name at the top of Settings and press Enter, or say
+"Vera, call yourself Nova". Her wake word changes at once. Hex's own README
+follows below.
 
-**It's already running.** Vera lives in the tray (the ^ overflow: a white
+**It's already running.** She lives in the tray (the ^ overflow: a white
 nested triangle, with a blue dot when something new arrived), starts at
 login, and shows nothing else until you talk to her: a small HUD at the
 bottom of the screen while she listens, thinks, or speaks, and a card at the
@@ -27,14 +30,14 @@ icon for Settings; right-click for Mute microphone, Stop talking, and Quit.
   to …"
 - "Vera, switch to Codex" (or "… to Claude"), or pick the agent in Settings.
 
-**Settings** (left-click the tray icon): microphone (System default follows
+**Settings** (left-click the tray icon): her name (top; Enter applies it), microphone (System default follows
 Windows' default input), wake-word strictness, voice (Isla by default; Nora,
 June, Eli), volume, agent and model, start at login, and Edit personality
-(her system prompt). Everything lives in `~/.vera/` (`config.json`, `logs/`).
+(her system prompt). Everything lives in `~/.assistant/` (`config.json`, `logs/`).
 
-**Quit:** tray → Quit Vera, or `vera quit`. That stops Core, the brain, and
+**Quit:** tray → Quit Vera, or `assistant quit`. That stops Core, the brain, and
 the voice service (and frees its GPU memory). Start it again from
-`target\release\vera.exe` (or log in again).
+`target\release\assistant.exe` (or log in again).
 
 **Known limits**
 
@@ -54,12 +57,12 @@ the voice service (and frees its GPU memory). Start it again from
 - Windows only.
 
 **Rebuilding:** quit Vera first (the exe is locked), then
-`sh scripts/vera-app-build.sh` (Git Bash). Setup on a fresh machine:
-`cd vera && pnpm install`, `vera\voice\scripts\setup.ps1`, and the installed
-Hex's speech models. Details: [`docs/vera-app.md`](docs/vera-app.md),
-[`docs/vera-audio.md`](docs/vera-audio.md),
-[`vera/core/README.md`](vera/core/README.md),
-[`vera/voice/README.md`](vera/voice/README.md).
+`sh scripts/assistant-build.sh` (Git Bash). Setup on a fresh machine:
+`cd assistant && pnpm install`, `assistant\voice\scripts\setup.ps1`, and the installed
+Hex's speech models. Details: [`docs/assistant-app.md`](docs/assistant-app.md),
+[`docs/assistant-audio.md`](docs/assistant-audio.md),
+[`assistant/core/README.md`](assistant/core/README.md),
+[`assistant/voice/README.md`](assistant/voice/README.md).
 
 ---
 

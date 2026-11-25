@@ -1,0 +1,25 @@
+{
+  "name": "@assistant/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Vera Core: wake gate, brain adapters, Vera MCP server, jobs, T3; the Vera App's --stdio sidecar",
+  "main": "src/main.ts",
+  "bin": {
+    "assistant-core": "src/main.ts"
+  },
+  "scripts": {
+    "stdio": "node --import tsx src/main.ts --stdio",
+    "mcp": "tsx src/mcp/server.ts",
+    "fake-app": "tsx scripts/fake-app.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}

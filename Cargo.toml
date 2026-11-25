@@ -21,11 +21,11 @@ exclude = ["crates/capture", "crates/capture-core"]
 name = "hex"
 path = "src/main.rs"
 
-# Vera (VERA.md): the same sources as a second Windows app with its own name,
+# Assistant (DESIGN.md): the same sources as a second Windows app with its own name,
 # icon, tray entry, instance, and data folder. `main` dispatches on
-# CARGO_BIN_NAME; build it with `cargo build --bin vera`.
+# CARGO_BIN_NAME; build it with `cargo build --bin assistant`.
 [[bin]]
-name = "vera"
+name = "assistant"
 path = "src/main.rs"
 
 [[test]]
@@ -49,7 +49,7 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
-# Vera Ears iteration profile (`scripts/vera-ears-build.sh --dev`): Hex's own
+# Vera Ears iteration profile (`scripts/assistant-ears-build.sh --dev`): Hex's own
 # crate builds incrementally at opt-level 0, every dependency (ggml and
 # transcribe.cpp included, which CMake then builds as Release) fully
 # optimized, so a rebuild is fast and transcription runs at full speed.
@@ -105,14 +105,14 @@ oxc_ast_visit = "0.156.0"
 oxc_parser = "0.156.0"
 opuscule = "0.2.2"
 oxc_span = "0.156.0"
-# Vera's simulated room (`vera::audio::sim`): partitioned convolution.
+# Vera's simulated room (`assistant::audio::sim`): partitioned convolution.
 realfft = "3.5.0"
 regex = "1.13.1"
 rquickjs = { version = "0.14.0", default-features = false, features = ["std", "loader"] }
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "mp3"] }
 rubato = "5.0.1"
 same-file = "1.0.6"
-# Vera's echo canceller (`vera::audio`): WebRTC AEC3 ported to pure Rust.
+# Vera's echo canceller (`assistant::audio`): WebRTC AEC3 ported to pure Rust.
 sonora-aec3 = "0.3.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

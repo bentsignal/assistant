@@ -347,23 +347,23 @@ END
     embed_resource::compile_for(&resource, ["hex"], embed_resource::NONE)
         .manifest_optional()
         .expect("compile the Windows resources");
-    // Vera (VERA.md): the same crate's `vera` executable, with its own icon
-    // and names, so Explorer and Task Manager never show it as Hex.
-    let vera_icon = manifest_dir.join("resources/windows/vera.ico");
-    println!("cargo:rerun-if-changed={}", vera_icon.display());
-    let vera = script
+    // Assistant (DESIGN.md): the same crate's `assistant` executable, with its
+    // own icon and names, so Explorer and Task Manager never show it as Hex.
+    let assistant_icon = manifest_dir.join("resources/windows/assistant.ico");
+    println!("cargo:rerun-if-changed={}", assistant_icon.display());
+    let assistant = script
         .replace(
             &icon.display().to_string().replace('\\', "/"),
-            &vera_icon.display().to_string().replace('\\', "/"),
+            &assistant_icon.display().to_string().replace('\\', "/"),
         )
-        .replace("\"Hex\"", "\"Vera\"")
-        .replace("hex.exe", "vera.exe")
-        .replace("\"hex\"", "\"vera\"");
-    let resource = output_dir.join("vera.rc");
-    std::fs::write(&resource, vera).expect("write Vera's resource script");
-    embed_resource::compile_for(&resource, ["vera"], embed_resource::NONE)
+        .replace("\"Hex\"", "\"Assistant\"")
+        .replace("hex.exe", "assistant.exe")
+        .replace("\"hex\"", "\"assistant\"");
+    let resource = output_dir.join("assistant.rc");
+    std::fs::write(&resource, assistant).expect("write Assistant's resource script");
+    embed_resource::compile_for(&resource, ["assistant"], embed_resource::NONE)
         .manifest_optional()
-        .expect("compile Vera's resources");
+        .expect("compile Assistant's resources");
 }
 
 fn compile_permission_guide() {

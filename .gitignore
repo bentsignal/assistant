@@ -24,8 +24,8 @@ __pycache__/
 /ios/HEXKeyboard/CleanupTagger/.HexCleanupTagger.sha256
 /ios/scripts/.build-german-capitals/
 
-# Vera
-vera/**/node_modules/
-vera/**/dist/
-vera/**/.cache/
+# Assistant
+assistant/**/node_modules/
+assistant/**/dist/
+assistant/**/.cache/
 

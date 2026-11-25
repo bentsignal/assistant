@@ -93,10 +93,10 @@ enum Command {
     /// List microphone devices visible through WASAPI.
     Devices,
     /// Vera's ears: listen hands-free and print each utterance's transcript
-    /// as JSON lines (VERA.md, "Ears"); reads pause/resume/shutdown on stdin.
-    Ears(crate::vera_ears::EarsArgs),
+    /// as JSON lines (DESIGN.md, "Ears"); reads pause/resume/shutdown on stdin.
+    Ears(crate::assistant_ears::EarsArgs),
     /// Vera's duplex audio engine: simulate, try, and measure it.
-    VeraAudio(crate::vera::audio::cli::VeraAudioArgs),
+    AssistantAudio(crate::assistant::audio::cli::AssistantAudioArgs),
     /// Compare live-stream and full-clip transcription of a WAV file.
     #[command(hide = true)]
     StreamBench {
@@ -178,11 +178,11 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
     let command = match command {
         Command::Ears(args) => {
             shutdown.store(false, Ordering::Relaxed);
-            return crate::vera_ears::run(args, shutdown);
+            return crate::assistant_ears::run(args, shutdown);
         }
-        Command::VeraAudio(args) => {
+        Command::AssistantAudio(args) => {
             shutdown.store(false, Ordering::Relaxed);
-            return crate::vera::audio::cli::run(args, shutdown);
+            return crate::assistant::audio::cli::run(args, shutdown);
         }
         command => command,
     };
@@ -258,7 +258,7 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
             speed,
             selection,
         } => stream_bench(&wav, speed, &selection.resolve()?),
-        Command::Control(_) | Command::Ears(_) | Command::VeraAudio(_) => {
+        Command::Control(_) | Command::Ears(_) | Command::AssistantAudio(_) => {
             unreachable!("handled before logging")
         }
     }

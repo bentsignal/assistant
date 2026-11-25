@@ -173,7 +173,7 @@ impl LedModel {
             | DictationIndicatorEvent::DemoVoice
             | DictationIndicatorEvent::Transcribing { .. }
             | DictationIndicatorEvent::Processing { .. }
-            | DictationIndicatorEvent::Vera(_) => {}
+            | DictationIndicatorEvent::Assistant(_) => {}
         }
     }
 
