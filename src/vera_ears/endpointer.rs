@@ -27,6 +27,9 @@ const ONSET_GAP: Duration = Duration::from_millis(100);
 const LONG_UTTERANCE_PAUSE: Duration = Duration::from_millis(300);
 /// Silence kept after the last speech frame, so the model hears the word end.
 const TAIL: Duration = Duration::from_millis(240);
+/// Silence after which the clip is final unless speech resumes: the tail is
+/// in hand, so the caller can start transcribing while the pause runs out.
+const QUIET: Duration = Duration::from_millis(280);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Settings {
@@ -54,6 +57,15 @@ pub(crate) enum Event {
     /// Speech began at `onset`; the clip starts at `clip_start`, pre-roll
     /// included.
     Started { clip_start: usize, onset: usize },
+    /// The speaker has been quiet long enough that the clip, should the
+    /// pause run out, is already complete: the same bounds `Ended` will
+    /// carry unless speech resumes first. Sent once per quiet stretch, and
+    /// only when `pause` is longer than this.
+    Quiet {
+        clip_start: usize,
+        speech_end: usize,
+        clip_end: usize,
+    },
     /// The pause ended the utterance. `speech_end` is the end of the last
     /// speech frame, and the clip runs to `clip_end`, a short tail later.
     Ended {
@@ -199,8 +211,16 @@ impl Endpointer {
                     settings.pause
                 };
                 let forced = length >= samples(settings.max_utterance) * 2;
-                if *silent_frames * FRAME_MS < pause.as_millis() as usize && !forced {
-                    return None;
+                let quiet_ms = *silent_frames * FRAME_MS;
+                if quiet_ms < pause.as_millis() as usize && !forced {
+                    return (!speech
+                        && quiet_ms == frames(QUIET) * FRAME_MS
+                        && pause > QUIET)
+                        .then(|| Event::Quiet {
+                            clip_start: *clip_start,
+                            speech_end: *speech_end,
+                            clip_end: *speech_end + samples(TAIL),
+                        });
                 }
                 let event = Event::Ended {
                     clip_start: *clip_start,
@@ -276,6 +296,7 @@ mod tests {
         for event in events {
             match *event {
                 Event::Started { onset: at, .. } => onset = Some(at),
+                Event::Quiet { .. } => {}
                 Event::Ended {
                     clip_start,
                     speech_end,
@@ -352,6 +373,36 @@ mod tests {
         let (_, _, clip_ms) = utterances(&events)[0];
         // Pre-roll, a second of speech, and the tail.
         assert!((1_520..=1_560).contains(&clip_ms), "{clip_ms}");
+    }
+
+    #[test]
+    fn quiet_comes_before_the_end_with_the_same_clip_unless_speech_resumes() {
+        let mut audio = quiet(300);
+        // A breath of 400 ms (quiet, but no end), then the real pause.
+        audio.extend(utterance(&[(1_000, 400), (800, 1_000)], -70.0));
+        let events = run(&mut Endpointer::new(Settings::default()), &audio, 160);
+        let quiets: Vec<_> = events
+            .iter()
+            .filter_map(|event| match *event {
+                Event::Quiet {
+                    clip_start,
+                    speech_end,
+                    clip_end,
+                } => Some((clip_start, speech_end, clip_end)),
+                _ => None,
+            })
+            .collect();
+        let ended = events.iter().find_map(|event| match *event {
+            Event::Ended {
+                clip_start,
+                speech_end,
+                clip_end,
+            } => Some((clip_start, speech_end, clip_end)),
+            _ => None,
+        });
+        assert_eq!(quiets.len(), 2, "{events:?}");
+        assert_ne!(Some(quiets[0]), ended, "the breath's speculation is stale");
+        assert_eq!(Some(quiets[1]), ended);
     }
 
     #[test]

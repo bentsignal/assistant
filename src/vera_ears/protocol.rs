@@ -99,6 +99,17 @@ impl<W: Write + Send> Output<W> {
     }
 
     #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> W
+    where
+        W: Clone,
+    {
+        self.writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn into_inner(self) -> W {
         self.writer
             .into_inner()
