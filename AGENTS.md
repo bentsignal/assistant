@@ -1,4 +1,23 @@
 <!-- tallow -->
+# Vera fork: read this first
+
+This repo is **vera-voice**, Shawn's fork of Hex that becomes **Vera**: a
+hands-free voice front end for coding agents. Read [`VERA.md`](VERA.md) for
+the design and the contracts between Ears, Mouth, and Core.
+
+These rules override the upstream Hex guide below:
+
+- Our branch is `main` (remote `origin` = bentsignal/vera-voice, private).
+  `upstream` = anomalyco/hex. Ignore the upstream process rules: no PRs to
+  `dev`, no Dax rulesets, no `production`, no Labs website JSON, and no golden
+  regeneration requirement. Keep Hex's own dictation working. Don't break it
+  for no reason.
+- Development machine is **Windows 11 x64**. Build and test here.
+- Vera TypeScript lives in `vera/` (a pnpm workspace on Node 22). Hex's Rust
+  code is used for speech to text (Ears).
+- Never commit secrets or anything from `~/.vera/`.
+- Don't push to the upstream remote.
+
 # Hex Agent Guide
 
 ## Private Kit Tool

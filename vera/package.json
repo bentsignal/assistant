@@ -1,0 +1,8 @@
+﻿{
+  "name": "vera",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.12.3",
+  "engines": { "node": ">=22" }
+}
+
