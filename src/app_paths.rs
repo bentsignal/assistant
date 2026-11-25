@@ -47,10 +47,19 @@ pub fn logs_dir() -> Result<PathBuf> {
     machine_local(&LOGS, "logs")
 }
 
+static MODELS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 /// Where the speech models live (`transcription::models::models_dir`).
 pub fn models_dir() -> Result<PathBuf> {
-    static MODELS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     machine_local(&MODELS, "models")
+}
+
+/// Pins the models folder for this process before anything reads it, so a
+/// process with its own data folder (`hex ears`) still loads the models the
+/// installed Hex downloaded. Returns false when the folder was already read.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn use_models_dir(path: PathBuf) -> bool {
+    MODELS.set(path).is_ok()
 }
 
 /// `name` in the support folder, except on Windows, where logs and models

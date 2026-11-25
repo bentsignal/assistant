@@ -38,6 +38,16 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Vera Ears iteration profile (`scripts/vera-ears-build.sh --dev`): Hex's own
+# crate builds incrementally at opt-level 0, every dependency (ggml and
+# transcribe.cpp included, which CMake then builds as Release) fully
+# optimized, so a rebuild is fast and transcription runs at full speed.
+[profile.ears-dev]
+inherits = "dev"
+
+[profile.ears-dev.package."*"]
+opt-level = 3
+
 # Shipped executables carry no symbol table (about 11 MB on Linux). Panic
 # backtraces lose function names; debug builds keep them.
 [profile.release]
