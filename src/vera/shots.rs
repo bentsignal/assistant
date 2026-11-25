@@ -170,6 +170,7 @@ pub(crate) fn run(dir: &Path, tray: bool) -> Result<()> {
         ),
         ("settings-muted", "light", None, "settings-muted-light"),
         ("settings-problem", "dark", None, "settings-problem-dark"),
+        ("settings-problem", "light", None, "settings-problem-light"),
     ] {
         let render = ui_shots::settings(&gpu, scene, theme == "dark", height)
             .ok_or_else(|| eyre!("no scene {scene}"))?;

@@ -58,13 +58,15 @@ pub(super) fn core_spec(config: &Config) -> Result<Spec, String> {
     })
 }
 
-pub(super) fn audio_config(config: &Config, muted: bool) -> AudioConfig {
+/// The audio engine's config: Vera's microphone (`None` follows the
+/// Windows default), volume, and the voice service the app started.
+pub(super) fn audio_config(config: &Config) -> AudioConfig {
     AudioConfig {
         microphone: config.microphone.clone(),
         volume: config.volume,
-        mic_muted: muted,
         voice_url: config.voice_url(),
         voice: config.voice.clone(),
+        ..AudioConfig::default()
     }
 }
 

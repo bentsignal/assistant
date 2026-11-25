@@ -61,6 +61,14 @@ pub(crate) struct Recent {
     pub(crate) when: String,
 }
 
+/// The line under Microphone: the device Vera hears, or that it sends
+/// only silence (muted at the device?).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MicrophoneNote {
+    pub(crate) text: String,
+    pub(crate) silent: bool,
+}
+
 /// Everything Settings shows, as the runtime last published it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SettingsView {
@@ -68,6 +76,7 @@ pub(crate) struct SettingsView {
     pub(crate) muted: bool,
     pub(crate) microphones: Vec<String>,
     pub(crate) microphone: Option<String>,
+    pub(crate) microphone_note: Option<MicrophoneNote>,
     pub(crate) volume: f32,
     /// (id, name).
     pub(crate) voices: Vec<(String, String)>,
@@ -93,6 +102,7 @@ impl Default for SettingsView {
             muted: false,
             microphones: Vec::new(),
             microphone: None,
+            microphone_note: None,
             volume: crate::vera::config::DEFAULT_VOLUME,
             voices: Vec::new(),
             voice: None,

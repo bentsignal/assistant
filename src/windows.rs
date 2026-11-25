@@ -95,6 +95,8 @@ enum Command {
     /// Vera's ears: listen hands-free and print each utterance's transcript
     /// as JSON lines (VERA.md, "Ears"); reads pause/resume/shutdown on stdin.
     Ears(crate::vera_ears::EarsArgs),
+    /// Vera's duplex audio engine: simulate, try, and measure it.
+    VeraAudio(crate::vera::audio::cli::VeraAudioArgs),
     /// Compare live-stream and full-clip transcription of a WAV file.
     #[command(hide = true)]
     StreamBench {
@@ -178,6 +180,10 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
             shutdown.store(false, Ordering::Relaxed);
             return crate::vera_ears::run(args, shutdown);
         }
+        Command::VeraAudio(args) => {
+            shutdown.store(false, Ordering::Relaxed);
+            return crate::vera::audio::cli::run(args, shutdown);
+        }
         command => command,
     };
     let log_dir = crate::app_paths::init_process_logging(shutdown)?;
@@ -252,7 +258,9 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
             speed,
             selection,
         } => stream_bench(&wav, speed, &selection.resolve()?),
-        Command::Control(_) | Command::Ears(_) => unreachable!("handled before logging"),
+        Command::Control(_) | Command::Ears(_) | Command::VeraAudio(_) => {
+            unreachable!("handled before logging")
+        }
     }
 }
 

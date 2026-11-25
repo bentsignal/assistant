@@ -2,9 +2,9 @@
 //! contract"): how to start it, and a probe thread that watches
 //! `GET /v1/health` and lists `GET /v1/voices` for Settings.
 //!
-//! `/v1/voices` isn't in the contract yet; the probe takes
-//! `{"voices":[{"id":"…","name":"…"}]}`, a bare list of those, or a list of
-//! ids, and falls back to the one voice health names.
+//! The probe reads `/v1/voices` (`{"voices":[{"id","name","available",…}]}`,
+//! a bare list of those, or a list of ids), leaves out voices the service
+//! says it can't run here, and falls back to the one voice health names.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -33,15 +33,21 @@ pub(crate) struct Status {
     pub(crate) voices: Vec<Voice>,
 }
 
-/// How to start the voice service: `app.voiceService.command`, else a Node
-/// service in `<repo>/vera/voice` (its `src/server.ts`, `src/main.ts`, or
-/// `src/index.ts`), run with tsx. It gets `--port <port>` and
-/// `VERA_VOICE_PORT`.
+/// How to start the voice service: `app.voiceService.command` (an argv),
+/// else `vera/voice` (VERA.md, "Voice service contract"): the venv's
+/// `pythonw.exe -m vera_voice serve --port <port> --parent-pid <Vera>` from
+/// `<repo>/vera/voice`, so the repo's code is what runs. `pythonw` has no
+/// console, and `--parent-pid` makes the service exit (freeing its VRAM)
+/// whenever Vera does, even if the job object were somehow bypassed. The
+/// venv is `~/.vera/voice/venv` (`vera\voice\scripts\setup.ps1` makes it).
 pub(crate) fn spec(config: &Config) -> Result<Spec, String> {
     let port = config.voice_port.to_string();
     let env = vec![
         ("VERA_VOICE_PORT".to_string(), port.clone()),
         ("VERA_APP".to_string(), "1".to_string()),
+        // The service's own log is ~/.vera/logs/voice.log; Python's stray
+        // prints and warnings shouldn't buffer behind a pipe.
+        ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
     ];
     if let Some(command) = &config.voice_service.command {
         let (program, args) = command
@@ -55,36 +61,35 @@ pub(crate) fn spec(config: &Config) -> Result<Spec, String> {
             env,
         });
     }
-    let repo = config
-        .repo()
-        .ok_or("Vera's repo wasn't found (set app.repo in config.json)")?;
-    let dir = config
-        .voice_service
-        .cwd
-        .clone()
-        .unwrap_or_else(|| repo.join("vera").join("voice"));
-    if !dir.join("package.json").is_file() {
+    let python = super::paths::home()
+        .join("voice")
+        .join("venv")
+        .join("Scripts")
+        .join("pythonw.exe");
+    if !python.is_file() {
         return Err(format!(
-            "no voice service at {} (set app.voiceService.command)",
-            dir.display()
+            "the voice service isn't set up (no {}); run vera\\voice\\scripts\\setup.ps1",
+            python.display()
         ));
     }
-    let entry = ["src/server.ts", "src/main.ts", "src/index.ts"]
-        .iter()
-        .map(|entry| dir.join(entry))
-        .find(|entry| entry.is_file())
-        .ok_or_else(|| format!("no entry point in {}", dir.display()))?;
-    let node = which("node").ok_or("Node isn't on PATH")?;
+    let cwd = config.voice_service.cwd.clone().or_else(|| {
+        config
+            .repo()
+            .map(|repo| repo.join("vera").join("voice"))
+            .filter(|dir| dir.join("vera_voice").join("__main__.py").is_file())
+    });
     Ok(Spec {
-        program: node,
+        program: python,
         args: vec![
-            "--import".into(),
-            "tsx".into(),
-            entry.into_os_string(),
+            "-m".into(),
+            "vera_voice".into(),
+            "serve".into(),
             "--port".into(),
             port.into(),
+            "--parent-pid".into(),
+            std::process::id().to_string().into(),
         ],
-        cwd: Some(dir),
+        cwd,
         env,
     })
 }
@@ -117,6 +122,9 @@ fn voices(value: &Value) -> Vec<Voice> {
                 name: id.clone(),
             }),
             Value::Object(fields) => {
+                if fields.get("available").and_then(Value::as_bool) == Some(false) {
+                    return None;
+                }
                 let id = fields.get("id")?.as_str()?.to_owned();
                 let name = fields
                     .get("name")

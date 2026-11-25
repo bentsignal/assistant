@@ -19,9 +19,9 @@
 //! speculative transcription during the pause, hesitation joins), and this
 //! file runs the microphone, the engine, and stdin/stdout.
 
-mod endpointer;
-mod protocol;
-mod utterances;
+pub(crate) mod endpointer;
+pub(crate) mod protocol;
+pub(crate) mod utterances;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -144,7 +144,7 @@ pub(crate) fn run(args: EarsArgs, shutdown: &'static AtomicBool) -> Result<()> {
     }
 }
 
-fn init_logging() {
+pub(crate) fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("HEX_EARS_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("hex=info"));
     let _ = tracing_subscriber::fmt()
@@ -154,53 +154,155 @@ fn init_logging() {
         .try_init();
 }
 
+/// What Vera's ears are tuned to, shared by `hex ears` and the duplex
+/// engine (`vera::audio`). [`Default`] matches the `hex ears` flags.
+#[derive(Clone, Debug)]
+pub(crate) struct EarsSettings {
+    pub model: String,
+    pub language: String,
+    pub pause: Duration,
+    pub hesitation: Duration,
+    pub min_speech: Duration,
+    pub pre_roll: Duration,
+    pub max_utterance: Duration,
+    pub partials: bool,
+    pub vocabulary: Vec<String>,
+    pub vocabulary_boost: crate::dictation::vocabulary::VocabularyBoost,
+    pub check_speech: bool,
+}
+
+impl Default for EarsSettings {
+    fn default() -> Self {
+        Self {
+            model: "parakeet_unified_en".into(),
+            language: "en".into(),
+            pause: Duration::from_millis(700),
+            hesitation: Duration::from_millis(1_400),
+            min_speech: Duration::from_millis(120),
+            pre_roll: Duration::from_millis(300),
+            max_utterance: Duration::from_millis(30_000),
+            partials: true,
+            vocabulary: vec!["Vera".into()],
+            vocabulary_boost: crate::dictation::vocabulary::VocabularyBoost::Normal,
+            check_speech: true,
+        }
+    }
+}
+
+impl EarsSettings {
+    pub(crate) fn endpointer(&self) -> endpointer::Settings {
+        endpointer::Settings {
+            pause: self.pause,
+            min_speech: self.min_speech,
+            pre_roll: self.pre_roll,
+            max_utterance: self.max_utterance,
+        }
+    }
+
+    pub(crate) fn selection(&self) -> Result<TranscriptionSelection> {
+        let selection = TranscriptionSelection {
+            model: self
+                .model
+                .parse::<TranscriptionModelId>()
+                .wrap_err_with(|| format!("invalid model id: {}", self.model))?,
+            language: self.language.clone(),
+        };
+        validate(&selection)?;
+        Ok(selection)
+    }
+}
+
+impl EarsArgs {
+    fn settings(&self) -> EarsSettings {
+        EarsSettings {
+            model: self.model.clone(),
+            language: self.language.clone(),
+            pause: Duration::from_millis(self.pause_ms),
+            hesitation: Duration::from_millis(self.hesitation_ms),
+            min_speech: Duration::from_millis(self.min_speech_ms),
+            pre_roll: Duration::from_millis(self.pre_roll_ms),
+            max_utterance: Duration::from_millis(self.max_utterance_ms),
+            partials: !self.no_partials,
+            vocabulary: self.vocabulary.clone(),
+            vocabulary_boost: self.vocabulary_boost,
+            check_speech: !self.no_speech_check,
+        }
+    }
+}
+
+/// Hex's transcription, loaded for Vera: the model on its engine thread,
+/// the vocabulary bias applied, and the speech detector warmed up.
+pub(crate) struct Stt {
+    pub engine: Arc<TranscriptionEngine>,
+    pub selection: TranscriptionSelection,
+    /// Where the model runs, for example "NVIDIA GeForce RTX 5070 Ti (vulkan)".
+    pub backend_label: String,
+    pub check_speech: bool,
+}
+
+impl Stt {
+    pub(crate) fn load(settings: &EarsSettings) -> Result<Self> {
+        let selection = settings.selection()?;
+        let terms: Vec<_> = settings
+            .vocabulary
+            .iter()
+            .map(|term| term.trim())
+            .filter(|term| !term.is_empty())
+            .map(|term| crate::dictation::vocabulary::VocabularyEntry {
+                term: term.to_owned(),
+                sounds_like: Vec::new(),
+            })
+            .collect();
+        crate::dictation::vocabulary::apply(&terms, settings.vocabulary_boost);
+        let loading = Instant::now();
+        let transcriber = LocalTranscriber::load(&selection)?;
+        let backend_label = transcriber.device_label().to_owned();
+        tracing::info!(
+            model = selection.model.as_str(),
+            backend = backend_label,
+            load_ms = loading.elapsed().as_millis() as u64,
+            "ears model ready"
+        );
+        // Silero loads on the CPU now, so the first utterance doesn't pay for it.
+        let check_speech = settings.check_speech;
+        if check_speech
+            && crate::transcription::speech_detector::contains_speech(&vec![0.0; 8_000]).is_none()
+        {
+            tracing::warn!(
+                "the speech detector is unavailable; every level-cut clip is transcribed"
+            );
+        }
+        let engine = Arc::new(TranscriptionEngine::start(transcriber)?);
+        Ok(Self {
+            engine,
+            selection,
+            backend_label,
+            check_speech,
+        })
+    }
+
+    /// The [`Backend`] Utterances transcribes through; each transcript
+    /// comes back on `results`.
+    pub(crate) fn backend(&self, results: Sender<Finished>) -> EngineBackend {
+        EngineBackend {
+            jobs: spawn_finisher(self.engine.clone(), results),
+            check_speech: self.check_speech,
+        }
+    }
+}
+
 fn listen(
     args: &EarsArgs,
     shutdown: &'static AtomicBool,
     output: &Arc<Output<std::io::Stdout>>,
 ) -> Result<()> {
-    let selection = TranscriptionSelection {
-        model: args
-            .model
-            .parse::<TranscriptionModelId>()
-            .wrap_err_with(|| format!("invalid model id: {}", args.model))?,
-        language: args.language.clone(),
-    };
-    validate(&selection)?;
-    let terms: Vec<_> = args
-        .vocabulary
-        .iter()
-        .map(|term| term.trim())
-        .filter(|term| !term.is_empty())
-        .map(|term| crate::dictation::vocabulary::VocabularyEntry {
-            term: term.to_owned(),
-            sounds_like: Vec::new(),
-        })
-        .collect();
-    crate::dictation::vocabulary::apply(
-        &terms,
-        args.vocabulary_boost,
-    );
-
+    let settings = args.settings();
+    settings.selection()?;
     let commands = spawn_stdin_reader();
-    let loading = Instant::now();
-    let transcriber = LocalTranscriber::load(&selection)?;
-    let backend_label = transcriber.device_label().to_owned();
-    tracing::info!(
-        model = selection.model.as_str(),
-        backend = backend_label,
-        load_ms = loading.elapsed().as_millis() as u64,
-        "ears model ready"
-    );
-    // Silero loads on the CPU now, so the first utterance doesn't pay for it.
-    let check_speech = !args.no_speech_check;
-    if check_speech
-        && crate::transcription::speech_detector::contains_speech(&vec![0.0; 8_000]).is_none()
-    {
-        tracing::warn!("the speech detector is unavailable; every level-cut clip is transcribed");
-    }
-    let engine = Arc::new(TranscriptionEngine::start(transcriber)?);
-    let partials = !args.no_partials;
+    let stt = Stt::load(&settings)?;
+    let partials = settings.partials;
+    let selection = stt.selection.clone();
+    let backend_label = stt.backend_label.clone();
 
     let device = match &args.device {
         Some(query) => Some(resolve_device(query)?),
@@ -208,21 +310,12 @@ fn listen(
     };
     let mut input = RecoveringAudioInput::open(device.as_deref(), 0, None);
     let (results, finished) = mpsc::channel();
-    let backend = EngineBackend {
-        jobs: spawn_finisher(engine, results),
-        check_speech,
-    };
-    let settings = endpointer::Settings {
-        pause: Duration::from_millis(args.pause_ms),
-        min_speech: Duration::from_millis(args.min_speech_ms),
-        pre_roll: Duration::from_millis(args.pre_roll_ms),
-        max_utterance: Duration::from_millis(args.max_utterance_ms),
-    };
+    let backend = stt.backend(results);
     let mut ears = Utterances::new(
         backend,
         output.clone(),
-        settings,
-        Duration::from_millis(args.hesitation_ms),
+        settings.endpointer(),
+        settings.hesitation,
         partials,
     );
     let mut resampler: Option<(u32, StreamingResampler)> = None;
@@ -309,7 +402,7 @@ fn parse_boost(value: &str) -> Result<crate::dictation::vocabulary::VocabularyBo
     }
 }
 
-fn resolve_device(query: &str) -> Result<String> {
+pub(crate) fn resolve_device(query: &str) -> Result<String> {
     let lower = query.to_lowercase();
     crate::audio::input_device_names()?
         .into_iter()
@@ -345,7 +438,7 @@ fn spawn_stdin_reader() -> Receiver<Command> {
 
 /// [`Backend`] on Hex's transcription engine: whole-clip runs for partials
 /// and finals, Silero for speech checks.
-struct EngineBackend {
+pub(crate) struct EngineBackend {
     jobs: Sender<Job>,
     check_speech: bool,
 }

@@ -62,9 +62,11 @@ pub(crate) enum ChimeKind {
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum AppEvent {
+    /// `volume` is Vera's own level (Core starts its steps from it).
     Ready {
         mic: String,
         engine: String,
+        volume: f32,
     },
     SpeechStart {
         t: u64,
@@ -80,6 +82,7 @@ pub(crate) enum AppEvent {
         during_playback: bool,
     },
     SpeechCancel {
+        t: u64,
         reason: String,
     },
     BargeIn {
@@ -93,6 +96,9 @@ pub(crate) enum AppEvent {
         action: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
         card_id: Option<String>,
+        /// With `settings_changed`: Vera's volume now.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        volume: Option<f32>,
     },
 }
 
@@ -101,6 +107,16 @@ impl AppEvent {
         Self::Ui {
             action,
             card_id: None,
+            volume: None,
+        }
+    }
+
+    /// `settings_changed`, with the volume so Core's steps start from it.
+    pub(crate) fn settings_changed(volume: f32) -> Self {
+        Self::Ui {
+            action: "settings_changed",
+            card_id: None,
+            volume: Some((volume * 100.0).round() / 100.0),
         }
     }
 
@@ -181,6 +197,10 @@ mod tests {
         assert_eq!(
             AppEvent::ui("stop_talking").line(),
             r#"{"type":"ui","action":"stop_talking"}"#
+        );
+        assert_eq!(
+            AppEvent::settings_changed(0.7).line(),
+            r#"{"type":"ui","action":"settings_changed","volume":0.7}"#
         );
         assert_eq!(
             AppEvent::Playback {

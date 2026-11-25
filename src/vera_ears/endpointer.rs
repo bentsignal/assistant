@@ -86,6 +86,9 @@ pub(crate) struct Endpointer {
     /// The earliest position a clip may reach back to: nothing from before
     /// the last reset.
     earliest: usize,
+    /// While set, no new utterance starts (one in progress goes on): the
+    /// duplex engine holds onsets while Vera's own voice is in the room.
+    inhibited: bool,
     state: State,
 }
 
@@ -112,8 +115,15 @@ impl Endpointer {
             frame: Vec::with_capacity(FRAME_SAMPLES),
             position: 0,
             earliest: 0,
+            inhibited: false,
             state: State::Idle { run: None },
         }
+    }
+
+    /// Holds (or releases) new onsets; frames are still judged, so the
+    /// noise floor keeps adapting.
+    pub(crate) fn set_inhibited(&mut self, inhibited: bool) {
+        self.inhibited = inhibited;
     }
 
     /// Samples pushed so far, which is where the next sample sits.
@@ -133,6 +143,20 @@ impl Endpointer {
         self.state = State::Idle { run: None };
         self.earliest = self.position();
         was_speaking
+    }
+
+    /// Starts an utterance whose speech began at `onset`, now, whatever
+    /// the frames said: the duplex engine knows the user is talking before
+    /// the level gate does (Vera's echo raised its noise floor).
+    pub(crate) fn force_start(&mut self, onset: usize) -> Event {
+        let clip_start = onset.saturating_sub(samples(self.settings.pre_roll));
+        self.state = State::Speaking {
+            clip_start,
+            speech_end: self.position(),
+            silent_frames: 0,
+        };
+        self.earliest = self.earliest.min(clip_start);
+        Event::Started { clip_start, onset }
     }
 
     /// Passes over `samples` without judging them (audio heard while paused),
@@ -169,6 +193,10 @@ impl Endpointer {
         let end = start + FRAME_SAMPLES;
         let settings = self.settings;
         match &mut self.state {
+            State::Idle { run } if self.inhibited => {
+                *run = None;
+                None
+            }
             State::Idle { run } => {
                 let next = match (*run, speech) {
                     (None, false) => None,
@@ -213,9 +241,7 @@ impl Endpointer {
                 let forced = length >= samples(settings.max_utterance) * 2;
                 let quiet_ms = *silent_frames * FRAME_MS;
                 if quiet_ms < pause.as_millis() as usize && !forced {
-                    return (!speech
-                        && quiet_ms == frames(QUIET) * FRAME_MS
-                        && pause > QUIET)
+                    return (!speech && quiet_ms == frames(QUIET) * FRAME_MS && pause > QUIET)
                         .then(|| Event::Quiet {
                             clip_start: *clip_start,
                             speech_end: *speech_end,
@@ -317,6 +343,30 @@ mod tests {
     fn quiet(duration_ms: usize) -> Vec<f32> {
         let mut seed = 11;
         noise(duration_ms, -70.0, &mut seed)
+    }
+
+    #[test]
+    fn an_inhibited_endpointer_starts_nothing_but_finishes_what_it_started() {
+        let mut endpointer = Endpointer::new(Settings::default());
+        endpointer.set_inhibited(true);
+        let events = run(&mut endpointer, &utterance(&[(800, 1_000)], -70.0), 160);
+        assert!(events.is_empty(), "{events:?}");
+        endpointer.set_inhibited(false);
+        let mut audio = utterance(&[(400, 0)], -70.0);
+        let started = run(&mut endpointer, &audio, 160);
+        assert!(
+            matches!(started.as_slice(), [Event::Started { .. }]),
+            "{started:?}"
+        );
+        endpointer.set_inhibited(true);
+        audio = noise(1_200, -70.0, &mut 7);
+        let ended = run(&mut endpointer, &audio, 160);
+        assert!(
+            ended
+                .iter()
+                .any(|event| matches!(event, Event::Ended { .. })),
+            "{ended:?}"
+        );
     }
 
     #[test]

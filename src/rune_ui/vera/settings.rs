@@ -9,8 +9,8 @@ use rune_kit::{
 };
 
 use super::super::controls::{
-    DESCRIPTION, METRICS, PushSize, card, icon_row, keycaps, page, pressable_row, row_switch,
-    section, status_dot,
+    DESCRIPTION, METRICS, PushSize, card, icon_described_row, icon_row, keycaps, page,
+    pressable_row, row_switch, section, status_dot,
 };
 use super::super::{Paint, icons, lists, scroll_body};
 use super::{Actions, Recent, SettingsView, Status, Tone, UiAction, send};
@@ -83,14 +83,18 @@ pub(crate) fn fixture_view() -> SettingsView {
             "Microphone Array (Realtek(R) Audio)".into(),
         ],
         microphone: Some("Microphone (Shure MV7+)".into()),
-        volume: 0.35,
+        microphone_note: Some(super::MicrophoneNote {
+            text: "Hearing Microphone (Shure MV7+)".into(),
+            silent: false,
+        }),
+        volume: crate::vera::config::DEFAULT_VOLUME,
         voices: vec![
-            ("af_heart".into(), "Heart".into()),
-            ("af_sky".into(), "Sky".into()),
-            ("bf_emma".into(), "Emma".into()),
-            ("am_michael".into(), "Michael".into()),
+            ("isla".into(), "Isla".into()),
+            ("nora".into(), "Nora".into()),
+            ("june".into(), "June".into()),
+            ("eli".into(), "Eli".into()),
         ],
-        voice: Some("af_heart".into()),
+        voice: Some("isla".into()),
         brain: Brain::ClaudeCode,
         model: "sonnet".into(),
         wake: Wake::Normal,
@@ -150,9 +154,16 @@ pub(crate) const SCENES: &[Scene] = &[
     ("settings-problem", |ui| {
         ui.view.status = Status {
             tone: Tone::Problem,
-            title: "Core isn't running".into(),
-            detail: "Node isn't on PATH \u{00b7} retrying".into(),
+            title: "No sound from the microphone".into(),
+            detail: "Headset Microphone (Jabra Evolve2 65) sends only silence. It may be muted: \
+                unmute it, or choose another microphone below"
+                .into(),
         };
+        ui.view.microphone = None;
+        ui.view.microphone_note = Some(super::MicrophoneNote {
+            text: "No sound from Headset Microphone (Jabra Evolve2 65). Is it muted?".into(),
+            silent: true,
+        });
         ui.view.recent.clear();
     }),
 ];
@@ -362,12 +373,16 @@ fn microphone_row(ui: &VeraUi, p: Paint, layer: &mut Vec<El>) -> El {
             UiAction::SetMicrophone(Some(name.clone())),
         )
     }));
-    icon_row(
+    let note = ui.view.microphone_note.as_ref().map(|note| {
+        let color = if note.silent { p.danger() } else { p.muted() };
+        (note.text.clone(), color)
+    });
+    icon_described_row(
         p,
         "microphone",
         &icons::MIC,
         "Microphone",
-        None,
+        note,
         select(
             p,
             "microphone-select",

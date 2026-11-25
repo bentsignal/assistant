@@ -12,7 +12,8 @@
 //!   audio engine, HUD, card, and tray, and the audio engine's events to Core.
 //! - [`child`]: Core and the voice service as hidden, supervised children, each
 //!   tree in a kill-on-close job object.
-//! - [`audio`]: the audio engine's seam (a stub until the duplex engine lands).
+//! - [`audio`]: the full-duplex audio engine (AEC3, barge-in, Parakeet STT,
+//!   playback); `hex vera-audio` drives it from the command line (`docs/vera-audio.md`).
 //! - `crate::rune_ui::vera`: the Settings window and the card, in Hex's style.
 
 pub(crate) mod audio;

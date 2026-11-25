@@ -24,7 +24,7 @@ use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use serde_json::json;
 
-use super::audio::{AudioEvent, Chime, PlaybackState, VeraAudio};
+use super::audio::{self as engine, AudioEvent, PlaybackState, VeraAudio};
 use super::child::Supervisor;
 use super::config::{self, Config};
 use super::protocol::{self, AppEvent, ChimeKind, CoreCommand, HudState};
@@ -44,6 +44,12 @@ const LINGER: Duration = Duration::from_millis(700);
 const METER_TICK: Duration = Duration::from_millis(30);
 const IDLE_TICK: Duration = Duration::from_millis(120);
 const RECENT: usize = 6;
+/// A raw microphone peak at or under this (about -120 dBFS) is digital
+/// silence: a muted or dead device, not a quiet room.
+const SILENT_PEAK: f32 = 1e-6;
+/// How long an open microphone may send only silence before Settings and
+/// the tray say so.
+const SILENT_FOR: Duration = Duration::from_secs(4);
 
 pub(crate) enum Msg {
     CoreLine(String),
@@ -144,6 +150,15 @@ pub(crate) fn run(hidden: bool) -> Result<()> {
     result.map_err(|error| eyre!("Vera's window failed: {error}"))
 }
 
+/// Starts the HUD's GPU device and pipelines off the UI thread; cheap when
+/// they're already up.
+fn warm_hud() {
+    rune::warm_gpu_with(
+        crate::rune_hud::Painter::FEATURES,
+        crate::rune_hud::prepare_gpu,
+    );
+}
+
 struct Controller {
     config: Config,
     messages: Sender<Msg>,
@@ -161,6 +176,12 @@ struct Controller {
     generation: u64,
     /// The engine's `Ready`: the microphone and engine it named.
     ready: Option<(String, String)>,
+    /// The audio engine's last problem: (message, fatal).
+    audio_error: Option<(String, bool)>,
+    /// When the open microphone last delivered anything but digital silence.
+    mic_heard_at: Instant,
+    /// The open microphone has sent only digital silence for `SILENT_FOR`.
+    mic_silent: bool,
     muted: bool,
     /// The utterance playing now.
     speaking: Option<String>,
@@ -198,7 +219,7 @@ impl Controller {
                 let _ = messages.send(Msg::CoreLine(line));
             })
         };
-        let voice_service = Supervisor::new("voice", super::voice::spec(&config), |line| {
+        let voice_service = Supervisor::new("voice-service", super::voice::spec(&config), |line| {
             tracing::debug!(%line, "voice service");
         });
         let voice_probe = Arc::new(AtomicBool::new(false));
@@ -251,6 +272,9 @@ impl Controller {
             audio: None,
             generation: 0,
             ready: None,
+            audio_error: None,
+            mic_heard_at: Instant::now(),
+            mic_silent: false,
             muted: false,
             speaking: None,
             badge: 0,
@@ -310,9 +334,23 @@ impl Controller {
     fn start_audio(&mut self) {
         self.audio = None;
         self.ready = None;
+        self.audio_error = None;
+        self.mic_silent = false;
+        self.mic_heard_at = Instant::now();
         self.generation += 1;
         let generation = self.generation;
-        let (audio, events) = VeraAudio::start(audio_config(&self.config, self.muted));
+        let (audio, events) = match VeraAudio::start(audio_config(&self.config)) {
+            Ok(started) => started,
+            Err(error) => {
+                let message = format!("{error:#}");
+                tracing::error!(%message, "the audio engine didn't start");
+                self.audio_error = Some((message, true));
+                return;
+            }
+        };
+        if self.muted {
+            audio.set_mic_muted(true);
+        }
         let messages = self.messages.clone();
         let _ = std::thread::Builder::new()
             .name("vera-audio-events".into())
@@ -378,10 +416,10 @@ impl Controller {
             CoreCommand::Hud { state } => self.core_hud(state),
             CoreCommand::Chime { kind } => {
                 let chime = match kind {
-                    ChimeKind::Notify | ChimeKind::Other => Chime::Notify,
-                    ChimeKind::Listening => Chime::Listening,
-                    ChimeKind::Done => Chime::Done,
-                    ChimeKind::Error => Chime::Error,
+                    ChimeKind::Notify | ChimeKind::Other => engine::ChimeKind::Notify,
+                    ChimeKind::Listening => engine::ChimeKind::Listening,
+                    ChimeKind::Done => engine::ChimeKind::Done,
+                    ChimeKind::Error => engine::ChimeKind::Error,
                 };
                 if let Some(audio) = &self.audio {
                     audio.chime(chime);
@@ -397,7 +435,7 @@ impl Controller {
                 markdown,
             }),
             CoreCommand::Hide { card_id } => self.card.hide(card_id),
-            CoreCommand::SetVolume { level } => self.set_volume(level, true),
+            CoreCommand::SetVolume { level } => self.set_volume(level, true, true),
             CoreCommand::Badge { count } => self.badge = count,
         }
     }
@@ -422,6 +460,9 @@ impl Controller {
 
     fn show(&mut self, look: VeraLook) {
         self.idle_at = None;
+        if self.look.is_none() {
+            warm_hud();
+        }
         if self.look != Some(look) {
             self.look = Some(look);
             self.hud.send(HudEvent::Vera(look));
@@ -430,12 +471,32 @@ impl Controller {
 
     fn audio_event(&mut self, event: AudioEvent) {
         match event {
-            AudioEvent::Ready { mic, engine } => {
-                tracing::info!(%mic, %engine, "audio ready");
+            AudioEvent::Ready {
+                mic,
+                engine,
+                backend,
+            } => {
+                tracing::info!(%mic, %engine, %backend, "audio ready");
                 self.ready = Some((mic.clone(), engine.clone()));
-                self.tell_core(AppEvent::Ready { mic, engine });
+                self.audio_error = None;
+                self.mic_heard_at = Instant::now();
+                self.tell_core(AppEvent::Ready {
+                    mic,
+                    engine,
+                    volume: self.config.volume,
+                });
             }
-            AudioEvent::SpeechStart { t } => self.tell_core(AppEvent::SpeechStart { t }),
+            AudioEvent::Error { message, fatal } => {
+                tracing::warn!(%message, fatal, "audio engine");
+                self.audio_error = Some((message, fatal));
+            }
+            AudioEvent::SpeechStart { t } => {
+                // The HUD may show soon: start its GPU device and pipelines
+                // on a thread now, so it appears at once (as Hex does on a
+                // shortcut press).
+                warm_hud();
+                self.tell_core(AppEvent::SpeechStart { t });
+            }
             AudioEvent::Partial { text, t } => self.tell_core(AppEvent::Partial { text, t }),
             AudioEvent::Final {
                 text,
@@ -451,8 +512,8 @@ impl Controller {
                     during_playback,
                 });
             }
-            AudioEvent::SpeechCancel { reason } => {
-                self.tell_core(AppEvent::SpeechCancel { reason })
+            AudioEvent::SpeechCancel { t, reason } => {
+                self.tell_core(AppEvent::SpeechCancel { t, reason })
             }
             AudioEvent::BargeIn { speak_id } => {
                 // Shawn talked over her: show him at once.
@@ -466,7 +527,15 @@ impl Controller {
                         self.speaking = Some(speak_id.clone());
                         self.show(VeraLook::Speaking);
                     }
-                    PlaybackState::Finished | PlaybackState::Interrupted => {
+                    PlaybackState::Finished
+                    | PlaybackState::Interrupted
+                    | PlaybackState::Failed => {
+                        if state == PlaybackState::Failed
+                            && let Some(audio) = &self.audio
+                        {
+                            // Vera meant to say something and couldn't.
+                            audio.chime(engine::ChimeKind::Error);
+                        }
                         if self.speaking.as_deref() == Some(speak_id.as_str()) {
                             self.speaking = None;
                         }
@@ -480,10 +549,13 @@ impl Controller {
                         }
                     }
                 }
-                self.tell_core(AppEvent::Playback {
-                    speak_id,
-                    state: state.as_str(),
-                });
+                let state = match state {
+                    PlaybackState::Started => "started",
+                    PlaybackState::Finished => "finished",
+                    PlaybackState::Interrupted => "interrupted",
+                    PlaybackState::Failed => "failed",
+                };
+                self.tell_core(AppEvent::Playback { speak_id, state });
             }
         }
     }
@@ -508,7 +580,7 @@ impl Controller {
                     self.start_audio();
                 }
             }
-            UiAction::SetVolume { level, done } => self.set_volume(level, done),
+            UiAction::SetVolume { level, done } => self.set_volume(level, done, false),
             UiAction::SetVoice(voice) => {
                 if voice != self.config.voice {
                     self.save(|root| *config::slot(root, &["app", "voice"]) = json!(voice));
@@ -525,18 +597,18 @@ impl Controller {
                         *slot = json!(model);
                     }
                 });
-                self.tell_core(AppEvent::ui("settings_changed"));
+                self.tell_core(AppEvent::settings_changed(self.config.volume));
             }
             UiAction::SetModel(model) => {
                 let brain = self.config.brain;
                 self.save(|root| {
                     *config::slot(root, &["brain", brain.key(), "model"]) = json!(model)
                 });
-                self.tell_core(AppEvent::ui("settings_changed"));
+                self.tell_core(AppEvent::settings_changed(self.config.volume));
             }
             UiAction::SetWake(wake) => {
                 self.save(|root| *config::slot(root, &["wake", "sensitivity"]) = json!(wake.key()));
-                self.tell_core(AppEvent::ui("settings_changed"));
+                self.tell_core(AppEvent::settings_changed(self.config.volume));
             }
             UiAction::SetStartAtLogin(enabled) => {
                 self.save(|root| *config::slot(root, &["app", "startAtLogin"]) = json!(enabled));
@@ -550,6 +622,7 @@ impl Controller {
             UiAction::CardClosed(card_id) => self.tell_core(AppEvent::Ui {
                 action: "card_closed",
                 card_id,
+                volume: None,
             }),
             UiAction::Quit => return true,
         }
@@ -563,7 +636,7 @@ impl Controller {
         self.config = Config::load();
     }
 
-    fn set_volume(&mut self, level: f32, persist: bool) {
+    fn set_volume(&mut self, level: f32, persist: bool, from_core: bool) {
         let level = level.clamp(0.0, 1.0);
         if let Some(audio) = &self.audio {
             audio.set_volume(level);
@@ -571,8 +644,14 @@ impl Controller {
         self.config.volume = level;
         if persist {
             self.save(|root| {
-                *config::slot(root, &["app", "volume"]) = json!((level * 100.0).round() / 100.0);
+                *config::slot(root, &["app", "volume"]) =
+                    json!((f64::from(level) * 100.0).round() / 100.0);
             });
+        }
+        // Core works out "quieter" from Vera's level; a change it didn't
+        // make (the Settings slider) is news to it.
+        if persist && !from_core {
+            self.tell_core(AppEvent::settings_changed(level));
         }
     }
 
@@ -630,7 +709,11 @@ impl Controller {
         if self.core.tick() {
             // A (re)started Core hears where things stand.
             if let Some((mic, engine)) = self.ready.clone() {
-                self.tell_core(AppEvent::Ready { mic, engine });
+                self.tell_core(AppEvent::Ready {
+                    mic,
+                    engine,
+                    volume: self.config.volume,
+                });
             }
             if self.muted {
                 self.tell_core(AppEvent::ui("mute"));
@@ -643,8 +726,9 @@ impl Controller {
                 self.hud.send(HudEvent::Vera(VeraLook::Idle));
             }
         }
+        self.watch_microphone();
         if let Some(audio) = &self.audio {
-            let (mic, out) = audio.levels();
+            let engine::Levels { mic, out } = audio.levels();
             let level = match self.look {
                 Some(VeraLook::Listening) => Some(mic),
                 Some(VeraLook::Speaking) => Some(out),
@@ -663,6 +747,28 @@ impl Controller {
             let _ = self.hud.failure();
         }
         self.publish(false);
+    }
+
+    /// Notices an open microphone that sends only digital silence (muted at
+    /// the device, or dead), so Settings and the tray can say so.
+    fn watch_microphone(&mut self) {
+        let Some(audio) = &self.audio else {
+            return;
+        };
+        let peak = audio.take_raw_peak();
+        if self.muted || self.ready.is_none() || peak > SILENT_PEAK {
+            self.mic_heard_at = Instant::now();
+        }
+        let silent = self.mic_heard_at.elapsed() >= SILENT_FOR;
+        if silent != self.mic_silent {
+            self.mic_silent = silent;
+            let mic = self.ready.as_ref().map_or("", |(mic, _)| mic.as_str());
+            if silent {
+                tracing::warn!(mic, "the microphone sends only silence (muted?)");
+            } else {
+                tracing::info!(mic, "the microphone hears sound again");
+            }
+        }
     }
 
     /// Sends Settings and the tray what changed; Settings' relative times

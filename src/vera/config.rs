@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! "app": {
-//!   "microphone": null, "volume": 0.35, "voice": null,
+//!   "microphone": null, "volume": 0.7, "voice": null,
 //!   "startAtLogin": true, "stopHotkey": "Ctrl+Alt+Space", "hud": "bottom",
 //!   "repo": null,
 //!   "core": { "command": null, "entry": "vera/core/src/main.ts", "args": ["--stdio"] },
@@ -20,8 +20,10 @@ use color_eyre::Result;
 use color_eyre::eyre::WrapErr;
 use serde_json::{Map, Value, json};
 
-/// Vera's own output gain until she's told otherwise: v1 was far too loud.
-pub(crate) const DEFAULT_VOLUME: f32 = 0.35;
+/// Vera's own output volume until she's told otherwise (the audio engine's
+/// scale: each 0.1 is 4 dB, 0.7 is -12 dB under the voice service, roughly
+/// half as loud as v1, which was far too loud).
+pub(crate) const DEFAULT_VOLUME: f32 = crate::vera::audio::DEFAULT_VOLUME;
 pub(crate) const DEFAULT_STOP_HOTKEY: &str = "Ctrl+Alt+Space";
 pub(crate) const DEFAULT_VOICE_PORT: u16 = 7314;
 

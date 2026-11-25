@@ -6,7 +6,7 @@ use super::super::child::State;
 use super::super::protocol::HudState;
 use super::super::tray::TrayState;
 use super::Controller;
-use crate::rune_ui::vera::{Recent, SettingsView, Status, Tone};
+use crate::rune_ui::vera::{MicrophoneNote, Recent, SettingsView, Status, Tone};
 
 fn ago(at: Instant) -> String {
     let seconds = at.elapsed().as_secs();
@@ -31,7 +31,13 @@ impl Controller {
             }
             State::Starting | State::Running | State::Stopped => {}
         }
+        if let Some((message, true)) = &self.audio_error {
+            return problem("Vera can't listen", message.clone());
+        }
         if self.ready.is_none() {
+            if let Some((message, false)) = &self.audio_error {
+                return problem("Starting", message.clone());
+            }
             return Status {
                 tone: Tone::Quiet,
                 title: "Starting".into(),
@@ -45,6 +51,15 @@ impl Controller {
                 detail: "Vera can't hear you until you unmute".into(),
             };
         }
+        if self.mic_silent {
+            let mic = self.ready.as_ref().map_or("The microphone", |(mic, _)| mic);
+            return problem(
+                "No sound from the microphone",
+                format!(
+                    "{mic} sends only silence. It may be muted: unmute it, or choose another microphone below"
+                ),
+            );
+        }
         match &self.voice_service.state {
             State::Missing(why) => return problem("Vera can listen but not speak", why.clone()),
             State::Restarting { why } => {
@@ -54,6 +69,13 @@ impl Controller {
                 );
             }
             _ => {}
+        }
+        if !self.voice.ready {
+            return Status {
+                tone: Tone::Quiet,
+                title: "Listening".into(),
+                detail: "Vera's voice is still loading".into(),
+            };
         }
         Status {
             tone: Tone::Ready,
@@ -82,6 +104,7 @@ impl Controller {
             muted: self.muted,
             microphones: self.microphones.clone(),
             microphone: self.config.microphone.clone(),
+            microphone_note: self.microphone_note(),
             volume: self.config.volume,
             voices,
             voice: self
@@ -112,11 +135,30 @@ impl Controller {
         }
     }
 
+    /// Which microphone Vera hears through, and whether it sends only
+    /// silence.
+    fn microphone_note(&self) -> Option<MicrophoneNote> {
+        let (mic, _) = self.ready.as_ref()?;
+        Some(if self.mic_silent {
+            MicrophoneNote {
+                text: format!("No sound from {mic}. Is it muted?"),
+                silent: true,
+            }
+        } else {
+            MicrophoneNote {
+                text: format!("Hearing {mic}"),
+                silent: false,
+            }
+        })
+    }
+
     pub(super) fn tray_state(&self) -> TrayState {
         let doing = if self.speaking.is_some() {
             "speaking"
         } else if self.muted {
             "microphone muted"
+        } else if self.mic_silent {
+            "no sound from the microphone (muted?)"
         } else if self.core_hud == HudState::Working {
             "working on a job"
         } else if matches!(
