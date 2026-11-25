@@ -10,10 +10,8 @@
 //! suppressed output clears its floor by `SUPPRESSED_MARGIN_DB`, or the
 //! linear output clears both its floor and the residual Vera's recent
 //! playback explains (her reference envelope plus the leak this room has
-//! shown, learned from echo-only stretches). Enough candidates in a row,
-//! and the speech detector hearing voiced speech in them (a breath, a
-//! chair or the room's noise doesn't duck), make a *suspicion*: Vera ducks
-//! by about 8 dB, gently enough that a false one is barely heard.
+//! shown, learned from echo-only stretches). Enough candidates in a row
+//! make a *suspicion*: Vera ducks by 20 dB at once.
 //!
 //! The duck is also the test. Echo falls with it once the ducked audio has
 //! come back through the room (the canceller's delay estimate says when);
@@ -40,13 +38,9 @@ use super::mixer::DUCK_GAIN;
 
 /// Blocks per 20 ms smoothing window.
 const SMOOTH: usize = 5;
-/// The trigger window (100 ms) and how many of its blocks must be
-/// candidates.
-const TRIGGER_WINDOW: usize = 25;
-const TRIGGER_COUNT: usize = 16;
-/// After the speech detector said a trigger wasn't speech, this long
-/// before asking again (blocks, 48 ms).
-const TRIGGER_RETRY: usize = 12;
+/// The trigger window and how many of its blocks must be candidates.
+const TRIGGER_WINDOW: usize = 15;
+const TRIGGER_COUNT: usize = 10;
 /// The suppressed output must clear its floor by this much.
 const SUPPRESSED_MARGIN_DB: f32 = 15.0;
 /// The linear output must clear its noise floor by this much...
@@ -77,9 +71,9 @@ const HOLD_BLOCKS: usize = 40;
 /// A confirmation this soon after a rejected suspicion means the user had
 /// already started then (blocks, 600 ms).
 const CHAIN_BLOCKS: u64 = 150;
-/// Echo falls by the duck's 8 dB; the loudest 20 ms of the user's voice
+/// Echo falls by the duck's 20 dB; the loudest 20 ms of the user's voice
 /// since the duck falls by less than this.
-const PROBE_MAX_DROP_DB: f32 = 5.0;
+const PROBE_MAX_DROP_DB: f32 = 12.0;
 /// If the duck never shows in the reference (nothing was playing), the
 /// probe starts this many blocks after the suspicion anyway.
 const DUCK_SEEN_TIMEOUT: usize = 50;
@@ -436,9 +430,7 @@ impl Detector {
                 self.state = State::Watching { refractory: 0 };
                 None
             }
-            State::Watching { refractory } => {
-                self.watch(index, refractory, &probe, reference_db, speech)
-            }
+            State::Watching { refractory } => self.watch(index, refractory, &probe, reference_db),
             State::Suspect(suspicion) => self.probe(
                 suspicion,
                 index,
@@ -468,7 +460,6 @@ impl Detector {
         refractory: usize,
         probe: &Probe,
         reference_db: f32,
-        speech: &mut dyn FnMut(&[f32]) -> Option<bool>,
     ) -> Option<Action> {
         self.state = State::Watching {
             refractory: refractory.saturating_sub(1),
@@ -487,17 +478,6 @@ impl Detector {
         }
         let count = self.hits.iter().filter(|(a, b)| *a || *b).count();
         if refractory > 0 || count < TRIGGER_COUNT {
-            return None;
-        }
-        // Stronger evidence before a duck: the speech detector must hear
-        // voiced speech in the trigger window (the linear output: the user
-        // intact, Vera's residual under them). Breaths, a chair, the room's
-        // noise don't duck her. An unknown answer (still loading) ducks.
-        let first = (index + 1).saturating_sub(TRIGGER_WINDOW as u64);
-        if speech(&self.check_audio(first, first)) == Some(false) {
-            self.state = State::Watching {
-                refractory: TRIGGER_RETRY,
-            };
             return None;
         }
         let by_suppressed = self.hits.iter().filter(|(a, _)| *a).count() >= TRIGGER_COUNT / 2;
@@ -572,7 +552,7 @@ impl Detector {
         if suspicion.hits >= PROBE_COUNT && !fell_with_vera && check_due && self.converged() {
             suspicion.checked_at = Some(suspicion.probed);
             // Before the duck took effect only the suppressed output is free
-            // of Vera's voice; after it, her residual is 8 dB down in the
+            // of Vera's voice; after it, her residual is 20 dB down in the
             // linear output, which also has the user intact. Where AEC3
             // still held the user back (a headset, a cold start), the checks
             // repeat as the ducked audio grows.
@@ -865,8 +845,8 @@ mod tests {
             .expect("a barge-in");
         let duck_ms = (duck.0 - onset) * 4;
         let confirm_ms = (confirm.0 - onset) * 4;
-        assert!(duck_ms <= 150, "duck after {duck_ms} ms");
-        assert!(confirm_ms <= 350, "barge-in after {confirm_ms} ms");
+        assert!(duck_ms <= 100, "duck after {duck_ms} ms");
+        assert!(confirm_ms <= 300, "barge-in after {confirm_ms} ms");
     }
 
     #[test]
@@ -888,23 +868,17 @@ mod tests {
     }
 
     #[test]
-    fn noise_the_speech_detector_rejects_never_ducks() {
+    fn noise_the_speech_detector_rejects_restores() {
         let mut room = Room::new(-15.0);
         for _ in 0..1_500 {
             room.block(0.1, 0.0);
         }
         room.speech = Some(false);
-        let onset = room.detector.position();
         for _ in 0..300 {
             room.block(0.1, 0.05);
         }
-        let kinds: Vec<Action> = room
-            .actions
-            .iter()
-            .filter(|(at, _)| *at >= onset)
-            .map(|(_, action)| *action)
-            .collect();
-        assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
+        let kinds: Vec<Action> = room.actions.iter().map(|(_, action)| *action).collect();
+        assert!(kinds.contains(&Action::Restore), "{kinds:?}");
         assert!(!room.confirmed(), "{kinds:?}");
     }
 

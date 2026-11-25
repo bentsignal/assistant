@@ -87,7 +87,7 @@ async function post(path, body) {
 
 const FINISHED = /<- app \{"type":"playback".*"state":"finished"/
 
-/** Says `text` and waits until the log shows each tool (in order) and then a finished line. */
+/** Says `text` and waits until the log shows each tool, a speak, and a finished line after it. */
 async function step(label, text, tools) {
   const read = tail()
   const started = Date.now()
@@ -96,21 +96,19 @@ async function step(label, text, tools) {
   while (Date.now() - started < TIMEOUT_MS) {
     await sleep(300)
     const log = read()
-    let at = 0
     missing = ""
+    // Each expected tool somewhere in the turn (the brain may speak first),
+    // then a speak whose line finished playing.
     for (const tool of tools) {
-      const m = new RegExp(`\\btool ${tool}\\b`).exec(log.slice(at))
-      if (!m) {
+      if (!new RegExp(`\\btool ${tool}\\b`).test(log)) {
         missing = `tool ${tool}`
         break
       }
-      at += m.index + m[0].length
     }
     if (!missing) {
-      const speakAt = log.slice(at).search(/\btool speak\b/)
-      const after = speakAt >= 0 ? log.slice(at + speakAt) : log.slice(at)
+      const speakAt = log.search(/\btool speak\b/)
       if (speakAt < 0) missing = "tool speak"
-      else if (!FINISHED.test(after)) missing = "playback finished"
+      else if (!FINISHED.test(log.slice(speakAt))) missing = "playback finished"
     }
     if (!missing) {
       await turn // let the turn end before the next one
