@@ -1503,6 +1503,7 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -2310,6 +2311,7 @@ dependencies = [
  "pollster",
  "procwatch",
  "ratatui",
+ "realfft",
  "regex",
  "rmcp",
  "rodio",
@@ -2326,6 +2328,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2 0.11.0",
+ "sonora-aec3",
  "symphonia",
  "tokio",
  "tracing",
@@ -5923,6 +5926,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "sonora-aec3"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2809c3fda13f71deac22d0ddb6c02c493f254d3da2afe59a7e256a8f15bcffe"
+dependencies = [
+ "sonora-common-audio",
+ "sonora-fft",
+ "sonora-simd",
+]
+
+[[package]]
+name = "sonora-common-audio"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c05dfa300c14dc8498751ce2c5b87aad2acf1892d4f9d66b92ae2f372a83410"
+dependencies = [
+ "derive_more",
+ "sonora-simd",
+]
+
+[[package]]
+name = "sonora-fft"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec3529f2cf748f1acc85d9403ffa08a3fe69dec6bf22383910b3bd21aca2fd26"
+dependencies = [
+ "sonora-simd",
+]
+
+[[package]]
+name = "sonora-simd"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f939d8e63a2a0baa7555294d7b09c5e3d382f28358755b920e13ad527658c8fa"
+dependencies = [
+ "cpufeatures 0.3.1",
+]
+
+[[package]]
 name = "spellbook"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6824,6 +6866,12 @@ name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "unicode-xid"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "ureq"

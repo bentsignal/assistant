@@ -18,12 +18,10 @@
 //!   competes with the final for the model.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::Write;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::endpointer::{self, Endpointer, SAMPLE_RATE, samples, trails_off};
-use super::protocol::{Event, Output};
+use super::protocol::{Event, Sink};
 
 /// How often unconfirmed speech is put to the speech detector.
 const CHECK_EVERY: Duration = Duration::from_millis(160);
@@ -94,9 +92,9 @@ struct Held {
     text: String,
 }
 
-pub(crate) struct Utterances<B: Backend, W: Write + Send> {
+pub(crate) struct Utterances<B: Backend, S: Sink> {
     backend: B,
-    output: Arc<Output<W>>,
+    output: S,
     endpointer: Endpointer,
     ring: VecDeque<f32>,
     ring_first: usize,
@@ -116,10 +114,10 @@ pub(crate) struct Utterances<B: Backend, W: Write + Send> {
     next_id: u64,
 }
 
-impl<B: Backend, W: Write + Send> Utterances<B, W> {
+impl<B: Backend, S: Sink> Utterances<B, S> {
     pub(crate) fn new(
         backend: B,
-        output: Arc<Output<W>>,
+        output: S,
         settings: endpointer::Settings,
         hesitation: Duration,
         partials: bool,
@@ -152,6 +150,22 @@ impl<B: Backend, W: Write + Send> Utterances<B, W> {
     /// Whether transcripts are still on their way.
     pub(crate) fn waiting(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    /// Holds new onsets while set (see [`Endpointer::set_inhibited`]).
+    pub(crate) fn set_inhibited(&mut self, inhibited: bool) {
+        self.endpointer.set_inhibited(inhibited);
+    }
+
+    /// Where events go.
+    pub(crate) fn sink_mut(&mut self) -> &mut S {
+        &mut self.output
+    }
+
+    /// Drops the utterance being spoken (`speech_cancel` with `reason` if
+    /// it was announced); transcripts of ended ones still arrive.
+    pub(crate) fn drop_current(&mut self, reason: &str) {
+        self.cancel_current(reason);
     }
 
     fn epoch_ms(&self, position: usize) -> u64 {
@@ -469,7 +483,7 @@ impl<B: Backend, W: Write + Send> Utterances<B, W> {
         }
     }
 
-    fn emit_final(&self, pending: &Pending, text: &str) {
+    fn emit_final(&mut self, pending: &Pending, text: &str) {
         if !pending.announced {
             // It waited on an earlier utterance, or was confirmed only by
             // its whole clip.
@@ -556,9 +570,13 @@ impl<B: Backend, W: Write + Send> Utterances<B, W> {
         self.hesitation = 0;
     }
 
-    #[cfg(test)]
     pub(crate) fn backend(&mut self) -> &mut B {
         &mut self.backend
+    }
+
+    /// When the utterance being spoken began (epoch ms).
+    pub(crate) fn current_onset_ms(&self) -> Option<u64> {
+        self.current.as_ref().map(|current| current.onset_ms)
     }
 }
 
@@ -591,6 +609,8 @@ pub(crate) fn join(prefix: &str, text: &str) -> String {
 mod tests {
     use super::*;
     use crate::transcription::pause_segmenter::tests::{noise, utterance};
+    use crate::vera_ears::protocol::Output;
+    use std::sync::Arc;
 
     #[derive(Default)]
     struct Fake {
@@ -608,7 +628,7 @@ mod tests {
         }
     }
 
-    type Ears = Utterances<Fake, Vec<u8>>;
+    type Ears = Utterances<Fake, Arc<Output<Vec<u8>>>>;
 
     fn ears(speech: bool) -> (Ears, Arc<Output<Vec<u8>>>) {
         let output = Arc::new(Output::new(Vec::new()));

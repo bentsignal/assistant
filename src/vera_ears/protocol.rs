@@ -60,6 +60,18 @@ pub(crate) fn parse_command(line: &str) -> Option<Result<Command, String>> {
     Some(serde_json::from_str(line).map_err(|error| format!("{error}: {line}")))
 }
 
+/// Where [`Event`]s go: stdout lines for `hex ears` ([`Output`]), or the
+/// duplex engine's queue (`vera::audio`).
+pub(crate) trait Sink {
+    fn emit(&mut self, event: &Event<'_>);
+}
+
+impl<W: Write + Send> Sink for std::sync::Arc<Output<W>> {
+    fn emit(&mut self, event: &Event<'_>) {
+        Output::emit(self, event);
+    }
+}
+
 /// Serializes events as lines on stdout. A failed write (the parent closed
 /// the pipe) sets `closed`, which ends the run.
 pub(crate) struct Output<W: Write + Send> {

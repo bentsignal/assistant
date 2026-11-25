@@ -82,6 +82,7 @@ mod suppression;
 mod transcription;
 mod updater;
 #[cfg(target_os = "windows")]
+mod vera;
 mod vera_ears;
 #[cfg(target_os = "windows")]
 mod windows;
@@ -946,7 +947,10 @@ fn main() -> Result<()> {
     }
     // `hex ears` (Vera) keeps its own data folder; set before the checks
     // below read markers there.
-    if std::env::args_os().nth(1).is_some_and(|command| command == "ears") {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|command| command == "ears" || command == "vera-audio")
+    {
         vera_ears::isolate();
     }
     windows::vulkan::check();
