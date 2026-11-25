@@ -6,6 +6,9 @@ import type { ChildProcess } from "node:child_process"
 import { killTree, onLines, spawnCli } from "../proc.ts"
 import type { Brain, BrainOptions, TurnResult } from "./types.ts"
 
+/** The MCP server name. Claude names its tools `mcp__<server>__<tool>`, so the allowlist must use the same name. */
+export const MCP_SERVER = "assistant"
+
 /**
  * Claude Code brain: one persistent `claude -p` with stream-json in and out.
  *
@@ -48,7 +51,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
   private async spawn(): Promise<void> {
     const { opts } = this
     const mcpFile = join(opts.stateDir, "mcp-claude.json")
-    writeFileSync(mcpFile, JSON.stringify({ mcpServers: { assistant: { type: "stdio", ...opts.mcp } } }, null, 2))
+    writeFileSync(mcpFile, JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: "stdio", ...opts.mcp } } }, null, 2))
     const promptFile = join(opts.stateDir, "system-prompt.claude.md")
     writeFileSync(promptFile, opts.systemPrompt)
     const args = [
@@ -65,7 +68,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
       "--tools",
       "WebSearch,WebFetch",
       "--allowedTools",
-      "mcp__vera,WebSearch,WebFetch",
+      `mcp__${MCP_SERVER},WebSearch,WebFetch`,
       "--permission-prompts",
       "none",
       "--mcp-config",
