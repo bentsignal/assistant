@@ -55,6 +55,9 @@ pub(crate) struct TrayState {
     pub(crate) speaking: bool,
     /// Inbox items: a dot on the icon while above zero.
     pub(crate) badge: u32,
+    /// Something is wrong (Settings' status is red): a coral dot, over
+    /// the inbox's blue one.
+    pub(crate) problem: bool,
     pub(crate) tooltip: String,
 }
 
@@ -80,8 +83,8 @@ struct Context {
     on_event: Handler,
     taskbar_created: u32,
     icon: std::cell::Cell<HICON>,
-    /// What the icon was drawn for: size, light taskbar, badge, dim.
-    drawn: std::cell::Cell<Option<(u32, bool, bool, bool)>>,
+    /// What the icon was drawn for: size, light taskbar, dot, dim.
+    drawn: std::cell::Cell<Option<(u32, bool, super::icon::Dot, bool)>>,
     capture: Arc<Mutex<Option<mpsc::SyncSender<Option<Captured>>>>>,
 }
 
@@ -128,17 +131,19 @@ fn icon_size() -> u32 {
 
 /// Draws the icon when what it shows changed; returns the current one.
 fn refresh_icon(context: &Context, state: &TrayState) -> HICON {
-    let key = (
-        icon_size(),
-        taskbar_is_light(),
-        state.badge > 0,
-        state.muted,
-    );
+    let dot = if state.problem {
+        super::icon::Dot::Problem
+    } else if state.badge > 0 {
+        super::icon::Dot::Inbox
+    } else {
+        super::icon::Dot::None
+    };
+    let key = (icon_size(), taskbar_is_light(), dot, state.muted);
     if context.drawn.get() == Some(key) && !context.icon.get().is_null() {
         return context.icon.get();
     }
-    let (size, light, badge, dim) = key;
-    let mut bgra = super::icon::tray_rgba(size, light, badge, dim);
+    let (size, light, dot, dim) = key;
+    let mut bgra = super::icon::tray_rgba(size, light, dot, dim);
     for pixel in bgra.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }

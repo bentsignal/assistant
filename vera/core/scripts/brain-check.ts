@@ -20,6 +20,19 @@ const cases: { say: string; want: (tools: string[], spoken: string) => string | 
   { say: "Vera, what's a good substitute for buttermilk?", want: (_t, s) => (words(s) <= 30 ? null : `too long (${words(s)} words)`) },
   { say: "Vera, tell me about the history of sourdough.", want: (_t, s) => (words(s) <= 35 ? null : `too long (${words(s)} words)`) },
   { say: "Vera, ask Claude to count the TODO comments in the vera folder.", want: (t, s) => (t.includes("ask_claude") && words(s) <= 6 ? null : `expected ask_claude and a brief ack, said "${s}"`) },
+  // Volume only when asked (Shawn's live test: it turned itself up twice on its own).
+  { say: "Vera, can you hear me?", want: (t) => (!t.includes("set_volume") ? null : "changed its volume unasked") },
+  { say: "Hello? Hello? Vera, can you hear me right now? What the heck?", want: (t) => (!t.includes("set_volume") ? null : "changed its volume unasked") },
+  { say: "Vera, I can't hear you at all.", want: (t) => (!t.includes("set_volume") ? null : "changed its volume for a sound problem") },
+  // Heteronyms respelled by meaning (it said "leed" for the metal).
+  {
+    say: "Vera, in one sentence: why is lead, the metal, bad in old water pipes?",
+    want: (_t, s) => (/\bled\b/i.test(s) && !/\blead\b/i.test(s) ? null : `expected "led", said "${s}"`),
+  },
+  {
+    say: "Vera, say this back to me exactly in the past tense: I read the book yesterday.",
+    want: (_t, s) => (/\bred\b/i.test(s) ? null : `expected "red", said "${s}"`),
+  },
 ]
 
 function words(s: string) {

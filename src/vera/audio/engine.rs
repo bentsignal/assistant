@@ -29,6 +29,21 @@ const STATS_EVERY: Duration = Duration::from_secs(2);
 /// How long the loop waits for audio before looking at everything else.
 const POLL: Duration = Duration::from_millis(5);
 
+/// The microphone: Hex's recovering input, or the simulated one
+/// (`simdev`, `VERA_AUDIO_SIM`).
+enum Input {
+    Real(Box<RecoveringAudioInput>),
+    Sim(super::simdev::SimInput),
+}
+
+impl Input {
+    fn close(self) {
+        if let Self::Real(mut input) = self {
+            input.close();
+        }
+    }
+}
+
 /// Speech to text, once loaded.
 pub(crate) enum SttBackend {
     Loading,
@@ -63,7 +78,7 @@ struct Engine {
     voice: VoiceClient,
     fetches: HashMap<String, Arc<AtomicBool>>,
     fetched: (Sender<Fetched>, Receiver<Fetched>),
-    input: Option<RecoveringAudioInput>,
+    input: Option<Input>,
     device: Option<String>,
     stt: Option<(String, String)>,
     ready: bool,
@@ -213,7 +228,9 @@ pub(super) fn run(
     for cancel in engine.fetches.values() {
         cancel.store(true, Ordering::Relaxed);
     }
-    drop(engine.input.take());
+    if let Some(input) = engine.input.take() {
+        input.close();
+    }
     drop(engine.output.take());
     if let (Some(folder), Some(audio)) = (dump, engine.core.audio_dump.take()) {
         super::sim::write_dump(&folder, "live", &audio);
@@ -260,13 +277,29 @@ impl Engine {
                 self.core.speech_queued(id);
             }
             Request::Stop => self.core.stop_playback(),
+            Request::Drop(id) => {
+                let id: SpeakId = id.into();
+                if let Some(cancel) = self.fetches.remove(&*id) {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                let _ = self.commands.send(mixer::Command::Drop { id: id.clone() });
+                self.core.speech_failed(&id, "dropped: it took too long");
+            }
             Request::Volume(level) => {
                 let _ = self.commands.send(mixer::Command::Gain(volume_gain(level)));
             }
+            Request::Voice(voice) => {
+                tracing::info!(
+                    voice = voice.as_deref().unwrap_or("(default)"),
+                    "vera audio: voice"
+                );
+                self.voice.set_voice(voice);
+            }
+            Request::Microphone(query) => self.switch_microphone(query),
             Request::Mute(muted) => {
                 self.core.set_muted(muted, now_ms());
                 if muted {
-                    if let Some(mut input) = self.input.take() {
+                    if let Some(input) = self.input.take() {
                         input.close();
                     }
                 } else if self.stt.is_some() && self.input.is_none() {
@@ -315,7 +348,49 @@ impl Engine {
     }
 
     fn open_input(&mut self) {
-        self.input = Some(RecoveringAudioInput::open(self.device.as_deref(), 0, None));
+        self.input = Some(match super::simdev::sim() {
+            Some(sim) => Input::Sim(super::simdev::SimInput::open(sim)),
+            None => Input::Real(Box::new(RecoveringAudioInput::open(
+                self.device.as_deref(),
+                0,
+                None,
+            ))),
+        });
+    }
+
+    /// Another microphone: only the input reopens (playback, speech to
+    /// text, and the echo canceller go on), and `Ready` names it again.
+    fn switch_microphone(&mut self, query: Option<String>) {
+        let device = match &query {
+            Some(query) => match crate::vera_ears::resolve_device(query) {
+                Ok(device) => Some(device),
+                Err(error) => {
+                    self.emit(AudioEvent::Error {
+                        message: format!("{error:#}; using the default microphone"),
+                        fatal: false,
+                    });
+                    None
+                }
+            },
+            None => None,
+        };
+        self.config.microphone = query;
+        if device == self.device && self.input.is_some() {
+            return;
+        }
+        self.device = device;
+        tracing::info!(
+            microphone = self.device.as_deref().unwrap_or("(default)"),
+            "vera audio: switching microphone"
+        );
+        if let Some(input) = self.input.take() {
+            input.close();
+            self.core.mic_interrupted("microphone changed");
+        }
+        self.ready = false;
+        if self.stt.is_some() && !self.shared.muted.load(Ordering::Relaxed) {
+            self.open_input();
+        }
     }
 
     /// Mixer reports, fetch outcomes, output failures, and the linger.
@@ -378,9 +453,19 @@ impl Engine {
 
     /// Takes what the microphone delivered (waiting up to `POLL`).
     fn listen(&mut self) {
-        let Some(input) = &mut self.input else {
-            std::thread::sleep(POLL);
-            return;
+        let input = match &mut self.input {
+            None => {
+                std::thread::sleep(POLL);
+                return;
+            }
+            Some(Input::Sim(input)) => {
+                if let Some((samples, captured_through)) = input.recv(POLL) {
+                    let rate = super::simdev::RATE;
+                    self.heard(&samples, rate, captured_through, "Simulated microphone");
+                }
+                return;
+            }
+            Some(Input::Real(input)) => input,
         };
         let idle = !self.core.listening_busy();
         match input.recv_timeout(POLL, idle) {
@@ -389,26 +474,8 @@ impl Engine {
                 captured_through,
             } => {
                 let rate = input.sample_rate();
-                let peak = samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
-                // Non-negative floats order like their bits.
-                self.shared
-                    .raw_peak
-                    .fetch_max(peak.to_bits(), Ordering::Relaxed);
-                self.core
-                    .mic(&samples, rate, captured_through.as_nanos(), now_ns());
-                if !self.ready
-                    && let Some((model, backend)) = &self.stt
-                {
-                    self.ready = true;
-                    let mic = input.device_name().to_owned();
-                    tracing::info!(mic, rate, "vera audio: listening");
-                    let event = AudioEvent::Ready {
-                        mic,
-                        engine: model.clone(),
-                        backend: backend.clone(),
-                    };
-                    self.emit(event);
-                }
+                let mic = input.device_name().to_owned();
+                self.heard(&samples, rate, captured_through.as_nanos(), &mic);
             }
             RecoveringAudioInputEvent::Timeout => {}
             RecoveringAudioInputEvent::Interrupted | RecoveringAudioInputEvent::Reopened => {
@@ -421,6 +488,28 @@ impl Engine {
                     fatal: false,
                 });
             }
+        }
+    }
+
+    /// A microphone chunk, from either input.
+    fn heard(&mut self, samples: &[f32], rate: u32, captured_through_ns: u64, mic: &str) {
+        let peak = samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
+        // Non-negative floats order like their bits.
+        self.shared
+            .raw_peak
+            .fetch_max(peak.to_bits(), Ordering::Relaxed);
+        self.core.mic(samples, rate, captured_through_ns, now_ns());
+        if !self.ready
+            && let Some((model, backend)) = &self.stt
+        {
+            self.ready = true;
+            tracing::info!(mic, rate, "vera audio: listening");
+            let event = AudioEvent::Ready {
+                mic: mic.to_owned(),
+                engine: model.clone(),
+                backend: backend.clone(),
+            };
+            self.emit(event);
         }
     }
 

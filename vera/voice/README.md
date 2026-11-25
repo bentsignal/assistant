@@ -225,6 +225,49 @@ own, 0.10 cost −0.1, and 0.07 cost nothing. The tint stages at 3–5% cost abo
 each. If Shawn wants more character, `synthetic` is the place for it, and every field
 of a preset is in one dataclass.
 
+## Pronunciation (`lexicon.py`)
+
+Every line goes through `text.normalize`, which applies the lexicon before
+sentences are cut: tech terms, names, and acronyms the way Shawn says them
+(T3 is "T three", GitHub "Git Hub", JSON "Jason", npm "N P M", CLI "C L I",
+Qwen "Kwen", ID "I D" but never I'd), units after numbers ("200 ms" is "200
+milliseconds"), and heteronyms only where their company makes the meaning
+certain ("lead pipes", "lead azide", "made of lead.", "have read", "live
+music", "wind up the cord", "tear down", "bass guitar", "close to"). A bare
+"lead" or "read" is left alone: the brain is told to respell heteronyms by
+meaning itself (the `speak` tool and `prompts/system.md`), and a wrong guess
+here would be worse than none. `~/.vera/voice/lexicon.json`
+(`{"Word": "how to say it"}`) adds or overrides whole-word terms, no restart
+needed.
+
+**Checking it** (`scripts/pronunciation_check.py --url <service> --hex
+target/ears-dev/hex.exe --out <dir>`): synthesizes test lines and runs them
+through Vera's own ears (`hex vera-audio transcribe`, Parakeet). That's an
+imperfect check: speech to text writes what it thinks was *meant*, so "the
+lead pipes" comes back "lead" however it was said. So heteronyms are checked
+in rhyming carriers, where the recognizer spells what it hears ("bed, led,
+and fed" comes back "led" only for /lɛd/), sentences are checked word for
+word (accepting either spelling of the heteronym, so a respelling never
+garbles a line), and terms against their accepted forms. Results on
+2026-11-25 (isla, `vera` preset): 25 checked, 24 pass, 5 informational.
+
+- Respellings confirmed by sound: "led" (bed, led, fed comes back "led";
+  bead, lead, feed comes back "lead"; Shawn's "led azide detonation" line came
+  back "led"), "base", "tare" (heard "tear", care/bare rhyme), "kloce".
+- Two respellings were changed because of it: "wynd" was heard as "win",
+  and "clohss" as "closed"; "wined" and "kloce" come back right. Plain "close
+  to the end" was itself said as the verb ("closed to"), so the lexicon
+  respells "close to" and friends.
+- Informational (the recognizer spells both sounds the same): "red" (comes
+  back "read"), "lyve" ("live"), "wined" ("wind"), "woond" ("wound"),
+  "duv" ("duve").
+- The one failure is a real limit: the voice says plain "bass" as "base" even
+  for the fish ("we caught a base in the lake"), and no respelling tried
+  ("bas", "bahs", "bas-fish") fixed it in a sentence; only "sea bass" comes
+  out right. The prompt says so.
+- Terms all pass (T3, GitHub, JSON, npm, CLI, Codex, "Shawn" heard as
+  "Sean", "Vera", "200 milliseconds").
+
 ## Known issues
 
 - **GPU memory.** The service holds about 5.5 GB of VRAM and about 3 GB of RAM while

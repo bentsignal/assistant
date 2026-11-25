@@ -183,7 +183,7 @@ pub(crate) fn probe(url: String, stop: Arc<AtomicBool>, report: impl Fn(Status) 
                     report(status.clone());
                     last = Some(status);
                 }
-                let wait = if ready { 10 } else { 2 };
+                let wait = if ready { 3 } else { 2 };
                 for _ in 0..wait * 4 {
                     if stop.load(Ordering::Relaxed) {
                         return;

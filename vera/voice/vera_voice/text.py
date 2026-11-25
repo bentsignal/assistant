@@ -4,29 +4,14 @@ from __future__ import annotations
 
 import re
 
+from . import lexicon
+
 _FENCE = re.compile(r"```.*?(```|$)", re.S)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _URL = re.compile(r"https?://\S+")
 _MD = re.compile(r"(^|\s)[#>*\-]+\s+|[*_~]{1,3}(?=\S)|(?<=\S)[*_~]{1,3}")
 _SPACE = re.compile(r"\s+")
-
-# Respellings for words the engines tend to get wrong.
-RESPELL = {
-    r"\bT3\b": "T three",
-    r"\bCLI\b": "C L I",
-    r"\bAPI\b": "A P I",
-    r"\bUI\b": "U I",
-    r"\bJSON\b": "Jason",
-    r"\bTTS\b": "T T S",
-    r"\bGPU\b": "G P U",
-    r"\bPR\b": "P R",
-    r"\bPRs\b": "P Rs",
-    r"\bnpm\b": "N P M",
-    r"\bpnpm\b": "P N P M",
-    r"\be\.g\.": "for example",
-    r"\bi\.e\.": "that is",
-}
 
 
 def normalize(text: str) -> str:
@@ -35,8 +20,7 @@ def normalize(text: str) -> str:
     t = _URL.sub("a link", t)
     t = _INLINE_CODE.sub(r"\1", t)
     t = _MD.sub(r"\1", t)
-    for pat, rep in RESPELL.items():
-        t = re.sub(pat, rep, t)
+    t = lexicon.apply(t)
     t = t.replace("&", " and ").replace("->", " to ").replace("=>", " to ")
     return _SPACE.sub(" ", t).strip()
 

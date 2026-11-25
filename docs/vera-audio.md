@@ -23,6 +23,7 @@ Code: `src/vera/audio.rs` (the API) and `src/vera/audio/`:
 | `voice.rs` | the voice service client (`POST /v1/speech`, streamed f32) |
 | `resample.rs` | streaming windowed-sinc resampler, delay-free |
 | `sim.rs`, `sim/room.rs` | the simulated room the measurements below come from |
+| `simdev.rs` | simulated microphone and speakers for the real app (`VERA_AUDIO_SIM`, `docs/vera-soak.md`) |
 | `cli.rs` | `hex vera-audio sim \| live \| say \| chime \| outputs` |
 
 `hex ears` is unchanged; its pieces (`Utterances` over a `Sink`,
@@ -42,6 +43,9 @@ audio.speak("s12", "On it. I'll ping you.");    // queued after anything playing
 audio.speak_pcm("s13", samples, 24_000);        // mono PCM, no voice service
 audio.stop_playback();                          // "stop talking": fades out in ~25 ms, drops the queue
 audio.set_volume(0.5);                          // Vera's own gain, ramps over ~60 ms
+audio.set_voice(Some("june".into()));           // the next lines' voice; nothing restarts or is cut
+audio.set_microphone(None);                     // reopens only the input; Ready names it again
+audio.drop_speech("s12");                       // drops one line, playing or queued: it ends failed
 audio.set_mic_muted(true);                      // closes the mic (the OS indicator goes out)
 audio.chime(ChimeKind::Notify);                 // notify | listening | done | error
 let levels = audio.levels();                    // Levels { mic, out }, smoothed RMS 0..=1
@@ -87,6 +91,11 @@ lines in `VERA.md`, so most can be forwarded as they are:
 - `error` with `fatal: true` means speech to text could not load; playback
   still works. Everything else recovers by itself (the mic reopens with
   Hex's backoff, the output reopens on the next sound).
+- Nothing in Settings restarts the engine: `set_voice` changes the voice
+  for the next fetch (a line already fetching keeps its voice),
+  `set_volume` ramps, and `set_microphone` reopens only the input. The App
+  still keeps its own ledger (`docs/vera-app.md`), so a line the engine
+  never ends (a restart, a crash, a stall) is ended for it.
 
 ## Volume
 
@@ -293,7 +302,11 @@ hex vera-audio chime notify
 hex vera-audio outputs
 ```
 
-Environment: `VERA_VOICE_URL` (default voice service), `HEX_EARS_LOG`
+`hex vera-audio transcribe <wav>...` runs files through the same speech to
+text (the pronunciation check, `vera/voice/README.md`).
+
+Environment: `VERA_AUDIO_SIM` (simulated devices: `1` or
+`echo_db=-30,delay_ms=60,noise_db=-75`), `VERA_VOICE_URL` (default voice service), `HEX_EARS_LOG`
 (`hex::vera=debug` shows each rejected suspicion and why),
 `VERA_SIM_TRACE=<dir>` (the simulator writes per-block CSVs and the audio),
 `VERA_AUDIO_DUMP=<dir>` (the live engine writes its mic, reference, and

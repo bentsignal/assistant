@@ -35,6 +35,15 @@ pub(crate) enum CoreCommand {
     Badge {
         count: u32,
     },
+    /// Something failed on Core's side (the brain errored or timed out):
+    /// the app chimes, flashes the HUD, and says so in Settings and the
+    /// tray. `what` is a short name for it ("brain").
+    Error {
+        #[serde(default)]
+        what: String,
+        #[serde(default)]
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -177,6 +186,13 @@ mod tests {
         assert_eq!(
             parse(r#"{"cmd":"stop_speaking"}"#),
             Some(CoreCommand::StopSpeaking)
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"error","what":"brain","message":"timed out"}"#),
+            Some(CoreCommand::Error {
+                what: "brain".into(),
+                message: "timed out".into()
+            })
         );
         assert_eq!(parse("Core v2 ready"), None);
         assert_eq!(parse(r#"{"cmd":"dance"}"#), None);

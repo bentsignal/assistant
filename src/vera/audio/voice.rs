@@ -59,6 +59,11 @@ impl VoiceClient {
         }
     }
 
+    /// The voice for the next fetches; fetches already running keep theirs.
+    pub(crate) fn set_voice(&mut self, voice: Option<String>) {
+        self.voice = voice;
+    }
+
     /// Whether the service answers its health check as ready.
     pub(crate) fn ready(&self) -> Result<bool, String> {
         let mut response = self
@@ -93,7 +98,13 @@ impl VoiceClient {
                 let done = done.clone();
                 move || {
                     let outcome = client.fetch(&id, &text, &mixer, &cancel);
-                    let _ = mixer.send(mixer::Command::End { id: id.clone() });
+                    // Only a fetch that worked ends the line: a failed one is
+                    // dropped by the engine and reported `failed`. Ending it
+                    // here would let the mixer "play" an empty line and report
+                    // it finished, a failure nobody would hear.
+                    if outcome.is_ok() {
+                        let _ = mixer.send(mixer::Command::End { id: id.clone() });
+                    }
                     let _ = done.send(match outcome {
                         Ok(()) => Fetched::Done { id },
                         Err(message) => Fetched::Failed { id, message },

@@ -12,8 +12,16 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 
 use super::mixer::Mixer;
 
+/// What keeps the output playing: a cpal stream, or the simulated
+/// speakers (`simdev`).
+#[allow(dead_code)]
+enum Stream {
+    Cpal(cpal::Stream),
+    Sim(super::simdev::SimOutput),
+}
+
 pub(crate) struct Output {
-    _stream: cpal::Stream,
+    _stream: Stream,
     pub rate: u32,
     pub name: String,
     /// The stream failed (device unplugged, format changed).
@@ -48,6 +56,17 @@ fn candidates() -> Vec<cpal::Device> {
 /// Opens `device` (a name fragment) or the default output, rendering
 /// `mixer`, which is set to the device's rate first.
 pub(crate) fn open(device: Option<&str>, mixer: Arc<Mutex<Mixer>>) -> Result<Output> {
+    if let Some(sim) = super::simdev::sim() {
+        let output = super::simdev::SimOutput::open(sim, mixer)?;
+        // Never fails, but the engine reads failures the same way.
+        let (_failed, errors) = mpsc::channel();
+        return Ok(Output {
+            _stream: Stream::Sim(output),
+            rate: super::simdev::RATE,
+            name: "simulated".into(),
+            errors,
+        });
+    }
     let devices = candidates();
     let wanted = device.map(str::to_lowercase);
     let device = devices
@@ -117,7 +136,7 @@ pub(crate) fn open(device: Option<&str>, mixer: Arc<Mutex<Mixer>>) -> Result<Out
         .wrap_err_with(|| format!("could not start {name}"))?;
     tracing::info!(device = name, rate, channels, "vera audio: output open");
     Ok(Output {
-        _stream: stream,
+        _stream: Stream::Cpal(stream),
         rate,
         name,
         errors,

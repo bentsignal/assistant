@@ -34,7 +34,18 @@ impl Controller {
         if let Some((message, true)) = &self.audio_error {
             return problem("Vera can't listen", message.clone());
         }
+        if self.audio.is_none() && self.audio_restart_at.is_some() {
+            return problem(
+                "Vera's audio stopped",
+                "Starting it again \u{00b7} she can't hear or speak until it's back".into(),
+            );
+        }
         if self.ready.is_none() {
+            if self.mic_unavailable
+                && let Some((message, false)) = &self.audio_error
+            {
+                return problem("The microphone isn't available", message.clone());
+            }
             if let Some((message, false)) = &self.audio_error {
                 return problem("Starting", message.clone());
             }
@@ -71,11 +82,25 @@ impl Controller {
             _ => {}
         }
         if !self.voice.ready {
+            if self.voice_was_ready {
+                return problem(
+                    "Vera's voice stopped",
+                    "Starting it again \u{00b7} she can listen, but can't speak until it's back"
+                        .into(),
+                );
+            }
             return Status {
                 tone: Tone::Quiet,
                 title: "Listening".into(),
                 detail: "Vera's voice is still loading".into(),
             };
+        }
+        // A problem that passed stays here a minute, so it's never missed.
+        if let Some(alert) = self.alerts.recent(Instant::now()) {
+            return problem(
+                &alert.title,
+                format!("{} \u{00b7} {}", alert.detail, ago(alert.at)),
+            );
         }
         Status {
             tone: Tone::Ready,
@@ -153,23 +178,20 @@ impl Controller {
     }
 
     pub(super) fn tray_state(&self) -> TrayState {
-        let doing = if self.speaking.is_some() {
-            "speaking"
+        let status = self.status();
+        let problem = status.tone == Tone::Problem;
+        let doing = if problem {
+            status.title.clone()
+        } else if self.speaking.is_some() {
+            "speaking".into()
         } else if self.muted {
-            "microphone muted"
-        } else if self.mic_silent {
-            "no sound from the microphone (muted?)"
+            "microphone muted".into()
         } else if self.core_hud == HudState::Working {
-            "working on a job"
-        } else if matches!(
-            self.core.state,
-            State::Missing(_) | State::Restarting { .. }
-        ) {
-            "Core isn't running"
+            "working on a job".into()
         } else if self.ready.is_none() {
-            "starting"
+            "starting".into()
         } else {
-            "listening"
+            "listening".into()
         };
         let mut tooltip = format!("Vera \u{00b7} {doing}");
         if self.badge > 0 {
@@ -179,6 +201,7 @@ impl Controller {
             muted: self.muted,
             speaking: self.speaking.is_some(),
             badge: self.badge,
+            problem,
             tooltip,
         }
     }

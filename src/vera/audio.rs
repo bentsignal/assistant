@@ -38,6 +38,7 @@ mod mixer;
 mod output;
 mod resample;
 pub(crate) mod sim;
+pub(crate) mod simdev;
 mod voice;
 
 use std::sync::Arc;
@@ -197,7 +198,14 @@ pub(crate) enum Request {
         rate: u32,
     },
     Stop,
+    /// Drops one utterance (it ends `failed`).
+    Drop(String),
     Volume(f32),
+    /// The voice for the next `speak`s; what's playing finishes as it was.
+    Voice(Option<String>),
+    /// Another microphone (`None`: the system default). Only the input
+    /// reopens: playback and speech to text go on.
+    Microphone(Option<String>),
     Mute(bool),
     Chime(ChimeKind),
     Shutdown,
@@ -262,6 +270,23 @@ impl VeraAudio {
     /// dropped, and each utterance gets `interrupted`. Chimes go on.
     pub(crate) fn stop_playback(&self) {
         let _ = self.requests.send(Request::Stop);
+    }
+
+    /// Drops one utterance, playing or queued: it ends `failed`.
+    pub(crate) fn drop_speech(&self, speak_id: impl Into<String>) {
+        let _ = self.requests.send(Request::Drop(speak_id.into()));
+    }
+
+    /// The voice for every `speak` from now on (`None`: the service's
+    /// default). Nothing restarts and nothing playing is cut.
+    pub(crate) fn set_voice(&self, voice: Option<String>) {
+        let _ = self.requests.send(Request::Voice(voice));
+    }
+
+    /// Listens through another microphone (`None` follows the system
+    /// default). Only the input reopens; `Ready` comes again naming it.
+    pub(crate) fn set_microphone(&self, microphone: Option<String>) {
+        let _ = self.requests.send(Request::Microphone(microphone));
     }
 
     /// Vera's own volume, 0..=1; it ramps there over ~60 ms. The system

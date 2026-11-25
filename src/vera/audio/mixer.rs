@@ -79,6 +79,11 @@ pub(crate) enum Report {
         id: SpeakId,
         ends_at_ns: u64,
     },
+    /// `id` ended without a single sample: nothing was heard, so it never
+    /// counts as played.
+    Empty {
+        id: SpeakId,
+    },
 }
 
 struct Item {
@@ -323,6 +328,13 @@ impl Mixer {
             if !item.ended && item.buffer.len() < prebuffer {
                 return 0.0;
             }
+            if item.buffer.is_empty() {
+                let _ = self.reports.send(Report::Empty {
+                    id: item.id.clone(),
+                });
+                self.queue.pop_front();
+                return 0.0;
+            }
             item.started = true;
             let _ = self.reports.send(Report::Started {
                 id: item.id.clone(),
@@ -426,6 +438,7 @@ mod tests {
             .filter_map(|report| match report {
                 Report::Started { id } => Some(format!("start {id}")),
                 Report::Finished { id, .. } => Some(format!("end {id}")),
+                Report::Empty { id } => Some(format!("empty {id}")),
                 Report::Reference { .. } => None,
             })
             .collect();
@@ -442,6 +455,28 @@ mod tests {
             .collect();
         let a_ms = (ends[0] - 1_000_000_000) / 1_000_000;
         assert!((199..=202).contains(&a_ms), "{a_ms}");
+    }
+
+    #[test]
+    fn a_line_with_no_audio_is_reported_empty_never_played() {
+        let mut rig = rig(1.0);
+        rig.commands
+            .send(Command::Begin { id: "e".into() })
+            .unwrap();
+        rig.commands.send(Command::End { id: "e".into() }).unwrap();
+        speak(&rig, "b", 0.1);
+        rig.render(300);
+        let reports: Vec<String> = rig
+            .reports()
+            .into_iter()
+            .filter_map(|report| match report {
+                Report::Started { id } => Some(format!("start {id}")),
+                Report::Finished { id, .. } => Some(format!("end {id}")),
+                Report::Empty { id } => Some(format!("empty {id}")),
+                Report::Reference { .. } => None,
+            })
+            .collect();
+        assert_eq!(reports, ["empty e", "start b", "end b"]);
     }
 
     #[test]

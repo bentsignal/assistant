@@ -68,8 +68,24 @@ process:  CREATE_NO_WINDOW, stdin/stdout/stderr all piped
 - **Core serializes speech.** It sends one `speak` at a time, and the next
   only after the App reports the previous one ended (`finished` or
   `failed`), so the App needs no speak queue. `speak_id`s are `s1`, `s2`,
-  …. If no `started` arrives within 20 s, Core skips the item. If no
-  `finished` arrives, Core assumes it after 30 s + 150 ms per character.
+  …. The App guarantees every `speak` an end; Core's own deadlines are the
+  backstop: no `started` within 14 s, or no end within 8 s + 160 ms per
+  character of starting (twice a line's length), and Core sends
+  `stop_speaking` (so it can never play late), skips the line, and says
+  `error` (`speech`).
+- **No stale replies.** When a new turn begins, every line from earlier
+  turns, playing or queued, is cut (`stop_speaking`) and dropped. An
+  addressed utterance that arrives while a turn is still running supersedes
+  it: the turn's speech is cut, anything it says later is dropped ("Not
+  spoken"), its brain is interrupted, and the new words run as the next turn
+  with a note that the last answer was cut off.
+- **Brain deadlines.** A turn that hasn't called `speak` within
+  `brain.firstSpeakTimeoutSeconds` (45) or hasn't ended within
+  `brain.turnTimeoutSeconds` (150) is interrupted and reported at once
+  (`error`, `brain_timeout`); a brain that ignores the interrupt is closed
+  after 5 s and starts fresh for the next turn. A brain error is reported as
+  `error` (`brain`). An utterance whose `final` never comes stops counting as
+  speech after 60 s.
 - **`playback failed`** means the voice service couldn't synthesize the
   item (the App plays its own error chime). It may come before or after
   `started`. That item ends and the next queued one is sent as usual. It is
@@ -102,8 +118,11 @@ process:  CREATE_NO_WINDOW, stdin/stdout/stderr all piped
     T3 thread that Vera started is still running.
   - `idle`: otherwise. Any linger is up to the App.
 - **`chime`:** `listening` for a bare "Vera"; `notify` for a new inbox item
-  (held until Shawn finishes his sentence if he's mid-utterance); `error`
-  when a brain turn fails.
+  (held until Shawn finishes his sentence if he's mid-utterance).
+- **`error`** `{what, message}`: the brain failed (`brain`), didn't answer
+  in time (`brain_timeout`), or a line never ended (`speech`). The App plays
+  the error chime, flashes the HUD, and shows it on the tray and in
+  Settings.
 - **`badge`:** the unread inbox count. Sent at start, on `ready`, and on
   every change.
 - **`show`/`hide`:** card ids are `c1`, `c2`, …; markdown is capped at 6000
@@ -150,7 +169,8 @@ keeps its own settings in the same file, under `app`.
 - `jobs.<agent>.command`: an argv to run instead of the agent's CLI (tests
   use `scripts/fake-job.mjs`).
 - `brain.harness: "script"` is the scripted test brain
-  (`src/brain/script.ts`, rules in `<VERA_HOME>/brain/script-brain.json`).
+  (`src/brain/script.ts`, rules in `<VERA_HOME>/brain/script-brain.json`;
+  `fail`, `throw`, and `hang` steps fake a broken brain).
   `brain` can also be switched by voice (`set_brain`) or `POST /api/brain`.
 - `voice.defaultVolume` only matters until the App reports its level.
 - Keys from v1 (`ears`, `mouth`, `panel`) are ignored.
@@ -207,13 +227,17 @@ keeps its own settings in the same file, under `app`.
 
 ## v2 prompt
 
-`prompts/system.md` (v1 is in `prompts/previous/`): short and plain (one
-sentence, two at most, about 25 words; acknowledgements of one to three
-words; no filler, enthusiasm, restating, offers, sign-offs, or explaining
-how), popups only for things worth seeing and closed on "close that",
-`set_volume` for any "you're too loud" or "speak up" (never the computer's
-volume unless he names the computer or an app), the routing rules from
-VERA.md, and how to treat interruption notes and "Not spoken".
+`prompts/system.md` (earlier stock prompts are in `prompts/previous/`, so an
+unedited copy upgrades): short and plain (one sentence, two at most, about
+25 words; acknowledgements of one to three words; no filler, enthusiasm,
+restating, offers, sign-offs, or explaining how), heteronyms respelled by
+meaning (lead the metal "led", read in the past "red", live the adjective
+"lyve", wind the verb "wined", close as in near "kloce", ...), popups only
+for things worth seeing and closed on "close that", `set_volume` only when
+Shawn explicitly asks for louder or quieter (never on its own: not for "can
+you hear me?", "hello?", or frustration; never the computer's volume unless
+he names the computer or an app), the routing rules from VERA.md, and how
+to treat interruption notes and "Not spoken".
 
 ## Latency
 

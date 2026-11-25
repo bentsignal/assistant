@@ -64,6 +64,13 @@ export interface VeraConfig {
   port: number
   brain: {
     harness: BrainHarness
+    /**
+     * A turn that hasn't spoken this long is given up on: the brain is
+     * interrupted and Shawn hears the error chime (never a silent wait).
+     */
+    firstSpeakTimeoutSeconds: number
+    /** Any turn is given up on after this long, spoken or not. */
+    turnTimeoutSeconds: number
     "claude-code": BrainSettings
     codex: BrainSettings
     grok: BrainSettings
@@ -109,6 +116,8 @@ export const DEFAULT_CONFIG: VeraConfig = {
   port: 7313,
   brain: {
     harness: "claude-code",
+    firstSpeakTimeoutSeconds: 45,
+    turnTimeoutSeconds: 150,
     "claude-code": { model: "sonnet", effort: "low" },
     codex: { model: "gpt-6.2-sol", effort: "low" },
     grok: {},

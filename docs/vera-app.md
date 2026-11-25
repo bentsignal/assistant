@@ -78,11 +78,18 @@ own logs too: `core-<date>.log`, `voice.log`); the app logs to
 `scripts/vera-fake-core.mjs` and `scripts/vera-fake-voice.mjs` stand in for
 both (a scripted turn, a voice list, silence) to try the app alone.
 
+**Testing the real thing** (`docs/vera-soak.md`): `VERA_AUDIO_SIM` swaps the
+microphone and speakers for simulated ones, `VERA_SIM_CONTROL` opens a
+loopback port that says WAVs into that microphone and does what Settings
+does, and `VERA_TRACE` writes everything the app does as JSON lines.
+`scripts/vera-soak/soak.mjs` drives all three.
+
 ## Protocol routing (VERA.md)
 
 | From Core | To |
 | --- | --- |
 | `speak`, `stop_speaking`, `chime`, `set_volume` | the audio engine (`set_volume` is also saved as `app.volume`) |
+| `error` | an alert (below): the error chime, the HUD's error look, the tray, Settings |
 | `hud` | the HUD: listening, thinking, speaking; `idle` lingers 0.7 s then leaves through Hex's done wipe; `working` stays hidden (the tray tooltip says it) |
 | `show`, `hide` | the card (`hide` without `card_id` closes any) |
 | `badge` | a blue dot on the tray icon and the tooltip |
@@ -94,6 +101,42 @@ before Core says so. Tray, Settings, and the hotkey send `ui` events:
 `stop_talking`, `mute`/`unmute`, `settings_changed`, and `card_closed`
 (with `card_id`). A Core that (re)starts is sent `ready` again, and `mute`
 if muted.
+
+### Nothing left hanging (`src/vera/runtime.rs`, `runtime/ledger.rs`)
+
+- **The speech ledger.** Every `speak` is recorded until it ends. The engine
+  plays it as `"<core generation>.<speak_id>"`, so a restarted Core's `s1`
+  never collides with the old one's, and the old one's ends never reach the
+  new one. A line that hasn't started 12 s after it was sent, or is still
+  playing 6 s + 0.15 s per character after it started, is dropped from the
+  engine and ends `failed`/`interrupted`. When the engine stops (on purpose
+  or not), every line ends at once, and an utterance Shawn was in the middle
+  of ends with `speech_cancel`. A `speak` while the engine is down ends
+  `failed` at once.
+- **The engine is never restarted by Settings.** A voice goes to the engine
+  (`set_voice`) and applies to the next line; the volume is live; a
+  microphone reopens only the input (`set_microphone`), keeping playback,
+  speech to text, and the echo canceller. An engine whose thread ends
+  unasked comes back after 1, 2, 5, 10, then 30 s.
+- **Core dying** cuts what it asked to say, hides the HUD, and alerts; the
+  supervisor brings it back.
+- **The HUD's caps**: listening 30 s, thinking 100 s, speaking 3 min while
+  a line plays and 4 s once nothing does. A look that outstays its cap
+  hides, whatever Core last said.
+
+### Never failing silently (`runtime/alerts.rs`)
+
+Every problem raises an alert: the soft error chime (two low falling notes,
+under her voice), the HUD's coral failed look for 1.6 s (other looks wait
+for it), a coral dot on the tray icon and the problem in its tooltip, and a
+red line at the top of Settings that stays a minute after the problem
+passed (ongoing ones stay until fixed, saying it's restarting). Chimes and
+flashes are spaced by 4 s, so a burst is one sound. Alerts: Vera couldn't
+speak (the voice service failed or a line stalled), Vera's voice stopped
+(the service died or stopped answering), Core stopped, Vera's audio
+stopped, the brain failed or didn't answer (Core's `error`), no sound from
+the microphone (muted at the device), the microphone isn't available, and
+Vera can't play sound.
 
 ## Settings and `~/.vera/config.json`
 
@@ -132,10 +175,10 @@ service couldn't speak) plays the error chime and goes to Core, which skips
 that line. Engine errors show in Settings' status line.
 
 A microphone that's open but sends only digital silence for 4 s (a headset
-muted at the device, a dead input) turns Settings' status red ("No sound from
-the microphone", naming it) and says so in the tray tooltip, until it hears
-sound again. A microphone or voice change in Settings drops the engine and
-starts a new one. `levels()` feeds the HUD about 30 times a second while it
+muted at the device, a dead input) raises an alert ("No sound from the
+microphone", naming it: the error chime, the HUD, the tray, and Settings)
+until it hears sound again. A microphone or voice change in Settings never
+restarts the engine (above). `levels()` feeds the HUD about 30 times a second while it
 listens or speaks: the user's voice after echo cancellation, and Vera's
 output before her volume.
 

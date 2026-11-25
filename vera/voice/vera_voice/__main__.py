@@ -47,7 +47,8 @@ def _quiet_console():
         f = open(log_dir / "voice.stdio.log", "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stdout or f
         sys.stderr = sys.stderr or f
-    os.environ.setdefault("HF_HOME", str(HOME / "models" / "hf"))
+    models = Path(os.environ.get("VERA_VOICE_MODELS", HOME / "models"))
+    os.environ.setdefault("HF_HOME", str(models / "hf"))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     os.environ.setdefault("TQDM_DISABLE", "1")
     os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")

@@ -106,7 +106,34 @@ core → app:
 {"cmd":"hide","card_id":"c3"}
 {"cmd":"set_volume","level":0.55}
 {"cmd":"badge","count":2}
+{"cmd":"error","what":"brain|brain_timeout|speech","message":"…"}
 ```
+
+**Nothing is ever left hanging** (v2's live test failed this way: an engine
+restart dropped a playing line with no end, Core waited 35 s, and stale
+replies piled up behind it):
+
+- Every `speak` gets exactly one terminal `playback` (`finished`,
+  `interrupted`, or `failed`), whatever happens: the App keeps a ledger of
+  every line, ends each one past its deadline (12 s to start, 6 s + 0.15 s
+  per character to play), and ends all of them when the audio engine stops.
+  Speak ids are scoped to the Core that sent them, so a restarted Core never
+  hears the old one's ends.
+- Every `speech_start` gets its `final` or `speech_cancel`.
+- Settings never restart the audio engine: a voice applies to the next
+  `speak`, a volume at once, a microphone reopens only the input.
+- When a new user turn starts, Core drops every line left from earlier
+  turns (playing or queued), and a turn still running is cut and its brain
+  interrupted. No reply ever plays after a newer question.
+- Every failure is heard and seen (the App's `alerts`): the soft error
+  chime, the HUD's coral error look, a coral dot and tooltip on the tray, and
+  a red line at the top of Settings for a minute (or until fixed). Core says
+  `error` for its own (the brain failed, or didn't answer within 45 s).
+  Children restart with backoff (1, 2, 5, 10, 30 s), the audio engine too,
+  and Settings says it's restarting.
+- The HUD leaves every look: Core's states all have exits, and the App
+  hides a look that outstays its cap (listening 30 s, thinking 100 s,
+  speaking once nothing plays).
 
 Volume level is 0–1 and is Vera's own output gain; the app owns and persists
 it (`app.volume`) and sends it to Core on `ready` and `settings_changed`. The
@@ -115,7 +142,9 @@ service's own level, so each 0.1 is 4 dB and 0 is silent. The default, 0.7
 (−12 dB, about −32 LUFS), is roughly half as loud as v1. "Quieter" and
 "louder" are steps of 0.15 (6 dB), 0.3 with "a lot". `failed` means the voice
 service couldn't speak that line (the app chimes an error); Core treats it as
-done, not as an interruption.
+done, not as an interruption. The brain changes the volume only when Shawn
+explicitly asks for louder or quieter, never on its own (not for "can you
+hear me?", "hello?", or frustration).
 Logs go to stderr, and the app writes them to `~/.vera/logs/`. In
 `--stdio` mode Core runs no web panel; a debug HTTP hook
 (`POST /api/utterance`) may stay on localhost for tests.
@@ -141,6 +170,12 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
 
 - **Only the `speak` tool makes sound with words.** The brain's ordinary text
   is never spoken.
+- **Words said right.** The voice reads text literally, so the brain respells
+  heteronyms by meaning (lead the metal is "led", read in the past is "red",
+  live the adjective "lyve", wind the verb "wined", close as in near "kloce"),
+  and the voice service's lexicon (`vera/voice/vera_voice/lexicon.py`, plus
+  `~/.vera/voice/lexicon.json`) says tech terms, names, and acronyms the way
+  Shawn does (T3, GitHub, JSON, npm, CLI, ...).
 - **No unprompted talking.** Finished background work or a T3 thread that
   needs input gets a chime, an inbox item, and a tray badge. Vera speaks only
   when asked ("Vera, what's new?"). The inbox digest goes to the brain with

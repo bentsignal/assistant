@@ -395,3 +395,97 @@ test("POST /api/utterance works as a debug hook", async () => {
     await app.stop()
   }
 })
+
+test("a new turn while the last one is still answering: the stale reply never plays, the new one does", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    autoPlay: false,
+    script: [
+      { match: "alps", steps: [{ sleep: 600 }, { tool: "speak", args: { text: "The Alps are in Europe." } }] },
+      { match: "andes", steps: [{ tool: "speak", args: { text: "The Andes are in South America." } }] },
+    ],
+  })
+  try {
+    await app.say("Vera, tell me about the Alps.")
+    await sleep(150)
+    // He asks again before the first answer: the first turn is superseded.
+    await app.say("Vera, actually tell me about the Andes.")
+    const reply = (await app.waitFor((c) => c.cmd === "speak" && /Andes/.test(c.text), 5000)) as any
+    await sleep(900) // past when the first turn would have spoken
+    assert.deepEqual(spoken(app.since(0)), ["The Andes are in South America."], "the Alps reply is never sent")
+    const msgs = app.brainLog()
+    assert.match(msgs.at(-1)!, /before you finished answering/)
+    app.send({ type: "playback", speak_id: reply.speak_id, state: "started" })
+    app.send({ type: "playback", speak_id: reply.speak_id, state: "finished" })
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a reply still playing from an earlier turn is cut when a new turn begins", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    autoPlay: false,
+    script: [
+      { match: "long", steps: [{ tool: "speak", args: { text: "A long answer that is still playing." } }, { tool: "speak", args: { text: "And more of it." } }] },
+      { match: "time", steps: [{ tool: "speak", args: { text: "Noon." } }] },
+    ],
+  })
+  try {
+    await app.say("Vera, give me a long answer.")
+    const first = (await app.waitFor(isCmd("speak"))) as any
+    app.send({ type: "playback", speak_id: first.speak_id, state: "started" })
+    await app.waitFor(isHud("speaking"))
+    await sleep(300) // the first turn is done; its speech plays on
+    const m = app.mark
+    await app.say("Vera, what time is it?")
+    await app.waitFor(isCmd("stop_speaking"), 3000, m)
+    const noon = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Noon.", 3000, m)) as any
+    assert.ok(app.cmds.indexOf(noon) > app.since(0).findIndex(isCmd("stop_speaking")))
+    app.send({ type: "playback", speak_id: first.speak_id, state: "interrupted" }) // the App's late end
+    await sleep(200)
+    assert.deepEqual(spoken(app.since(m)), ["Noon."], "'And more of it.' never goes out")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a brain error and a brain that never answers both reach the App as errors, and the next turn works", async () => {
+  const app = await FakeApp.start({
+    config: testConfig({ brain: { harness: "script", firstSpeakTimeoutSeconds: 1.5, turnTimeoutSeconds: 20 } }),
+    script: [
+      // First: a restarted brain's recap repeats the earlier lines.
+      { match: "hello", steps: [{ tool: "speak", args: { text: "Hi." } }] },
+      { match: "break", steps: [{ fail: "the model is overloaded" }] },
+      { match: "hang", steps: [{ hang: true }] },
+      { match: "deaf", steps: [{ hang: "deaf" }] },
+    ],
+  })
+  try {
+    let m = app.mark
+    await app.say("Vera, break please.")
+    const err = (await app.waitFor(isCmd("error"), 3000, m)) as any
+    assert.equal(err.what, "brain")
+    assert.match(err.message, /overloaded/)
+    await app.waitFor(isHud("idle"), 4000, m)
+
+    m = app.mark
+    await app.say("Vera, hang on.")
+    const timeout = (await app.waitFor(isCmd("error"), 5000, m)) as any
+    assert.equal(timeout.what, "brain_timeout")
+    await app.waitFor(isHud("idle"), 4000, m)
+
+    m = app.mark
+    await app.say("Vera, deaf one.")
+    await app.waitFor(isCmd("error"), 5000, m)
+    // A brain that ignores the interrupt is closed after 5 s; the turn ends.
+    await app.waitFor(isHud("idle"), 9000, m)
+
+    m = app.mark
+    await app.say("Vera, hello.")
+    const hi = (await app.waitFor(isCmd("speak"), 5000, m)) as any
+    assert.equal(hi.text, "Hi.")
+  } finally {
+    await app.stop()
+  }
+})

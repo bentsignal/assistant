@@ -29,13 +29,13 @@ export const TOOLS: ToolDef[] = [
   {
     name: "speak",
     description:
-      "Say something out loud. This is the ONLY way Shawn hears you; your plain text output is never spoken. Usually one short sentence, two at most: no markdown, lists, URLs, code, or symbols; say numbers the way a person would. Put anything long or visual in `show` and speak a few words about it. Call it early in a turn; later calls queue after earlier ones. If it returns 'Not spoken', Shawn talked over you: stop and say nothing more.",
+      "Say something out loud. This is the ONLY way Shawn hears you; your plain text output is never spoken. Usually one short sentence, two at most: no markdown, lists, URLs, code, or symbols; say numbers the way a person would. The voice reads the text literally, so RESPELL HETERONYMS BY MEANING: lead the metal is 'led', read in the past tense is 'red', live the adjective is 'lyve', wind (to turn) is 'wined', tear (to rip) is 'tare', bass (sound) is 'base', close (near) is 'kloce', minute (tiny) is 'my-noot', wound (injury) is 'woond', bow (bend) is 'bau', row (fight) is 'rau', dove (bird) is 'duv'. Put anything long or visual in `show` and speak a few words about it. Call it early in a turn; later calls queue after earlier ones. If it returns 'Not spoken', Shawn talked over you: stop and say nothing more.",
     inputSchema: { type: "object", properties: { text: str("What to say, plain spoken English.") }, required: ["text"] },
   },
   {
     name: "set_volume",
     description:
-      "Change YOUR OWN voice volume (how loud Vera sounds). Use this whenever Shawn says you're too loud or too quiet, or asks you to speak up, turn yourself down, be quieter, or be louder. It never touches the computer's volume. Give `relative` for 'quieter'/'louder' (a_lot: true for 'way too loud', 'much louder'), or `level` 0 to 1 for an exact setting ('half volume' is 0.5). Call it before you speak, then acknowledge in two or three words.",
+      "Change YOUR OWN voice volume (how loud Vera sounds). ONLY when Shawn explicitly asks you to be louder or quieter: 'you're too loud', 'quieter', 'turn yourself down', 'speak up', 'louder'. NEVER on your own initiative: not when he asks 'can you hear me?' (that's whether you hear him), not when he says 'hello?', repeats himself or seems frustrated, and not when he says he can't hear you at all (a sound problem, not your volume). It never touches the computer's volume. Give `relative` for 'quieter'/'louder' (a_lot: true for 'way too loud', 'much louder'), or `level` 0 to 1 for an exact setting ('half volume' is 0.5). Call it before you speak, then acknowledge in two or three words.",
     inputSchema: {
       type: "object",
       properties: {

@@ -181,6 +181,16 @@ pub(crate) struct Supervisor {
 }
 
 const BACKOFF: [u64; 5] = [1, 2, 5, 10, 30];
+
+/// What a [`Supervisor::tick`] saw.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Tick {
+    Nothing,
+    /// The child just started (callers greet it).
+    Started,
+    /// The child just died; it comes back after the backoff.
+    Exited,
+}
 const PROVEN: Duration = Duration::from_secs(60);
 
 impl Supervisor {
@@ -206,15 +216,18 @@ impl Supervisor {
         }
     }
 
-    /// Starts, notices a death, and restarts when due. Returns true when the
-    /// child just started (callers greet it).
-    pub(crate) fn tick(&mut self) -> bool {
+    /// Starts, notices a death, and restarts when due.
+    pub(crate) fn tick(&mut self) -> Tick {
         if let Some(running) = &mut self.running {
             match running.child.try_wait() {
-                Ok(None) => return false,
+                Ok(None) => return Tick::Nothing,
                 Ok(Some(status)) => {
                     let ran = running.started.elapsed();
                     tracing::warn!(child = self.name, %status, ran_secs = ran.as_secs(), "child exited");
+                    crate::vera::trace::record(
+                        "child",
+                        serde_json::json!({"name": self.name, "event": "exited", "pid": running.child.id()}),
+                    );
                     if ran >= PROVEN {
                         self.failures = 0;
                     }
@@ -225,34 +238,38 @@ impl Supervisor {
                     self.state = State::Restarting {
                         why: format!("exited ({status})"),
                     };
-                    return false;
+                    return Tick::Exited;
                 }
                 Err(error) => {
                     tracing::warn!(child = self.name, %error, "could not poll child");
-                    return false;
+                    return Tick::Nothing;
                 }
             }
         }
         let Some(at) = self.restart_at else {
-            return false;
+            return Tick::Nothing;
         };
         if Instant::now() < at {
-            return false;
+            return Tick::Nothing;
         }
         let spec = match &self.spec {
             Ok(spec) => spec.clone(),
             Err(_) => {
                 self.restart_at = None;
-                return false;
+                return Tick::Nothing;
             }
         };
         match self.spawn(&spec) {
             Ok(running) => {
                 tracing::info!(child = self.name, command = %spec.describe(), pid = running.child.id(), "child started");
+                crate::vera::trace::record(
+                    "child",
+                    serde_json::json!({"name": self.name, "event": "started", "pid": running.child.id()}),
+                );
                 self.running = Some(running);
                 self.restart_at = None;
                 self.state = State::Running;
-                true
+                Tick::Started
             }
             Err(error) => {
                 tracing::error!(child = self.name, error = %format!("{error:#}"), "child could not start");
@@ -262,7 +279,7 @@ impl Supervisor {
                 self.state = State::Restarting {
                     why: format!("{error:#}"),
                 };
-                false
+                Tick::Nothing
             }
         }
     }

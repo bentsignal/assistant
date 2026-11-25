@@ -302,6 +302,9 @@ impl<B: Backend> Core<B> {
                     });
                 }
             }
+            mixer::Report::Empty { id } => {
+                self.speech_failed(&id, "the voice returned no audio");
+            }
             mixer::Report::Finished { id, ends_at_ns } => {
                 if let Some(index) = self.speeches.iter().position(|speech| speech.id == id) {
                     self.speeches.remove(index);

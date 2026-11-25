@@ -27,6 +27,8 @@ mod paths;
 mod protocol;
 mod runtime;
 mod shots;
+mod sim;
+pub(crate) mod trace;
 mod tray;
 mod voice;
 

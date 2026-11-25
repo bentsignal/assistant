@@ -96,6 +96,47 @@ enum VeraAudioCommand {
     },
     /// List the output devices.
     Outputs,
+    /// Transcribe WAV files with Vera's speech to text (Parakeet), one
+    /// line each: `<file>\t<text>`. The pronunciation check
+    /// (`vera/voice/scripts/pronunciation_check.py`) runs the voice's
+    /// output through this.
+    Transcribe { files: Vec<PathBuf> },
+}
+
+/// Each WAV as Vera's ears hear it: mono, 16 kHz, through Parakeet.
+fn transcribe(files: &[PathBuf]) -> Result<()> {
+    let stt = Stt::load(&EarsSettings::default())?;
+    for file in files {
+        let mut reader = hound::WavReader::open(file)
+            .map_err(|error| eyre!("could not read {}: {error}", file.display()))?;
+        let spec = reader.spec();
+        let channels = usize::from(spec.channels.max(1));
+        let samples: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader.samples::<f32>().filter_map(Result::ok).collect(),
+            hound::SampleFormat::Int => {
+                let scale = 1.0 / (1u64 << (spec.bits_per_sample.max(1) - 1)) as f32;
+                reader
+                    .samples::<i32>()
+                    .filter_map(Result::ok)
+                    .map(|sample| sample as f32 * scale)
+                    .collect()
+            }
+        };
+        let mono: Vec<f32> = samples
+            .chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect();
+        let mut clip = super::resample::resample(&mono, spec.sample_rate, 16_000);
+        crate::dictation::pad_for_parakeet(&mut clip);
+        let text = stt
+            .engine
+            .finish(None, clip)
+            .map_err(|error| eyre!("{error:#}"))
+            .and_then(|pending| pending.wait().map_err(|error| eyre!("{error}")))?
+            .text;
+        println!("{}\t{}", file.display(), text.trim());
+    }
+    Ok(())
 }
 
 fn parse_source(value: &str) -> Result<SttSource, String> {
@@ -111,6 +152,7 @@ pub(crate) fn run(args: VeraAudioArgs, shutdown: &'static AtomicBool) -> Result<
     crate::vera_ears::init_logging();
     let _ = ctrlc::set_handler(move || shutdown.store(true, Ordering::Relaxed));
     match args.command {
+        VeraAudioCommand::Transcribe { files } => transcribe(&files),
         VeraAudioCommand::Sim {
             voices,
             room,

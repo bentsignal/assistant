@@ -24,6 +24,9 @@ const COMPLETED_VISIBLE_DURATION: Duration = Duration::from_millis(100);
 /// as long as a system confirmation stays up.
 const EARS_COMPLETED_VISIBLE_DURATION: Duration = Duration::from_millis(700);
 const FAILED_VISIBLE_DURATION: Duration = Duration::from_millis(600);
+/// Vera's error look stays a little longer than a failed dictation, so a
+/// glance at the screen catches it (VERA.md: never fail silently).
+const VERA_ERROR_VISIBLE_DURATION: Duration = Duration::from_millis(1600);
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug)]
@@ -93,6 +96,9 @@ pub enum VeraLook {
     /// Done from thinking or speaking (the wipe), a fade from listening;
     /// then hidden.
     Idle,
+    /// Something went wrong: Hex's coral failed look for a moment, then
+    /// hidden.
+    Error,
 }
 
 /// The job a Vera thinking look stands for, which no dictation uses.
@@ -171,9 +177,9 @@ enum HudState {
     Completing { working_since: Instant },
     /// Showing the done look until its visible duration elapses, then hidden.
     Completed { started: Instant },
-    /// Showing the failed look until [`FAILED_VISIBLE_DURATION`] elapses, then
-    /// hidden.
-    Failed { started: Instant },
+    /// Showing the failed look until `visible` (usually
+    /// [`FAILED_VISIBLE_DURATION`]) elapses, then hidden.
+    Failed { started: Instant, visible: Duration },
     /// Vera speaking: Dot scope follows her output level.
     Speaking,
 }
@@ -466,6 +472,13 @@ impl IndicatorModel {
                 }
                 self.state = HudState::Speaking;
             }
+            VeraLook::Error => {
+                enter(self);
+                self.state = HudState::Failed {
+                    started: now,
+                    visible: VERA_ERROR_VISIBLE_DURATION,
+                };
+            }
             VeraLook::Idle => {
                 self.state = match std::mem::replace(&mut self.state, HudState::Hidden) {
                     HudState::Transcribing { working_since, .. }
@@ -474,7 +487,7 @@ impl IndicatorModel {
                     }
                     HudState::Speaking => HudState::Completed { started: now },
                     HudState::Completed { started } => HudState::Completed { started },
-                    HudState::Failed { started } => HudState::Failed { started },
+                    HudState::Failed { started, visible } => HudState::Failed { started, visible },
                     HudState::Hidden | HudState::Recording { .. } => HudState::Hidden,
                 };
             }
@@ -500,7 +513,10 @@ impl IndicatorModel {
             }
             _ => {
                 self.state = if failed {
-                    HudState::Failed { started: now }
+                    HudState::Failed {
+                        started: now,
+                        visible: FAILED_VISIBLE_DURATION,
+                    }
                 } else {
                     HudState::Hidden
                 };
@@ -524,7 +540,10 @@ impl IndicatorModel {
                 self.state = match outcome {
                     JobOutcome::Completed => HudState::Completing { working_since },
                     JobOutcome::Cancelled => HudState::Hidden,
-                    JobOutcome::Failed => HudState::Failed { started: now },
+                    JobOutcome::Failed => HudState::Failed {
+                        started: now,
+                        visible: FAILED_VISIBLE_DURATION,
+                    },
                 };
             }
             HudState::Hidden
@@ -556,8 +575,8 @@ impl IndicatorModel {
             {
                 self.state = HudState::Hidden;
             }
-            HudState::Failed { started }
-                if now.saturating_duration_since(started) >= FAILED_VISIBLE_DURATION =>
+            HudState::Failed { started, visible }
+                if now.saturating_duration_since(started) >= visible =>
             {
                 self.state = HudState::Hidden;
             }
@@ -908,6 +927,37 @@ mod tests {
             shown_after(None, 0.6) < 0.05,
             "Dot scope still collapses at once"
         );
+    }
+
+    #[test]
+    fn vera_error_turns_coral_from_any_look_then_hides() {
+        let start = Instant::now();
+        let mut model = IndicatorModel::new(Tuning::default(), start);
+        model.handle(
+            DictationIndicatorEvent::Vera(VeraLook::Thinking),
+            start,
+            false,
+        );
+        run(&mut model, start, 0.0, 0.3);
+        model.handle(
+            DictationIndicatorEvent::Vera(VeraLook::Error),
+            at(start, 0.3),
+            false,
+        );
+        assert_eq!(model.status(), Some("Failed"));
+        let failed = run(&mut model, start, 0.3, 0.6);
+        assert!(failed.last().unwrap().pose.fail > 0.9);
+        run(&mut model, start, 0.9, 0.6);
+        assert!(model.active(), "held longer than a dictation's failure");
+        run(&mut model, start, 1.5, 1.5);
+        assert!(!model.active());
+        // From hidden too.
+        model.handle(
+            DictationIndicatorEvent::Vera(VeraLook::Error),
+            at(start, 3.5),
+            false,
+        );
+        assert_eq!(model.status(), Some("Failed"));
     }
 
     #[test]

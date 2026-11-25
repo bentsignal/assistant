@@ -193,9 +193,15 @@ pub(crate) fn run(dir: &Path, tray: bool) -> Result<()> {
         } else {
             [32, 32, 32, 255]
         };
-        for (badge, dim) in [(false, false), (true, false), (false, true)] {
+        use super::icon::Dot;
+        for (dot, dim) in [
+            (Dot::None, false),
+            (Dot::Inbox, false),
+            (Dot::None, true),
+            (Dot::Problem, false),
+        ] {
             for size in [16u32, 24, 32] {
-                let mark = super::icon::tray_rgba(size, light, badge, dim);
+                let mark = super::icon::tray_rgba(size, light, dot, dim);
                 let zoom = 4;
                 let side = size * zoom;
                 let mut big = Vec::with_capacity((side * side * 4) as usize);
@@ -264,6 +270,7 @@ fn tray_menus(dir: &Path, saved: &mut Vec<PathBuf>) -> Result<()> {
                 speaking: true,
                 badge: 2,
                 tooltip: "Vera \u{00b7} speaking \u{00b7} 2 new".into(),
+                ..TrayState::default()
             },
         ),
     ] {

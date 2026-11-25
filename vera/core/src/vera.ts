@@ -145,6 +145,10 @@ export class Vera {
   private syncJobs = new Set<string>()
   private turnWaiters = new Map<number, (t: TurnRecord) => void>()
   private followUpTimer: NodeJS.Timeout | null = null
+  /** Ends an utterance whose final never came (the App always sends one; this is the backstop). */
+  private speechTimer: NodeJS.Timeout | null = null
+  /** The last turn was cut short because Shawn spoke again: the next turn's message says so. */
+  private superseded: string | null = null
   private logFile: string
 
   constructor(link: AppLink) {
@@ -197,6 +201,9 @@ export class Vera {
   async start(): Promise<void> {
     this.mouth.on("start", () => this.onSpeechStart())
     this.mouth.on("end", () => this.onSpeechEnd())
+    this.mouth.on("stuck", (item: SpeechItem) =>
+      this.alert("speech", `the App never ${item.state === "sent" ? "started" : "finished"} a line; it was skipped`),
+    )
     // Events the App sent while Core was starting were buffered; they arrive now.
     this.link.on("event", (ev: AppEvent) => this.onAppEvent(ev))
     this.syncHud(true)
@@ -293,9 +300,21 @@ export class Vera {
     this.speechStartedAt = Date.now()
     this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil > Date.now() || this.mouth.speaking)
     this.partial = "…"
+    // Nobody talks for a minute straight: if no final comes, the HUD stops listening.
+    if (this.speechTimer) clearTimeout(this.speechTimer)
+    const startedAt = this.speechStartedAt
+    this.speechTimer = setTimeout(() => {
+      if (!this.inSpeech || this.speechStartedAt !== startedAt) return
+      this.log("speech: no final after 60 s; treating the utterance as over")
+      this.speechEnded()
+      this.changed()
+    }, 60_000)
+    this.speechTimer.unref()
   }
 
   private speechEnded() {
+    if (this.speechTimer) clearTimeout(this.speechTimer)
+    this.speechTimer = null
     this.inSpeech = false
     this.speechEngaged = false
     this.partial = ""
@@ -437,8 +456,11 @@ export class Vera {
         this.lines.push({ who: "shawn", text: g.text, at: now })
         this.trimLines()
         if (this.current) {
+          // Shawn spoke again before Vera answered: what she was going to
+          // say is stale. Cut it, stop the brain, and answer this instead
+          // (the new turn starts as soon as the old one winds down).
           this.queue.push({ ...input, text: g.text })
-          this.log(`queued while thinking: ${g.text}`)
+          this.supersede(this.current, g.text)
           this.changed()
           return g
         }
@@ -478,6 +500,9 @@ export class Vera {
     this.lastActiveAt = Date.now()
     this.current = rec
     this.followUpUntil = 0
+    // Nothing from an earlier turn plays after this one began.
+    const stale = this.mouth.dropStale(rec.id)
+    if (stale.length) this.log(`turn ${rec.id}: dropped ${stale.length} stale line(s): ${stale.map((i) => `${i.id} "${truncate(i.text, 60)}"`).join(", ")}`)
     this.turns.push(rec)
     if (this.turns.length > 50) this.turns.shift()
     this.changed()
@@ -487,13 +512,14 @@ export class Vera {
 
   private async runTurn(rec: TurnRecord) {
     let result: TurnResult
+    let timedOut: string | null = null
     try {
       const brain = await this.ensureBrain()
       rec.brain = brain.label
       const msg = this.composeTurn(rec.text)
       rec.startedAt = Date.now() // measure from hand-off, not from brain start
       this.log(`turn ${rec.id} -> ${brain.label}: ${truncate(oneLine(msg), 400)}`)
-      result = await brain.turn(msg)
+      result = await this.withDeadline(rec, brain, brain.turn(msg), (why) => (timedOut = why))
     } catch (err) {
       result = { ok: false, text: "", error: (err as Error).message }
     }
@@ -505,7 +531,8 @@ export class Vera {
     this.log(
       `turn ${rec.id} done in ${rec.durationMs} ms (first speak ${rec.firstSpeakMs ?? "-"} ms; tools ${rec.tools.join(", ") || "none"})${result.error ? " error: " + result.error : ""}`,
     )
-    if (!result.ok && !result.interrupted) this.chime("error")
+    // A timeout was already reported the moment it hit.
+    if (!timedOut && !result.ok && !result.interrupted) this.alert("brain", result.error ?? "the brain failed")
     this.current = null
     this.turnWaiters.get(rec.id)?.(rec)
     this.turnWaiters.delete(rec.id)
@@ -530,6 +557,10 @@ export class Vera {
     }
     const note = this.takeInterruptionNote()
     if (note) parts.push(note)
+    if (this.superseded) {
+      parts.push(this.superseded)
+      this.superseded = null
+    }
     const digest = this.inbox.takeDigest()
     if (digest) parts.push(digest)
     const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
@@ -549,12 +580,73 @@ export class Vera {
     return `[Shawn talked over you and you stopped. ${bits.join(" ")} Answer what he says now; don't repeat yourself unless he asks.]`
   }
 
+  /**
+   * Shawn spoke again while `rec` was still running: its speech (playing or
+   * queued) is cut, anything it says from now on is dropped, and the brain
+   * is interrupted so his new words are answered next.
+   */
+  private supersede(rec: TurnRecord, text: string) {
+    this.log(`turn ${rec.id} superseded by: ${truncate(text, 120)}`)
+    rec.muted = true
+    const { cut, dropped } = this.mouth.cut(true)
+    if (cut || dropped.length) this.log(`turn ${rec.id}: cut ${[cut, ...dropped].filter(Boolean).map((i) => i!.id).join(", ")}`)
+    this.superseded = "[He said this before you finished answering his previous message; that answer was cut off. Answer this now.]"
+    void this.brain?.interrupt()
+  }
+
+  /**
+   * Races a brain turn against Vera's patience: no `speak` within
+   * `firstSpeakTimeoutSeconds`, or no end within `turnTimeoutSeconds`,
+   * interrupts the brain; one that still doesn't stop is closed (it
+   * restarts before the next turn). Never a turn that never ends.
+   */
+  private withDeadline(rec: TurnRecord, brain: Brain, turn: Promise<TurnResult>, onTimeout: (why: string) => void): Promise<TurnResult> {
+    const firstMs = (this.config.brain.firstSpeakTimeoutSeconds ?? 45) * 1000
+    const totalMs = (this.config.brain.turnTimeoutSeconds ?? 150) * 1000
+    return new Promise<TurnResult>((resolve) => {
+      let settled = false
+      let forced: NodeJS.Timeout | null = null
+      const finish = (r: TurnResult) => {
+        if (settled) return
+        settled = true
+        clearInterval(watch)
+        if (forced) clearTimeout(forced)
+        resolve(r)
+      }
+      const watch = setInterval(() => {
+        const waited = Date.now() - rec.startedAt
+        let why: string | null = null
+        if (rec.firstSpeakMs === undefined && !rec.muted && waited >= firstMs) why = `no answer after ${Math.round(waited / 1000)} s`
+        else if (waited >= totalMs) why = `the turn ran ${Math.round(waited / 1000)} s`
+        if (!why || forced) return
+        this.log(`turn ${rec.id}: ${why}; interrupting the brain`)
+        onTimeout(why)
+        this.alert("brain_timeout", `Vera's brain didn't answer: ${why}`)
+        rec.muted = true
+        void brain.interrupt()
+        forced = setTimeout(() => {
+          this.log(`turn ${rec.id}: the brain didn't stop; restarting it`)
+          this.brainDirty = true
+          void brain.close().catch(() => {})
+          finish({ ok: false, text: rec.output, error: why!, interrupted: true })
+        }, 5_000)
+      }, 250)
+      turn.then(finish, (err) => finish({ ok: false, text: "", error: (err as Error).message }))
+    })
+  }
+
+  /** Something failed: the App chimes, flashes the HUD, and shows it in Settings and the tray. */
+  alert(what: string, message: string) {
+    this.send({ cmd: "error", what, message: truncate(message, 300) })
+  }
+
   /** "Vera, stop" / tray Stop talking: silence, interrupt, forget the queue. */
   stop(reason = "stop") {
     this.log(`stop (${reason})`)
     this.queue = []
     this.bargePending = false
     this.interruption = null
+    this.superseded = null
     if (this.current) this.current.muted = true
     this.mouth.stop()
     this.followUpUntil = 0

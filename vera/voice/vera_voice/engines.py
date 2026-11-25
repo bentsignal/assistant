@@ -25,7 +25,8 @@ log = logging.getLogger("vera.voice")
 
 SAMPLE_RATE = 24000
 HOME = Path(os.environ.get("VERA_HOME", Path.home() / ".vera"))
-MODELS = HOME / "models"
+# `VERA_VOICE_MODELS` points a test home (VERA_HOME elsewhere) at the real models.
+MODELS = Path(os.environ.get("VERA_VOICE_MODELS", HOME / "models"))
 HF_HOME = MODELS / "hf"
 KOKORO_DIR = MODELS / "kokoro-onnx"
 VOICES_DIR = Path(__file__).parent / "voices"

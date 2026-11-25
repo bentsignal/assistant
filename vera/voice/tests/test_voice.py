@@ -51,6 +51,57 @@ class TextTests(unittest.TestCase):
         self.assertEqual(text.sentences("```only code```"), [])
 
 
+class LexiconTests(unittest.TestCase):
+    def say(self, line):
+        from pathlib import Path
+        import tempfile
+        from vera_voice import lexicon
+        with tempfile.TemporaryDirectory() as home:
+            return lexicon.apply(line, Path(home))
+
+    def test_terms(self):
+        self.assertEqual(self.say("Check the T3 thread on GitHub."), "Check the T three thread on Git Hub.")
+        self.assertEqual(self.say("Open T3 Code."), "Open T three Code.")
+        self.assertEqual(self.say("The JSON from the CLI and npm."), "The Jason from the C L I and N P M.")
+        self.assertEqual(self.say("Your ID, I'd say."), "Your I D, I'd say.")
+        self.assertEqual(self.say("It took 200 ms and 3GB."), "It took 200 milliseconds and 3 gigabytes.")
+        self.assertEqual(self.say("Run vera.exe now."), "Run vera dot E X E now.")
+
+    def test_heteronyms_in_certain_company(self):
+        self.assertEqual(self.say("The lead detonation is Friday."), "The led detonation is Friday.")
+        self.assertEqual(self.say("Old lead pipes and lead-free paint."), "Old led pipes and led-free paint.")
+        self.assertEqual(self.say("It's made of lead."), "It's made of led.")
+        self.assertEqual(self.say("I've read it, and he had read it too."), "I've red it, and he had red it too.")
+        self.assertEqual(self.say("Live music tonight; the stream is live."), "Lyve music tonight; the stream is lyve.")
+        self.assertEqual(self.say("Wind up the cord."), "Wined up the cord.")
+        self.assertEqual(self.say("Tear down the old shed."), "Tare down the old shed.")
+        self.assertEqual(self.say("A bass guitar."), "A base guitar.")
+        self.assertEqual(self.say("We're close to done."), "We're kloce to done.")
+
+    def test_ambiguous_ones_are_left_alone(self):
+        for line in [
+            "Take the lead.",
+            "Lead the way.",
+            "She will lead the team with lead singer Ann.",
+            "Read me the list.",
+            "I live in Ohio.",
+            "The wind is strong.",
+            "A tear fell.",
+            "Close the window.",
+            "We caught a bass.",
+        ]:
+            self.assertEqual(self.say(line), line)
+
+    def test_user_lexicon(self):
+        from pathlib import Path
+        import tempfile
+        from vera_voice import lexicon
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / "voice").mkdir()
+            (Path(home) / "voice" / "lexicon.json").write_text('{"Hex": "Hecks", "JSON": "jay son"}')
+            self.assertEqual(lexicon.apply("Hex reads JSON.", Path(home)), "Hecks reads jay son.")
+
+
 class DspTests(unittest.TestCase):
     def test_presets_respect_ceiling_and_target(self):
         x = speechlike(4.0)

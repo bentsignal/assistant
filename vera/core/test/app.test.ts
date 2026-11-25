@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { PassThrough } from "node:stream"
-import { AppLink, AppMouth, type CoreCommand } from "../src/app.ts"
+import { AppLink, AppMouth, playDeadlineMs, type CoreCommand } from "../src/app.ts"
 import { heardPrefix } from "../src/vera.ts"
 
 function setup() {
@@ -99,13 +99,45 @@ test("playback failed ends that item (not an interruption) and sends the next", 
   assert.equal(mouth.speaking, false)
 })
 
-test("a speak the App never starts is skipped after the timeout", async () => {
+test("a speak the App never starts is stopped in the App and skipped after the timeout", async () => {
   const { sent, mouth } = setup()
   const a = mouth.say("One.")
   mouth.say("Two.")
   await tick(260)
   assert.equal(a.state, "failed")
-  assert.equal((sent[1] as any).text, "Two.")
+  // Stopped first, so it can never play late over the next line.
+  assert.deepEqual(
+    sent.map((c) => c.cmd),
+    ["speak", "stop_speaking", "speak"],
+  )
+  assert.equal((sent[2] as any).text, "Two.")
+  // Its late events change nothing.
+  mouth.onPlayback(a.id, "started")
+  mouth.onPlayback(a.id, "interrupted")
+  assert.equal(a.state, "failed")
+  assert.equal(mouth.playing?.text, "Two.")
+})
+
+test("playDeadlineMs follows the text: short lines get seconds, long ones more", () => {
+  assert.equal(playDeadlineMs("Yes."), 8_000 + 4 * 160)
+  assert.ok(playDeadlineMs("x".repeat(200)) < 45_000)
+  assert.equal(playDeadlineMs("x".repeat(5000)), 190_000)
+})
+
+test("dropStale cuts and drops every line from earlier turns, keeps the new turn's", async () => {
+  const { sent, mouth } = setup()
+  const old1 = mouth.say("Old reply one.", 1)
+  const old2 = mouth.say("Old reply two.", 1)
+  mouth.onPlayback(old1.id, "started")
+  const dropped = mouth.dropStale(2)
+  assert.deepEqual(dropped.map((i) => i.id), [old1.id, old2.id])
+  assert.equal(old1.state, "cut")
+  assert.equal(old2.state, "dropped")
+  assert.equal(sent.at(-1)?.cmd, "stop_speaking")
+  const fresh = mouth.say("New reply.", 2)
+  assert.equal((sent.at(-1) as any).speak_id, fresh.id)
+  assert.deepEqual(mouth.dropStale(2), [], "the new turn's own line stays")
+  assert.equal(mouth.playing?.id, fresh.id)
 })
 
 test("heardPrefix estimates where speech was cut", () => {

@@ -32,6 +32,8 @@ export type CoreCommand =
   | { cmd: "hide"; card_id: string }
   | { cmd: "set_volume"; level: number }
   | { cmd: "badge"; count: number }
+  /** Something failed on Core's side; the App chimes, flashes the HUD, and says so in Settings and the tray. */
+  | { cmd: "error"; what: "brain" | "brain_timeout" | string; message: string }
 
 const EVENT_TYPES = new Set(["ready", "speech_start", "partial", "final", "speech_cancel", "barge_in", "playback", "ui"])
 
@@ -104,6 +106,17 @@ interface Internal extends SpeechItem {
   timer?: NodeJS.Timeout
 }
 
+/**
+ * How long a line may take to play once started: twice its expected length
+ * (Vera speaks about 14 characters a second) plus room for a slow stream.
+ * The App gives up a little sooner (its own deadline), so its end usually
+ * comes first; this is the backstop that keeps Core from ever waiting on a
+ * line that will never end.
+ */
+export function playDeadlineMs(text: string): number {
+  return Math.min(190_000, 8_000 + text.length * 160)
+}
+
 export interface AppMouthOptions {
   /** No `started` this long after sending: give up on the item. */
   startTimeoutMs?: number
@@ -141,16 +154,16 @@ export class AppMouth {
     private log: (line: string) => void = () => {},
     opts: AppMouthOptions = {},
   ) {
-    this.startTimeoutMs = opts.startTimeoutMs ?? 20_000
+    this.startTimeoutMs = opts.startTimeoutMs ?? 14_000
     this.graceMs = opts.graceMs ?? 200
   }
 
-  on(event: "start" | "end" | "cut", cb: (...a: any[]) => void): () => void {
+  on(event: "start" | "end" | "cut" | "stuck", cb: (...a: any[]) => void): () => void {
     this.ev.on(event, cb)
     return () => this.ev.off(event, cb)
   }
 
-  private emit(event: "start" | "end" | "cut", arg?: unknown) {
+  private emit(event: "start" | "end" | "cut" | "stuck", arg?: unknown) {
     this.ev.emit(event, arg)
   }
 
@@ -194,7 +207,7 @@ export class AppMouth {
     item.timer = setTimeout(() => {
       if (item.state !== "sent") return
       this.log(`speech ${item.id}: no playback started after ${this.startTimeoutMs} ms; skipping it`)
-      this.end(item, "failed")
+      this.giveUp(item)
     }, this.startTimeoutMs)
     this.link.send({ cmd: "speak", speak_id: item.id, text: item.text })
   }
@@ -208,12 +221,12 @@ export class AppMouth {
       item.state = "playing"
       item.startedAt = Date.now()
       if (item.timer) clearTimeout(item.timer)
-      // Generous: a sentence never takes longer than this to say.
+      const deadline = playDeadlineMs(item.text)
       item.timer = setTimeout(() => {
         if (item.state !== "playing") return
-        this.log(`speech ${item.id}: no playback end; assuming it finished`)
-        this.end(item, "done")
-      }, 30_000 + item.text.length * 150)
+        this.log(`speech ${item.id}: no playback end after ${deadline} ms; stopping it`)
+        this.giveUp(item)
+      }, deadline)
       if (this.endTimer) {
         clearTimeout(this.endTimer)
         this.endTimer = null
@@ -234,6 +247,17 @@ export class AppMouth {
     if (this.stopping) return this.end(item, "cut")
     this.log(`speech ${item.id} interrupted by the App`)
     this.cut(false)
+  }
+
+  /** A line that never started or never ended: stop it in the App (so nothing plays late), then go on. */
+  private giveUp(item: Internal) {
+    if (this.current === item) {
+      this.stopping = true
+      this.link.send({ cmd: "stop_speaking" })
+      this.stopping = false
+    }
+    this.emit("stuck", item)
+    this.end(item, "failed")
   }
 
   private end(item: Internal, state: SpeechState) {
@@ -292,6 +316,39 @@ export class AppMouth {
 
   stop() {
     this.cut(true)
+  }
+
+  /**
+   * A new turn began: every line from earlier turns (playing or queued) is
+   * stale, so it's cut and dropped. Shawn never hears an old reply after
+   * his new question. Returns what was dropped.
+   */
+  dropStale(turnId: number): SpeechItem[] {
+    const stale = (i: Internal) => i.turnId !== turnId
+    const dropped = this.queue.filter(stale)
+    this.queue = this.queue.filter((i) => !stale(i))
+    for (const d of dropped) {
+      d.state = "dropped"
+      d.endedAt = Date.now()
+      d.resolve(d)
+    }
+    const cur = this.current
+    if (cur && stale(cur)) {
+      this.stopping = true
+      this.link.send({ cmd: "stop_speaking" })
+      this.stopping = false
+      if (cur.timer) clearTimeout(cur.timer)
+      cur.state = cur.state === "playing" ? "cut" : "dropped"
+      cur.endedAt = Date.now()
+      this.current = null
+      cur.resolve(cur)
+      dropped.unshift(cur)
+    }
+    if (!dropped.length) return dropped
+    this.emit("cut", { cut: cur && stale(cur) ? cur : null, dropped })
+    this.pump()
+    if (!this.current && !this.queue.length) this.finishStretch(true)
+    return dropped
   }
 
   chime(kind: ChimeKind) {

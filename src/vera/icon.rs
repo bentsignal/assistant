@@ -4,15 +4,30 @@
 //! a light one. 20 pixels and under keep two levels so it stays legible.
 //! `scripts/vera-icon.py` draws the same mark into `vera.ico`.
 
-/// The mark as straight RGBA, `size` pixels square. `badge` adds a dot in
-/// the top right corner (inbox items), cut clear of the mark; `dim` fades
-/// the mark (microphone muted).
-pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, badge: bool, dim: bool) -> Vec<u8> {
+/// The dot in the icon's top right corner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Dot {
+    None,
+    /// Inbox items: agent blue.
+    Inbox,
+    /// Something is wrong: Hex's coral failed colour.
+    Problem,
+}
+
+/// The mark as straight RGBA, `size` pixels square. `dot` adds one in the
+/// top right corner (inbox items, or a problem), cut clear of the mark;
+/// `dim` fades the mark (microphone muted).
+pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, dot: Dot, dim: bool) -> Vec<u8> {
     let n = size as usize;
     let ink = if light_taskbar { 0u8 } else { 255u8 };
     let coverage = mark_coverage(size);
     let mut pixels = vec![0u8; n * n * 4];
-    let dot = badge.then(|| {
+    let colour = match dot {
+        Dot::None => BADGE,
+        Dot::Inbox => BADGE,
+        Dot::Problem => PROBLEM,
+    };
+    let dot = (dot != Dot::None).then(|| {
         let radius = size as f32 * 0.17;
         let center = (size as f32 - radius - 0.5, radius + 0.5);
         (center, radius)
@@ -28,7 +43,7 @@ pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, badge: bool, dim: bool) 
                 alpha *= gap;
                 let fill = (radius - d + 0.5).clamp(0.0, 1.0);
                 if fill > 0.0 {
-                    rgb = BADGE;
+                    rgb = colour;
                     alpha = alpha * (1.0 - fill) + fill;
                 }
             }
@@ -42,6 +57,8 @@ pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, badge: bool, dim: bool) 
 
 /// The badge's colour: the agent blue Dot scope cools to, brightened.
 const BADGE: [u8; 3] = [0x5b, 0x9c, 0xff];
+/// A problem's: the coral of Hex's failed look.
+const PROBLEM: [u8; 3] = [0xff, 0x6b, 0x5a];
 
 /// The mark's coverage, 0–1 per pixel, row by row.
 fn mark_coverage(size: u32) -> Vec<f32> {
@@ -104,18 +121,24 @@ mod tests {
     #[test]
     fn the_mark_is_inked_and_the_badge_shows() {
         for size in [16, 20, 24, 32] {
-            let plain = tray_rgba(size, false, false, false);
+            let plain = tray_rgba(size, false, Dot::None, false);
             assert_eq!(plain.len(), (size * size * 4) as usize);
             let inked = plain.chunks(4).filter(|p| p[3] > 128).count();
             assert!(inked > (size * size / 10) as usize, "{size}: {inked}");
-            let badged = tray_rgba(size, false, true, false);
+            let badged = tray_rgba(size, false, Dot::Inbox, false);
             let blue = badged
                 .chunks(4)
                 .filter(|p| p[..3] == BADGE && p[3] > 200)
                 .count();
             assert!(blue > 4, "{size}: {blue}");
-            let light = tray_rgba(size, true, false, false);
+            let light = tray_rgba(size, true, Dot::None, false);
             assert!(light.chunks(4).all(|p| p[..3] == [0, 0, 0]));
+            let problem = tray_rgba(size, false, Dot::Problem, false);
+            let coral = problem
+                .chunks(4)
+                .filter(|p| p[..3] == PROBLEM && p[3] > 200)
+                .count();
+            assert!(coral > 4, "{size}: {coral}");
         }
         // The centre of the field is inside the bottom triangle's solid core.
         assert!(sd_triangle(0.0, 0.0, 1.0, -0.25) < 0.0);
