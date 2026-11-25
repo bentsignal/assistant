@@ -151,6 +151,7 @@ export class Vera extends EventEmitter {
   /** Barge-in happened; the next final is Shawn's reply. */
   private interruption: Interruption | null = null
   private bargePending = false
+  private bargeTimer: NodeJS.Timeout | null = null
   private speechByTurn = new Map<number, SpeechItem[]>()
   private syncJobs = new Set<string>()
   private turnWaiters = new Map<number, (t: TurnRecord) => void>()
@@ -354,6 +355,13 @@ export class Vera extends EventEmitter {
     const turnId = item?.turnId
     this.log(`barge-in (${why}) on ${speakId ?? playing?.id ?? "nothing playing"}`)
     this.bargePending = true
+    // If no final ever comes, stop showing "listening" once the window would have closed.
+    if (this.bargeTimer) clearTimeout(this.bargeTimer)
+    this.bargeTimer = setTimeout(() => {
+      this.bargePending = false
+      this.changed()
+    }, Math.max(20, this.config.wake.followUpSeconds) * 1000 + 50)
+    this.bargeTimer.unref()
     this.speechEngaged = this.inSpeech || this.speechEngaged
     this.followUpUntil = Date.now() + Math.max(20, this.config.wake.followUpSeconds) * 1000
     m.cut(false) // usually already done: the App's `playback interrupted` tends to come first
@@ -494,7 +502,7 @@ export class Vera extends EventEmitter {
       recentlyActive: now - this.lastActiveAt < this.config.wake.warmSeconds * 1000,
     })
     const wasBarge = this.bargePending
-    if (g.action !== "ignore") this.bargePending = false
+    this.bargePending = false
     this.lastHeard = input.text
     this.emit("heard", { text: input.text, gate: g })
     switch (g.action) {

@@ -147,7 +147,7 @@ const env = { ...process.env, VERA_HOME: home, HEX_AUDIO_FIXTURE: fixture }
 if (!loud) env.SDL_AUDIODRIVER = "dummy"
 const tsx = join(CORE, "node_modules", "tsx", "dist", "cli.mjs")
 const t0wall = Date.now()
-const core = spawn(process.execPath, [tsx, join(CORE, "src", "main.ts")], { cwd: CORE, env, stdio: ["ignore", "pipe", "pipe"] })
+const core = spawn(process.execPath, [tsx, join(CORE, "src", "main.ts")], { cwd: CORE, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
 const logs = []
 let readyAt = 0
 const onLine = (line) => {
@@ -212,7 +212,7 @@ async function finish(code = 0) {
   } catch {}
   await new Promise((r) => {
     const t = setTimeout(() => {
-      spawnSync("taskkill", ["/pid", String(core.pid), "/T", "/F"])
+      spawnSync("taskkill", ["/pid", String(core.pid), "/T", "/F"], { windowsHide: true })
       r()
     }, 8000)
     core.on("exit", () => {
