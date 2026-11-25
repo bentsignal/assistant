@@ -1,0 +1,26 @@
+{
+  "name": "@vera/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Vera Core: daemon, brain adapters, Vera MCP server, panel",
+  "main": "src/main.ts",
+  "bin": { "vera-core": "src/main.ts" },
+  "scripts": {
+    "start": "tsx src/main.ts --open",
+    "dev": "tsx src/main.ts",
+    "mcp": "tsx src/mcp/server.ts",
+    "bench": "tsx scripts/bench.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}
