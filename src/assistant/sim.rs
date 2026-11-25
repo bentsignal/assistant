@@ -7,6 +7,8 @@
 //! - `voice <id>|default`, `volume <0..1>`, `microphone <name>|default`,
 //!   `mute on|off`: what the Settings window would do.
 //! - `stop`: the Stop talking hotkey.
+//! - `sim echo_db=…,delay_ms=…,noise_db=…`: other simulated devices, live
+//!   (a headset: `sim echo_db=-90,delay_ms=20,noise_db=-100`).
 //!
 //! Off unless the variable is set; it listens on loopback only.
 
@@ -86,6 +88,12 @@ fn command(line: &str, messages: &Sender<Msg>) -> Result<String, String> {
                 serde_json::json!({"path": path.trim(), "ms": length.as_millis() as u64}),
             );
             Ok(length.as_millis().to_string())
+        }
+        "sim" => {
+            let sim = super::audio::simdev::sim().ok_or("the simulated devices aren't on")?;
+            sim.reconfigure(rest);
+            crate::assistant::trace::record("sim", serde_json::json!({ "spec": rest }));
+            Ok(String::new())
         }
         "mic-clear" => {
             if let Some(sim) = super::audio::simdev::sim() {

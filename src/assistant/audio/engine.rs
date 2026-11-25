@@ -176,6 +176,8 @@ pub(super) fn run(
                 blocks = stats.blocks,
                 ducks = stats.ducks,
                 restores = stats.restores,
+                suspicions = stats.suspicions,
+                dismissed = stats.dismissed,
                 barge_ins = stats.barge_ins,
                 late_blocks = stats.late_blocks,
                 resyncs = engine.core.reference_resyncs(),

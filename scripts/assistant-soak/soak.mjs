@@ -31,6 +31,10 @@ const opt = (name, fallback) => {
 const EXE = resolve(opt("exe", join(REPO, "target", "release", "assistant.exe")))
 const RUNS = Number(opt("runs", "1"))
 const KEEP = argv.includes("--keep")
+/** Only the steps whose label contains one of these (comma separated); the warm-up turn always runs. */
+const ONLY = (opt("only", "") || "").split(",").map((x) => x.trim()).filter(Boolean)
+/** A dip in Vera's level deeper than this, with no barge-in right after it, is a false dip. */
+const FALSE_DIP_DB = 3
 const VOICE_PORT = Number(opt("voice-port", "7315"))
 const CONTROL_PORT = Number(opt("control-port", "47551"))
 const FIXTURES = resolve(opt("fixtures", join(tmpdir(), "assistant-soak", "utterances")))
@@ -86,6 +90,11 @@ const U = {
   jarvis: "Jarvis, what's the capital of Japan?",
   followup: "And what about Germany?",
   veraAgain: "Vera, what's the capital of Peru?",
+  ocean: "Vera, tell me about the ocean.",
+  beach: "Vera, describe the beach.",
+  count: "Vera, count to ten.",
+  forest: "Vera, tell me about the forest.",
+  chile: "Wait, what's the capital of Chile?",
 }
 
 const LONG = {
@@ -94,6 +103,10 @@ const LONG = {
   news: "Here is the news. The city opened a new park by the river this morning, and the weather stays mild through the weekend with light wind.",
   kitchen: "The kitchen is bright and warm, with a long wooden counter, a big window over the sink, and copper pans hanging by the stove.",
   room: "The living room has a deep green sofa, a low table covered in books, and a lamp in the corner that throws a soft yellow light.",
+  ocean:
+    "The ocean covers most of the planet, and it is deepest in the far west of the Pacific, where the water goes down for almost eleven kilometres. The light never reaches the bottom, the water there is close to freezing, and still there are fish and shrimp and strange pale creatures living in the dark, slowly, for a very long time.",
+  forest: "The forest is old and quiet, with tall pines that close over the path, moss on every stone, and a cold stream that runs under a fallen tree.",
+  beach: "The beach is wide and pale, with soft dunes behind it, a line of old wooden posts running into the sea, and gulls standing in the shallow water.",
   another:
     "Long ago a baker in a small village made one loaf of bread every morning for each family, and nobody ever went hungry there.",
 }
@@ -136,6 +149,11 @@ const SCRIPT = [
   rule("japan", [speak("Tokyo.")]),
   rule("germany", [speak("Berlin.")]),
   rule("peru", [speak("Lima.")]),
+  rule("ocean", [speak(LONG.ocean), speak("That is the ocean.")]),
+  rule("count to ten", [speak("One, two, three, four, five, six, seven, eight, nine, ten.")]),
+  rule("forest", [speak(LONG.forest), speak("Mind the roots.")]),
+  rule("chile", [speak("Santiago.")]),
+  rule("beach", [speak(LONG.beach), speak("The tide is coming in.")]),
   rule("call yourself vera", [{ tool: "set_name", args: { name: "Vera" } }, speak("Vera again.")]),
   rule("call yourself nova", [{ tool: "set_name", args: { name: "Nova" } }, speak("Okay, I'm Nova.")]),
 ]
@@ -255,7 +273,7 @@ class Run {
     return {
       ...process.env,
       ASSISTANT_HOME: this.home,
-      ASSISTANT_AUDIO_SIM: "echo_db=-30,delay_ms=60,noise_db=-75",
+      ASSISTANT_AUDIO_SIM: opt("sim", "echo_db=-30,delay_ms=60,noise_db=-75"),
       ASSISTANT_SIM_CONTROL: `127.0.0.1:${CONTROL_PORT}`,
       ASSISTANT_TRACE: join(this.home, "trace.ndjson"),
       ASSISTANT_VOICE_MODELS: join(REAL_HOME, "models"),
@@ -414,6 +432,24 @@ class Run {
     this.check(tray.length > 0, `${what}: the tray showed the problem`)
   }
 
+  /** The audio engine's last duck and barge-in counters (its 2 s duplex log line). */
+  duplexCounters() {
+    const path = join(this.home, "logs", "assistant-app.log")
+    const text = existsSync(path) ? readFileSync(path, "utf8") : ""
+    const lines = text.split("\n").filter((l) => l.includes("assistant audio: duplex"))
+    const last = lines[lines.length - 1] ?? ""
+    const field = (name) => Number(last.match(new RegExp(` ${name}=(\\d+)`))?.[1] ?? 0)
+    return { ducks: field("ducks"), restores: field("restores"), suspicions: field("suspicions"), dismissed: field("dismissed"), bargeIns: field("barge_ins") }
+  }
+
+  /** Dips in Vera's level (the simulated speakers' `dip` events) with no barge-in right after. */
+  falseDips(after = 0, before = Infinity) {
+    const barges = this.trace.find(isTo("barge_in"))
+    return this.trace
+      .find((e) => e.kind === "dip" && e.start >= after && e.start <= before)
+      .filter((d) => d.depth_db > FALSE_DIP_DB && !barges.some((b) => b.t >= d.start - 100 && b.t <= d.end + 1000))
+  }
+
   childPid(name) {
     const started = this.trace.find((e) => e.kind === "child" && e.name === name && e.event === "started")
     return started.length ? started[started.length - 1].pid : null
@@ -423,6 +459,7 @@ class Run {
 
   async script() {
     const step = async (label, fn) => {
+      if (ONLY.length && !ONLY.some((part) => label.includes(part))) return
       const t0 = now()
       try {
         await fn()
@@ -725,6 +762,96 @@ class Run {
       await this.turn("night", "Good night.")
       await this.hidden()
     })
+
+    await step("in a headset: room noise, breathing and clicks over a reply: no dips", async () => {
+      // Shawn's headset: none of Vera reaches the microphone, which sends
+      // near digital silence between sounds. A warm-up line first, so the
+      // canceller has settled on the new device.
+      await this.control("sim echo_db=-100,delay_ms=20,noise_db=-100").catch((err) => this.log(`(no live sim change: ${err.message})`))
+      await this.turn("count", "One, two, three, four, five, six, seven, eight, nine, ten.")
+      await this.hidden()
+      const ocean = await this.say("ocean")
+      await this.heard(ocean)
+      this.addressed++
+      const playing = await this.reply(ocean, LONG.ocean, { until: "started" })
+      const before = this.duplexCounters()
+      await sleep(2500)
+      const from = now()
+      for (const name of ["noise-breath", "noise-typing", "noise-knock", "noise-breath-loud", "noise-mouse", "noise-rustle", "noise-fan"]) {
+        await this.say(name, 0)
+        await sleep(200)
+      }
+      const until = now()
+      const ended = await this.trace.waitFor(isTo("playback", (m) => m.speak_id === playing.id && m.state !== "started"), {
+        after: playing.started.t,
+        within: 40_000,
+        what: "the ocean line to end",
+      })
+      this.check(ended.msg.state === "finished", `the line played to its end through the noise (${ended.msg.state})`)
+      this.check(ended.t > until, "the noise all fell inside her line")
+      this.check(this.trace.find(isTo("barge_in"), from).filter((e) => e.t <= ended.t).length === 0, "the noise never barged in")
+      this.check(this.trace.find(isTo("final"), from).filter((e) => e.t <= ended.t + 1000).length === 0, "the noise was never heard as speech")
+      await this.reply({ at: ended.t, end: ended.t }, "That is the ocean.", { bound: 2500 })
+      await sleep(2500)
+      const after = this.duplexCounters()
+      const dips = this.trace.find((e) => e.kind === "dip" && e.start >= from - 200 && e.start <= until + 500)
+      const deepest = Math.max(0, ...dips.map((d) => d.depth_db))
+      this.noise = {
+        ducks: after.ducks - before.ducks,
+        restores: after.restores - before.restores,
+        silentSuspicions: after.suspicions - before.suspicions,
+        dips: dips.length,
+        deepestDb: deepest,
+      }
+      this.log(`noise: ${this.noise.ducks} ducks, ${this.noise.silentSuspicions} silent suspicions, ${dips.length} dips, deepest ${deepest} dB`)
+      this.check(this.noise.ducks === 0, `the noise never ducked her (${this.noise.ducks} ducks)`)
+      this.check(deepest <= FALSE_DIP_DB, `no dip deeper than ${FALSE_DIP_DB} dB (deepest ${deepest} dB over ${dips.length} dips)`)
+      await this.hidden()
+    })
+
+    await step("in a headset: a breath, then 'Stop.' over a reply", async () => {
+      const beach = await this.say("beach")
+      await this.heard(beach)
+      this.addressed++
+      const reading = await this.reply(beach, LONG.beach, { until: "started" })
+      await sleep(1800)
+      const breathAt = now()
+      const breathMs = Number(await this.control(`mic 0 ${join(FIXTURES, "noise-breath.wav")}`))
+      const stop = await this.say("stop", -3)
+      const wordAt = breathAt + breathMs
+      const cut = await this.trace.waitFor(isTo("playback", (m) => m.speak_id === reading.id && m.state === "interrupted"), {
+        after: breathAt,
+        within: breathMs + 3000,
+        what: "the beach line to stop",
+      })
+      this.check(cut.t >= wordAt - 100, `she stopped on the word, not the breath (${cut.t - wordAt} ms after "Stop." began)`)
+      this.check(cut.t - wordAt < 1500, `stopped ${cut.t - wordAt} ms after "Stop." began`)
+      await sleep(3000)
+      this.check(this.trace.find(isFrom("speak"), stop.at).length === 0, "nothing more was said after the breath and 'Stop.'")
+      await this.hidden()
+    })
+
+    await step("in a headset: talking over a reply", async () => {
+      const forest = await this.say("forest")
+      await this.heard(forest)
+      this.addressed++
+      const playing = await this.reply(forest, LONG.forest, { until: "started" })
+      await sleep(2500)
+      const chile = await this.say("chile", -3)
+      const barge = await this.trace.waitFor(isTo("barge_in"), { after: chile.at, within: 3000, what: "a barge-in" })
+      this.check(barge.t - chile.at < 1500, `barged in ${barge.t - chile.at} ms after he started talking`)
+      const cut = await this.trace.waitFor(isTo("playback", (m) => m.speak_id === playing.id && m.state !== "started"), {
+        after: playing.started.t,
+        within: 3000,
+        what: "the forest line to stop",
+      })
+      this.check(cut.msg.state === "interrupted", `the forest line was interrupted (${cut.msg.state})`)
+      await this.heard(chile)
+      this.addressed++
+      await this.reply(chile, "Santiago.")
+      this.check(this.trace.find(isFrom("speak", (m) => m.text === "Mind the roots."), forest.at).length === 0, "the rest of the forest was dropped")
+      await this.hidden()
+    })
   }
 
   /** Across the whole run: nothing stale played, every speak ended once, the HUD is hidden. */
@@ -762,6 +889,11 @@ class Run {
     }
     void finals
     this.check(stale === 0, `nothing stale ever played (${stale} did)`)
+    const dips = this.trace.events.filter((e) => e.kind === "dip")
+    const falseDips = this.falseDips()
+    this.dipSummary = { dips: dips.length, falseDips: falseDips.length, deepestFalseDb: Math.max(0, ...falseDips.map((d) => d.depth_db)) }
+    for (const d of falseDips) this.log(`false dip: ${d.depth_db} dB for ${d.end - d.start} ms`)
+    this.check(falseDips.length === 0, `no false dips over ${FALSE_DIP_DB} dB across the run (${falseDips.length})`)
     const last = this.trace.lastHud()
     this.check(!last || last.look === "hidden", "the HUD ends hidden")
     this.check(this.exited === undefined, "assistant.exe never crashed")
@@ -777,6 +909,149 @@ class Run {
   }
 }
 
+
+// ---- room sounds that aren't speech ------------------------------------------------
+// Breaths, typing, mouse clicks, a knock on the desk, clothes rustling, a fan,
+// synthesized (deterministically) at a headset microphone's levels: Shawn's
+// own live log shows these at -57 to -75 dBFS (4 ms peaks) against his speech
+// at -22 to -36; these are louder, -35 to -48, to be safe.
+
+const SR = 16_000
+function xorshift(seed) {
+  let s = seed >>> 0 || 1
+  return () => {
+    s ^= s << 13
+    s >>>= 0
+    s ^= s >>> 17
+    s ^= s << 5
+    s >>>= 0
+    return (s / 4294967296) * 2 - 1
+  }
+}
+/** RBJ biquad, applied in place. */
+function biquad(x, kind, f, q) {
+  const w = (2 * Math.PI * f) / SR
+  const a = Math.sin(w) / (2 * q)
+  const c = Math.cos(w)
+  let b0, b1, b2
+  if (kind === "band") [b0, b1, b2] = [a, 0, -a]
+  else if (kind === "low") [b0, b1, b2] = [(1 - c) / 2, 1 - c, (1 - c) / 2]
+  else [b0, b1, b2] = [(1 + c) / 2, -(1 + c), (1 + c) / 2]
+  const [a0, a1, a2] = [1 + a, -2 * c, 1 - a]
+  let [x1, x2, y1, y2] = [0, 0, 0, 0]
+  for (let i = 0; i < x.length; i++) {
+    const y = (b0 * x[i] + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0
+    ;[x2, x1, y2, y1] = [x1, x[i], y1, y]
+    x[i] = y
+  }
+  return x
+}
+const noiseOf = (n, rand) => Float64Array.from({ length: n }, rand)
+/** Scales `x` so its loudest 4 ms reach `peakDb` dBFS (RMS). */
+function level(x, peakDb) {
+  let peak = 0
+  for (let i = 0; i + 64 <= x.length; i += 64) {
+    let e = 0
+    for (let j = i; j < i + 64; j++) e += x[j] * x[j]
+    peak = Math.max(peak, e / 64)
+  }
+  const gain = 10 ** (peakDb / 20) / Math.sqrt(peak || 1e-20)
+  return x.map((v) => v * gain)
+}
+const silence = (s) => new Float64Array(Math.round(s * SR))
+const concat = (...parts) => {
+  const out = new Float64Array(parts.reduce((n, p) => n + p.length, 0))
+  let at = 0
+  for (const p of parts) out.set(p, (at += p.length) - p.length)
+  return out
+}
+function breath(rand, inhale, exhale) {
+  const one = (seconds, center, puff) => {
+    const n = Math.round(seconds * SR)
+    const x = biquad(biquad(noiseOf(n, rand), "band", center, 0.8), "high", 250, 0.7)
+    const low = biquad(noiseOf(n, rand), "low", 180, 0.7)
+    return x.map((v, i) => {
+      const env = Math.sin((Math.PI * i) / n) ** 2 * (0.85 + 0.15 * Math.sin(i / 300))
+      return (v + puff * low[i]) * env
+    })
+  }
+  return concat(one(inhale, 1400, 0), silence(0.25), one(exhale, 900, 0.6))
+}
+function click(rand, freq, tau) {
+  const n = Math.round(0.04 * SR)
+  return Float64Array.from({ length: n }, (_, i) => {
+    const t = i / SR
+    return (rand() * Math.exp(-t / 0.0015) + 0.6 * Math.sin(2 * Math.PI * freq * t) * Math.exp(-t / tau))
+  })
+}
+function clicks(rand, times, freq, release) {
+  const out = new Float64Array(Math.round((times[times.length - 1] + 0.2) * SR))
+  for (const at of times) {
+    for (const [offset, gain] of [[0, 1], [release, 0.45]]) {
+      const c = click(rand, freq * (0.9 + 0.2 * Math.abs(rand())), 0.006)
+      const start = Math.round((at + offset) * SR)
+      for (let i = 0; i < c.length && start + i < out.length; i++) out[start + i] += gain * c[i]
+    }
+  }
+  return out
+}
+function knock(rand) {
+  const n = Math.round(0.35 * SR)
+  return Float64Array.from({ length: n }, (_, i) => {
+    const t = i / SR
+    return Math.sin(2 * Math.PI * 95 * t) * Math.exp(-t / 0.06) + 0.4 * rand() * Math.exp(-t / 0.004)
+  })
+}
+function rustle(rand) {
+  const n = Math.round(0.7 * SR)
+  const x = biquad(noiseOf(n, rand), "band", 3000, 0.6)
+  let crackle = 0
+  return x.map((v, i) => {
+    if (i % 160 === 0) crackle = Math.abs(rand()) ** 3
+    return v * crackle * Math.sin((Math.PI * i) / n)
+  })
+}
+function fan(rand, seconds) {
+  const n = Math.round(seconds * SR)
+  const x = biquad(noiseOf(n, rand), "low", 1200, 0.5)
+  const ramp = 0.3 * SR
+  return x.map((v, i) => v * Math.min(1, i / ramp, (n - i) / ramp))
+}
+function writeWav(path, x) {
+  const data = Buffer.alloc(x.length * 2)
+  x.forEach((v, i) => data.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(v * 32767))), i * 2))
+  const h = Buffer.alloc(44)
+  h.write("RIFF", 0)
+  h.writeUInt32LE(36 + data.length, 4)
+  h.write("WAVEfmt ", 8)
+  h.writeUInt32LE(16, 16)
+  h.writeUInt16LE(1, 20)
+  h.writeUInt16LE(1, 22)
+  h.writeUInt32LE(SR, 24)
+  h.writeUInt32LE(SR * 2, 28)
+  h.writeUInt16LE(2, 32)
+  h.writeUInt16LE(16, 34)
+  h.write("data", 36)
+  h.writeUInt32LE(data.length, 40)
+  writeFileSync(path, Buffer.concat([h, data]))
+}
+/** name → [what it is, samples]. */
+function roomSounds() {
+  const r = xorshift(20261125)
+  return {
+    "noise-breath": ["two breaths", level(breath(r, 0.7, 0.9), -42)],
+    "noise-breath-loud": ["a heavy breath out", level(breath(r, 0.5, 1.1), -36)],
+    "noise-typing": ["typing", level(clicks(r, [0, 0.16, 0.29, 0.47, 0.6, 0.81, 0.95, 1.12], 2600, 0.07), -35)],
+    "noise-mouse": ["mouse clicks", level(clicks(r, [0, 0.5, 0.62], 4200, 0.09), -38)],
+    "noise-knock": ["a knock on the desk", level(knock(r), -36)],
+    "noise-rustle": ["clothes rustling", level(rustle(r), -42)],
+    "noise-fan": ["a fan running", level(fan(r, 2.5), -52)],
+  }
+}
+function writeRoomSounds() {
+  for (const [name, [, x]] of Object.entries(roomSounds())) writeWav(join(FIXTURES, `${name}.wav`), x)
+}
+
 // ---- main ---------------------------------------------------------------------------
 
 function fixtures() {
@@ -788,6 +1063,7 @@ function fixtures() {
     windowsHide: true,
   })
   if (made.status !== 0) throw new Error(`make-utterances failed: ${made.stderr}`)
+  writeRoomSounds()
 }
 
 async function main() {
@@ -819,11 +1095,17 @@ async function main() {
       failures: run.failures,
       seconds: Math.round((now() - t0) / 1000),
       replyLatencyMs: lat.length ? { median: p(0.5), p90: p(0.9), max: lat[lat.length - 1] } : null,
+      noise: run.noise ?? null,
+      dips: run.dipSummary ?? null,
+      duplex: run.duplexCounters(),
     }
     summary.push(result)
     console.log(
       `run ${i}: ${result.ok ? "PASS" : "FAIL"} · ${result.addressedTurns} addressed turns · ${result.checks} checks · ${result.seconds} s` +
-        (result.replyLatencyMs ? ` · reply latency median ${result.replyLatencyMs.median} ms, p90 ${result.replyLatencyMs.p90}, max ${result.replyLatencyMs.max}` : ""),
+        (result.replyLatencyMs ? ` · reply latency median ${result.replyLatencyMs.median} ms, p90 ${result.replyLatencyMs.p90}, max ${result.replyLatencyMs.max}` : "") +
+        (result.noise ? ` · noise: ${result.noise.ducks} ducks, deepest dip ${result.noise.deepestDb} dB` : "") +
+        (result.dips ? ` · dips ${result.dips.dips} (false ${result.dips.falseDips})` : "") +
+        ` · ducks ${result.duplex.ducks}, barge-ins ${result.duplex.bargeIns}`,
     )
     passedInARow = result.ok ? passedInARow + 1 : 0
     if (result.ok && !KEEP) rmSync(run.home, { recursive: true, force: true })

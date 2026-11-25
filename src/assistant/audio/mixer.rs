@@ -255,6 +255,11 @@ impl Mixer {
         }
     }
 
+    /// The duck gain right now (1 when not ducked).
+    pub(crate) fn duck_gain(&self) -> f32 {
+        self.duck.value
+    }
+
     /// Whether anything is playing or waiting to.
     pub(crate) fn busy(&self) -> bool {
         !self.queue.is_empty() || self.stopping.is_some() || !self.chimes.is_empty()

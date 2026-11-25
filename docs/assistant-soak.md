@@ -7,7 +7,11 @@ microphone, the speakers, and the brain stood in for.
 
 ```sh
 node scripts/assistant-soak/soak.mjs --exe target/release/assistant.exe --runs 3
+node scripts/assistant-soak/soak.mjs --only headset      # just the steps whose label has "headset"
 ```
+
+`--sim <spec>` sets the simulated devices for the whole run (default
+`echo_db=-30,delay_ms=60,noise_db=-75`).
 
 It needs the voice service's venv and models (`assistant\voice\scripts\setup.ps1`),
 Core's packages, and Hex's Parakeet model, as Vera does. Nothing plays
@@ -27,8 +31,10 @@ Shawn's.
   speakers render the mixer into nothing and report each stretch of audible
   output.
 - `ASSISTANT_SIM_CONTROL` (`src/assistant/sim.rs`) is a loopback port: `mic <gain_db>
-  <wav>` says a WAV into the microphone, and `voice`, `volume`,
-  `microphone`, `mute`, and `stop` do what Settings and the hotkey do.
+  <wav>` says a WAV into the microphone, `sim <spec>` swaps the simulated
+  devices live (a headset), and `voice`, `volume`, `microphone`, `mute`,
+  and `stop` do what Settings and the hotkey do. The simulated speakers
+  also trace each dip in Vera's level (`{"kind":"dip","depth_db"}`).
 - `ASSISTANT_TRACE` (`src/assistant/trace.rs`) records every line to and from Core,
   the HUD's looks, chimes, alerts, the status line, the tray, child
   processes, the engine's lifetime, and audible output, as JSON lines.
@@ -67,6 +73,18 @@ Shawn's.
     `set_name`; the App applies it, nothing restarts, the tray says Nova),
     then "Vera, ..." is ignored and "Nova, ..." answered, then back to Vera.
 13. More ordinary turns.
+14. **In a headset** (`sim echo_db=-100,delay_ms=20,noise_db=-100`, like
+    Shawn's CORSAIR: none of Vera at the mic, near digital silence between
+    sounds), after a warm-up line: breathing, a heavy breath, typing, mouse
+    clicks, a knock, clothes rustling and a fan over a 20 s reply
+    (synthesized in `soak.mjs`, 4 ms peaks −35 to −52 dBFS, louder than the
+    −57 to −75 his live log shows): the line must play to its end with no
+    duck, no dip over 3 dB, no barge-in and nothing heard as speech. Then a
+    breath straight into "Stop." (she must stop on the word, not the
+    breath), and talking over a reply ("Wait, what's the capital of Chile?").
+
+**Across the run, also:** no false dip (a dip over 3 dB with no barge-in
+within 1 s of it).
 
 **Checked on every turn:** the reply starts within 6 s of the end of what
 Shawn said and plays audibly to its end, and the HUD is back to hidden

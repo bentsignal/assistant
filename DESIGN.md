@@ -115,9 +115,13 @@ spoken message.
 ### Barge-in
 
 The mic stays live while Vera speaks. Its signal is echo-cancelled against
-Vera's own playback. When VAD detects user speech during playback, the app
-ducks Vera at once, and stops playback once the speech is confirmed (about
-250–300 ms) or restores the volume if it was a false alarm. It then tells Core
+Vera's own playback. When something that could be the user is heard during
+playback and it can't be Vera's echo (a headset), Vera plays on at full
+level and stops only once the speech detector hears speech (about
+300–400 ms); breathing and clicks never dip her. Where her echo reaches the
+mic (speakers), the app ducks her at once to tell the two apart, and stops
+playback once the speech is confirmed (about 250–300 ms) or restores the
+volume if it was a false alarm. It then tells Core
 `barge_in`. The transcript that follows is treated as an in-conversation turn,
 so no wake word is needed. The tray "Stop talking" item and a global hotkey
 also stop speech.

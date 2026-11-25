@@ -97,6 +97,9 @@ pub(crate) struct Stats {
     pub blocks: u64,
     pub ducks: u64,
     pub restores: u64,
+    /// Echo-free suspicions (no duck) and those that weren't speech.
+    pub suspicions: u64,
+    pub dismissed: u64,
     pub barge_ins: u64,
     pub waited_blocks: u64,
     pub late_blocks: u64,
@@ -505,9 +508,17 @@ impl<B: Backend> Core<B> {
                 self.suspected_at = Some(now_ms.saturating_sub(100));
                 let _ = self.mixer.send(mixer::Command::Duck(true));
             }
-            Action::Restore => {
-                self.stats.restores += 1;
-                let _ = self.mixer.send(mixer::Command::Duck(false));
+            Action::Suspect => {
+                self.stats.suspicions += 1;
+                self.suspected_at = Some(now_ms.saturating_sub(100));
+            }
+            Action::Restore | Action::Dismiss => {
+                if action == Action::Restore {
+                    self.stats.restores += 1;
+                    let _ = self.mixer.send(mixer::Command::Duck(false));
+                } else {
+                    self.stats.dismissed += 1;
+                }
                 let from = self
                     .suspected_at
                     .take()

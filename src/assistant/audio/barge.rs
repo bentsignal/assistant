@@ -29,6 +29,18 @@
 //!
 //! Timing in the simulator: the duck lands about 100 ms after the user
 //! starts, the barge-in about 250 to 300 ms after.
+//!
+//! **Echo-free suspicions don't duck.** The duck is only needed to tell the
+//! user from Vera's own echo. The detector measures how loud her echo can
+//! get at the raw microphone (its *coupling*: the microphone's level over
+//! its floor against her reference, from echo-only stretches). When what
+//! triggered is far louder than any echo she could make there (a headset,
+//! where nothing of her reaches the microphone), the suspicion is *silent*:
+//! Vera plays on at full level while the speech detector listens to the
+//! linear output, which then holds only the room, and only speech stops
+//! her. Breathing, clicks and the room never dip her voice; a word stops
+//! her as soon as the detector hears it (a short one, "Stop.", once it has
+//! ended).
 
 use std::collections::VecDeque;
 
@@ -112,13 +124,36 @@ const FLOOR_RAISE_DECAY_DB: f32 = 3.0 * BLOCK as f32 / RATE as f32;
 /// While the energy says "user", the speech detector is asked again this
 /// often until the probe ends.
 const CHECK_EVERY: usize = 20;
+/// A suspicion is echo-free when the raw microphone is this far over the
+/// loudest echo Vera's coupling allows, and the canceller is removing less
+/// than `ECHO_FREE_CANCELLED_DB` from it.
+const ECHO_FREE_MARGIN_DB: f32 = 10.0;
+const ECHO_FREE_CANCELLED_DB: f32 = 6.0;
+/// The coupling starts as "her echo can be as loud as she is" (so nothing
+/// is echo-free) and is the 95th percentile of the last 2 s of echo-only
+/// blocks once it has this many.
+const COUPLING_INITIAL_DB: f32 = 10.0;
+const COUPLING_MIN: usize = 20;
+/// A silent suspicion first asks the speech detector once it has 100 ms of
+/// sound, then every `CHECK_EVERY`; once its sound has stopped for 120 ms
+/// it asks a last time over all of it (a short word ends before 100 ms of
+/// it was ever there to check) and then ends.
+const LISTEN_FIRST: usize = 25;
+const LISTEN_QUIET: usize = 30;
+/// Refusals that end a silent suspicion whose sound goes on (a fan).
+const LISTEN_REFUSALS: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     /// Duck Vera now: the user may be talking.
     Duck,
+    /// The user may be talking, and it can't be Vera's echo: listen, but
+    /// don't duck (the speech detector decides).
+    Suspect,
     /// A false alarm: restore Vera's volume.
     Restore,
+    /// A silent suspicion was not speech: nothing to restore.
+    Dismiss,
     /// The user is talking: a barge-in. Its speech began around `onset`
     /// (a block index): the first block of this suspicion, or of a false
     /// alarm just before it that the user's voice had already started.
@@ -177,6 +212,12 @@ struct Suspicion {
     checked_at: Option<usize>,
     speech_refused: bool,
     refusals: usize,
+    /// Echo-free: no duck, the speech detector decides (`listen`).
+    silent: bool,
+    /// Probe blocks since the last echo-free hit, and whether the speech
+    /// detector has heard everything up to it.
+    quiet: usize,
+    checked_last_hit: bool,
 }
 
 pub(crate) struct Detector {
@@ -212,6 +253,14 @@ pub(crate) struct Detector {
     microphone_floor: Floor,
     /// Whether the canceller is cancelling (with 4 dB of hysteresis).
     locked: bool,
+    /// Raw microphone energies, for the coupling.
+    microphone: VecDeque<f32>,
+    /// How far over its floor the raw microphone gets against Vera's
+    /// reference envelope where only she is in the room, dB: history,
+    /// unsettled recent values, and its 95th percentile.
+    coupling: VecDeque<f32>,
+    recent_couplings: VecDeque<f32>,
+    coupling_db: f32,
     enabled: bool,
 }
 
@@ -267,6 +316,10 @@ impl Detector {
             echo_linear: 0.0,
             microphone_floor: Floor::default(),
             locked: true,
+            microphone: VecDeque::new(),
+            coupling: VecDeque::new(),
+            recent_couplings: VecDeque::new(),
+            coupling_db: COUPLING_INITIAL_DB,
             enabled: true,
         }
     }
@@ -360,6 +413,11 @@ impl Detector {
         if (block.delay_ms - self.delay_ms).abs() > DELAY_TOLERANCE_MS {
             self.delay_ms = block.delay_ms;
             self.delay_held = 0;
+            // A new echo path (another device): what Vera's echo can do
+            // there is unknown again.
+            self.coupling.clear();
+            self.recent_couplings.clear();
+            self.coupling_db = COUPLING_INITIAL_DB;
         } else if active {
             self.delay_held += 1;
         }
@@ -370,6 +428,7 @@ impl Detector {
         let microphone = energy(block.microphone);
         let microphone_db = db(microphone);
         self.microphone_floor.push(microphone_db, index);
+        push_capped(&mut self.microphone, microphone, KEEP_BLOCKS);
         // Only while nobody is suspected of talking: the user's voice
         // isn't Vera's echo, and the canceller can't remove it.
         if active
@@ -431,6 +490,9 @@ impl Detector {
                 None
             }
             State::Watching { refractory } => self.watch(index, refractory, &probe, reference_db),
+            State::Suspect(suspicion) if suspicion.silent => {
+                self.listen(suspicion, reference_db, &probe, speech)
+            }
             State::Suspect(suspicion) => self.probe(
                 suspicion,
                 index,
@@ -471,9 +533,19 @@ impl Detector {
             && self.converged()
         {
             push_capped(&mut self.recent_ratios, probe.linear_db - reference_db, 8);
+            // The coupling only learns where nothing has stirred for 60 ms:
+            // the tail of a breath isn't Vera's echo.
+            if refractory == 0 && self.hits.iter().all(|(a, b)| !a && !b) {
+                let coupling = self.microphone_excess_db(SMOOTH) - reference_db;
+                push_capped(&mut self.recent_couplings, coupling, 8);
+            }
             if !probe.candidate() && self.recent_ratios.len() == 8 {
                 let settled = self.recent_ratios.pop_front().expect("full");
                 self.learn(settled);
+            }
+            if !probe.candidate() && self.recent_couplings.len() == 8 {
+                let settled = self.recent_couplings.pop_front().expect("full");
+                self.learn_coupling(settled);
             }
         }
         let count = self.hits.iter().filter(|(a, b)| *a || *b).count();
@@ -481,6 +553,7 @@ impl Detector {
             return None;
         }
         let by_suppressed = self.hits.iter().filter(|(a, _)| *a).count() >= TRIGGER_COUNT / 2;
+        let silent = self.echo_free(TRIGGER_WINDOW, reference_db);
         let window = if by_suppressed {
             &self.suppressed
         } else {
@@ -500,8 +573,105 @@ impl Detector {
             checked_at: None,
             speech_refused: false,
             refusals: 0,
+            silent,
+            quiet: 0,
+            checked_last_hit: false,
         });
-        Some(Action::Duck)
+        Some(if silent {
+            Action::Suspect
+        } else {
+            Action::Duck
+        })
+    }
+
+    /// The raw microphone's level over its floor (power subtracted) for
+    /// the last `count` blocks, dB: the part of it that is something.
+    fn microphone_excess_db(&self, count: usize) -> f32 {
+        let floor = 10f32.powf(self.microphone_floor.db() / 10.0);
+        db((Self::mean(&self.microphone, count) - floor).max(0.0))
+    }
+
+    /// Whether the last `count` blocks are far louder at the raw
+    /// microphone than any echo of Vera's can be, and the canceller isn't
+    /// removing much of them (it would be, were they her echo).
+    fn echo_free(&self, count: usize, reference_db: f32) -> bool {
+        if !self.converged() || self.coupling.len() < COUPLING_MIN {
+            return false;
+        }
+        let microphone = Self::mean(&self.microphone, count);
+        let cancelled = db(microphone) - db(Self::mean(&self.linear, count));
+        self.microphone_excess_db(count) > reference_db + self.coupling_db + ECHO_FREE_MARGIN_DB
+            && cancelled < ECHO_FREE_CANCELLED_DB
+    }
+
+    fn learn_coupling(&mut self, coupling: f32) {
+        push_capped(&mut self.coupling, coupling, LEAK_HISTORY);
+        if self.coupling.len() >= COUPLING_MIN {
+            let mut sorted: Vec<f32> = self.coupling.iter().copied().collect();
+            sorted.sort_by(f32::total_cmp);
+            self.coupling_db = sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)];
+        }
+    }
+
+    /// A silent (echo-free) suspicion: Vera isn't ducked, and the speech
+    /// detector, over the linear output, decides. Sound that stays
+    /// echo-free counts; the detector is asked once there is 100 ms of it,
+    /// again every `CHECK_EVERY`, and a last time over all of it once it
+    /// has stopped.
+    fn listen(
+        &mut self,
+        mut suspicion: Suspicion,
+        reference_db: f32,
+        probe: &Probe,
+        speech: &mut dyn FnMut(&[f32]) -> Option<bool>,
+    ) -> Option<Action> {
+        suspicion.probed += 1;
+        if probe.candidate() && self.echo_free(SMOOTH, reference_db) {
+            suspicion.hits += 1;
+            suspicion.quiet = 0;
+            suspicion.checked_last_hit = false;
+        } else {
+            suspicion.quiet += 1;
+        }
+        let level = probe.linear_db;
+        suspicion.after_db = suspicion.after_db.max(level);
+        suspicion.after_min_db = suspicion.after_min_db.min(level);
+        let ended = suspicion.quiet >= LISTEN_QUIET;
+        let due = suspicion
+            .checked_at
+            .map_or(suspicion.hits + TRIGGER_COUNT >= LISTEN_FIRST, |at| {
+                suspicion.probed >= at + CHECK_EVERY
+            });
+        let last_look = ended && !suspicion.checked_last_hit;
+        if (due && !ended) || last_look {
+            suspicion.checked_at = Some(suspicion.probed);
+            suspicion.checked_last_hit = suspicion.quiet > 0;
+            let heard = speech(&self.check_audio(suspicion.first, 0));
+            if heard != Some(false) {
+                return Some(self.confirm(&suspicion));
+            }
+            suspicion.speech_refused = true;
+            suspicion.refusals += 1;
+        }
+        let done = (ended && suspicion.checked_last_hit)
+            || suspicion.refusals >= LISTEN_REFUSALS
+            || suspicion.probed >= PROBE_LIMIT;
+        if done {
+            return Some(self.reject(&suspicion, false));
+        }
+        self.state = State::Suspect(suspicion);
+        None
+    }
+
+    /// The user is talking: a barge-in.
+    fn confirm(&mut self, suspicion: &Suspicion) -> Action {
+        self.bands.forget_pending();
+        self.state = State::Confirmed { quiet: 0 };
+        let onset = match self.rejected.take() {
+            Some((first, ended)) if suspicion.first <= ended + CHAIN_BLOCKS => first,
+            _ => suspicion.first,
+        };
+        Action::Confirm { onset }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -558,13 +728,7 @@ impl Detector {
             // repeat as the ducked audio grows.
             let heard = speech(&self.check_audio(suspicion.first, seen + delay as u64));
             if heard != Some(false) {
-                self.bands.forget_pending();
-                self.state = State::Confirmed { quiet: 0 };
-                let onset = match self.rejected.take() {
-                    Some((first, ended)) if suspicion.first <= ended + CHAIN_BLOCKS => first,
-                    _ => suspicion.first,
-                };
-                return Some(Action::Confirm { onset });
+                return Some(self.confirm(&suspicion));
             }
             suspicion.speech_refused = true;
             suspicion.refusals += 1;
@@ -602,6 +766,7 @@ impl Detector {
     fn reject(&mut self, suspicion: &Suspicion, echo: bool) -> Action {
         tracing::debug!(
             echo,
+            silent = suspicion.silent,
             by_suppressed = suspicion.by_suppressed,
             probed = suspicion.probed,
             band_hits = suspicion.hits,
@@ -614,6 +779,14 @@ impl Detector {
         let ratios: Vec<f32> = self.recent_ratios.drain(..).collect();
         for ratio in ratios {
             self.learn(ratio);
+        }
+        // What the microphone heard just before was Vera's echo only if
+        // the duck showed it was; else it may have been the room.
+        let couplings: Vec<f32> = self.recent_couplings.drain(..).collect();
+        if echo {
+            for coupling in couplings {
+                self.learn_coupling(coupling);
+            }
         }
         if echo && !suspicion.by_suppressed {
             self.bands.learn_false_alarm();
@@ -647,7 +820,11 @@ impl Detector {
         self.state = State::Watching {
             refractory: REFRACTORY_BLOCKS,
         };
-        Action::Restore
+        if suspicion.silent {
+            Action::Dismiss
+        } else {
+            Action::Restore
+        }
     }
 
     /// The audio the speech detector hears for a suspicion: suppressed
@@ -740,6 +917,11 @@ mod tests {
         seed: u32,
         actions: Vec<(u64, Action)>,
         speech: Option<bool>,
+        /// When set, the speech detector says yes only to this much audio
+        /// or more (a word it can't hear until it has all of it).
+        speech_min_samples: Option<usize>,
+        /// How much of Vera reaches the raw microphone (0: a headset).
+        coupling: f32,
     }
 
     impl Room {
@@ -755,7 +937,24 @@ mod tests {
                 seed: 1,
                 actions: Vec::new(),
                 speech: Some(true),
+                speech_min_samples: None,
+                coupling: 1.0,
             }
+        }
+
+        /// A headset: none of Vera reaches the microphone.
+        fn headset() -> Self {
+            let mut room = Self::new(-80.0);
+            room.coupling = 0.0;
+            room
+        }
+
+        fn after(&self, from: u64) -> Vec<Action> {
+            self.actions
+                .iter()
+                .filter(|(at, _)| *at >= from)
+                .map(|(_, action)| *action)
+                .collect()
         }
 
         fn noise(&mut self) -> f32 {
@@ -777,7 +976,7 @@ mod tests {
             let (mut microphone, mut linear, mut suppressed) = (Vec::new(), Vec::new(), Vec::new());
             for _ in 0..BLOCK {
                 // The canceller takes the echo down to `leak` of itself.
-                let raw = self.noise() * echo;
+                let raw = self.noise() * echo * self.coupling;
                 let near = self.noise() * user + self.noise() * 1e-4;
                 microphone.push(raw + near);
                 linear.push(raw * self.leak + near);
@@ -791,13 +990,17 @@ mod tests {
                 duck: duck_now,
                 delay_ms: (self.delay_blocks * 4) as i32,
             };
-            let speech = self.speech;
-            let (action, _) = self.detector.push(&block, &mut |_| speech);
+            let (speech, least) = (self.speech, self.speech_min_samples);
+            let (action, _) = self.detector.push(&block, &mut |audio| match least {
+                Some(least) => Some(audio.len() >= least),
+                None => speech,
+            });
             if let Some(action) = action {
                 self.actions.push((self.detector.position() - 1, action));
                 match action {
                     Action::Duck => self.ducked = true,
                     Action::Restore | Action::Confirm { .. } => self.ducked = false,
+                    Action::Suspect | Action::Dismiss => {}
                 }
             }
         }
@@ -895,5 +1098,99 @@ mod tests {
             room.block(0.1, 0.02);
         }
         assert!(room.confirmed(), "{:?}", room.actions);
+    }
+
+    #[test]
+    fn in_a_headset_breath_and_clicks_never_duck() {
+        let mut room = Room::headset();
+        for _ in 0..1_500 {
+            room.block(0.1, 0.0);
+        }
+        room.speech = Some(false);
+        let onset = room.detector.position();
+        for round in 0..6 {
+            // A breath (300 ms), a pause, a click (8 ms), a pause.
+            for block in 0..75 {
+                let swell = (block as f32 / 75.0 * std::f32::consts::PI).sin();
+                room.block(0.1, 0.01 + 0.03 * swell * (round as f32 + 1.0) / 6.0);
+            }
+            for _ in 0..100 {
+                room.block(0.1, 0.0);
+            }
+            for _ in 0..2 {
+                room.block(0.1, 0.3);
+            }
+            for _ in 0..100 {
+                room.block(0.1, 0.0);
+            }
+        }
+        let kinds = room.after(onset);
+        assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
+        assert!(!room.confirmed(), "{kinds:?}");
+        assert!(kinds.contains(&Action::Suspect), "{kinds:?}");
+        assert!(kinds.contains(&Action::Dismiss), "{kinds:?}");
+    }
+
+    #[test]
+    fn in_a_headset_speech_stops_her_without_a_duck() {
+        let mut room = Room::headset();
+        for _ in 0..1_500 {
+            room.block(0.1, 0.0);
+        }
+        let onset = room.detector.position();
+        for _ in 0..200 {
+            room.block(0.1, 0.03);
+        }
+        let kinds = room.after(onset);
+        assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
+        let (at, _) = room
+            .actions
+            .iter()
+            .find(|(_, action)| matches!(action, Action::Confirm { .. }))
+            .expect("a barge-in");
+        let confirm_ms = (at - onset) * 4;
+        assert!(confirm_ms <= 300, "barge-in after {confirm_ms} ms");
+    }
+
+    #[test]
+    fn in_a_headset_a_short_word_stops_her_once_it_is_heard_whole() {
+        let mut room = Room::headset();
+        for _ in 0..1_500 {
+            room.block(0.1, 0.0);
+        }
+        // "Stop.": 240 ms, which the speech detector only hears once it
+        // has all of it (and its lead).
+        room.speech_min_samples = Some(100 * BLOCK);
+        let onset = room.detector.position();
+        for _ in 0..60 {
+            room.block(0.1, 0.04);
+        }
+        for _ in 0..200 {
+            room.block(0.1, 0.0);
+        }
+        let kinds = room.after(onset);
+        assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
+        assert!(room.confirmed(), "{kinds:?}");
+    }
+
+    #[test]
+    fn a_new_echo_path_is_not_trusted_as_a_headset() {
+        let mut room = Room::headset();
+        for _ in 0..1_500 {
+            room.block(0.1, 0.0);
+        }
+        // The headset comes off: Vera's echo reaches the microphone, along
+        // a new delay, and the canceller hasn't caught up with it.
+        room.coupling = 1.0;
+        room.delay_blocks = 30;
+        room.leak = 10f32.powf(-3.0 / 20.0);
+        room.suppressed_leak = 10f32.powf(-6.0 / 20.0);
+        let onset = room.detector.position();
+        for _ in 0..1_000 {
+            room.block(0.1, 0.0);
+        }
+        let kinds = room.after(onset);
+        assert!(!kinds.contains(&Action::Suspect), "{kinds:?}");
+        assert!(!room.confirmed(), "{kinds:?}");
     }
 }

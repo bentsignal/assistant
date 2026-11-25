@@ -644,7 +644,7 @@ fn report(
                     report.false_ducks += 1;
                 }
             }
-            Action::Confirm { .. } | Action::Restore => {}
+            Action::Suspect | Action::Confirm { .. } | Action::Restore | Action::Dismiss => {}
         }
     }
     for (now, event) in events {

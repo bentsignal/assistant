@@ -9,14 +9,16 @@
 //! - **Speakers**: a thread that renders the mixer at real-time pace into
 //!   nothing, keeping what it played for the echo and reporting each
 //!   stretch of audible output to the trace (`crate::assistant::trace`) as
-//!   `{"kind":"out","start","end","rms_db","peak_db"}`.
+//!   `{"kind":"out","start","end","rms_db","peak_db"}`, and each dip in
+//!   Vera's level (a barge-in duck) as `{"kind":"dip","start","end","depth_db"}`.
 //!
-//! `ASSISTANT_AUDIO_SIM=1`, or a list such as `echo_db=-30,delay_ms=60,noise_db=-75`.
+//! `ASSISTANT_AUDIO_SIM=1`, or a list such as `echo_db=-30,delay_ms=60,noise_db=-75`;
+//! [`Sim::reconfigure`] changes it live (another device: a headset).
 //! Both devices stamp their audio on [`now_ns`], as cpal does on WASAPI, so
 //! the echo canceller lines them up exactly as it would real devices.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -37,12 +39,15 @@ const RING_BLOCKS: usize = 512;
 const AUDIBLE_RMS: f32 = 3.2e-4; // -70 dBFS
 /// Silence this long ends a stretch of output.
 const SEGMENT_GAP_BLOCKS: u32 = 20;
+/// A duck gain under this is a dip in the trace.
+const DIP_GAIN: f32 = 0.99;
 
 pub(crate) struct Sim {
     epoch_ns: u64,
-    echo_gain: f32,
-    echo_delay_blocks: u64,
-    noise: f32,
+    /// Gains as f32 bits, so the spec can change live.
+    echo_gain: AtomicU32,
+    echo_delay_blocks: AtomicU64,
+    noise: AtomicU32,
     /// The user's voice still to play into the microphone.
     feed: Mutex<VecDeque<f32>>,
     /// What the output rendered, by block.
@@ -59,37 +64,16 @@ pub(crate) fn sim() -> Option<Arc<Sim>> {
         if spec.is_empty() || spec == "0" {
             return None;
         }
-        let mut echo_db = -30.0_f32;
-        let mut delay_ms = 60.0_f32;
-        let mut noise_db = -75.0_f32;
-        for part in spec.split(',') {
-            let Some((key, value)) = part.split_once('=') else {
-                continue;
-            };
-            let Ok(value) = value.trim().parse::<f32>() else {
-                continue;
-            };
-            match key.trim() {
-                "echo_db" => echo_db = value,
-                "delay_ms" => delay_ms = value,
-                "noise_db" => noise_db = value,
-                _ => {}
-            }
-        }
-        tracing::info!(
-            echo_db,
-            delay_ms,
-            noise_db,
-            "assistant audio: simulated devices"
-        );
-        Some(Arc::new(Sim {
+        let sim = Sim {
             epoch_ns: now_ns(),
-            echo_gain: db(echo_db),
-            echo_delay_blocks: (delay_ms / 10.0).round().max(1.0) as u64,
-            noise: db(noise_db),
+            echo_gain: AtomicU32::new(db(-30.0).to_bits()),
+            echo_delay_blocks: AtomicU64::new(6),
+            noise: AtomicU32::new(db(-75.0).to_bits()),
             feed: Mutex::new(VecDeque::new()),
             ring: Mutex::new(vec![(u64::MAX, Vec::new()); RING_BLOCKS]),
-        }))
+        };
+        sim.reconfigure(spec);
+        Some(Arc::new(sim))
     })
     .clone()
 }
@@ -103,6 +87,33 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Sim {
+    /// Applies `echo_db=…,delay_ms=…,noise_db=…` (any of them); the rest
+    /// stays as it is.
+    pub(crate) fn reconfigure(&self, spec: &str) {
+        for part in spec.split(',') {
+            let Some((key, value)) = part.split_once('=') else {
+                continue;
+            };
+            let Ok(value) = value.trim().parse::<f32>() else {
+                continue;
+            };
+            match key.trim() {
+                "echo_db" => self.echo_gain.store(db(value).to_bits(), Ordering::Relaxed),
+                "delay_ms" => self
+                    .echo_delay_blocks
+                    .store((value / 10.0).round().max(1.0) as u64, Ordering::Relaxed),
+                "noise_db" => self.noise.store(db(value).to_bits(), Ordering::Relaxed),
+                _ => {}
+            }
+        }
+        tracing::info!(
+            echo_db = 20.0 * f32::from_bits(self.echo_gain.load(Ordering::Relaxed)).log10(),
+            delay_ms = self.echo_delay_blocks.load(Ordering::Relaxed) * 10,
+            noise_db = 20.0 * f32::from_bits(self.noise.load(Ordering::Relaxed)).log10(),
+            "assistant audio: simulated devices"
+        );
+    }
+
     /// Blocks fully elapsed since the epoch.
     fn blocks_done(&self) -> u64 {
         now_ns().saturating_sub(self.epoch_ns) / BLOCK_NS
@@ -117,21 +128,23 @@ impl Sim {
         let mut out = Vec::with_capacity(((to - from) as usize) * BLOCK);
         let mut feed = lock(&self.feed);
         let ring = lock(&self.ring);
+        let delay = self.echo_delay_blocks.load(Ordering::Relaxed);
+        let echo_gain = f32::from_bits(self.echo_gain.load(Ordering::Relaxed));
+        let noise_gain = f32::from_bits(self.noise.load(Ordering::Relaxed));
         for block in from..to {
             let echo = block
-                .checked_sub(self.echo_delay_blocks)
+                .checked_sub(delay)
                 .map(|source| &ring[(source as usize) % RING_BLOCKS])
                 .filter(|(index, samples)| {
-                    Some(*index) == block.checked_sub(self.echo_delay_blocks)
-                        && samples.len() == BLOCK
+                    Some(*index) == block.checked_sub(delay) && samples.len() == BLOCK
                 });
             for i in 0..BLOCK {
                 // xorshift: cheap white noise.
                 *rng ^= *rng << 13;
                 *rng ^= *rng >> 17;
                 *rng ^= *rng << 5;
-                let noise = (*rng as f32 / u32::MAX as f32 * 2.0 - 1.0) * self.noise;
-                let echo = echo.map_or(0.0, |(_, samples)| samples[i] * self.echo_gain);
+                let noise = (*rng as f32 / u32::MAX as f32 * 2.0 - 1.0) * noise_gain;
+                let echo = echo.map_or(0.0, |(_, samples)| samples[i] * echo_gain);
                 let user = feed.pop_front().unwrap_or(0.0);
                 out.push(noise + echo + user);
             }
@@ -272,6 +285,8 @@ fn render_loop(sim: &Sim, mixer: &Mutex<Mixer>, stop: &AtomicBool) {
     let mut next = sim.blocks_done() + OUTPUT_LEAD;
     let mut block = vec![0f32; BLOCK];
     let mut segment: Option<Segment> = None;
+    // An open dip: its first block and the deepest gain so far.
+    let mut dip: Option<(u64, f32)> = None;
     while !stop.load(Ordering::Relaxed) {
         let target = sim.blocks_done() + OUTPUT_LEAD;
         if next + 50 < target {
@@ -279,7 +294,17 @@ fn render_loop(sim: &Sim, mixer: &Mutex<Mixer>, stop: &AtomicBool) {
         }
         while next <= target {
             block.fill(0.0);
-            lock(mixer).render(&mut block, sim.block_start_ns(next));
+            let duck = {
+                let mut mixer = lock(mixer);
+                mixer.render(&mut block, sim.block_start_ns(next));
+                mixer.duck_gain()
+            };
+            if duck < DIP_GAIN {
+                let (_, deepest) = dip.get_or_insert((next, duck));
+                *deepest = deepest.min(duck);
+            } else if let Some((start, deepest)) = dip.take() {
+                report_dip(sim, start, next, deepest);
+            }
             let sum: f64 = block.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
             let rms = (sum / BLOCK as f64).sqrt() as f32;
             let peak = block.iter().fold(0f32, |peak, s| peak.max(s.abs()));
@@ -315,11 +340,25 @@ fn render_loop(sim: &Sim, mixer: &Mutex<Mixer>, stop: &AtomicBool) {
     }
 }
 
+fn unix_ms(sim: &Sim, block: u64) -> i64 {
+    let ns = sim.block_start_ns(block);
+    crate::desktop::events::now_ms() as i64 - (now_ns() as i64 - ns as i64) / 1_000_000
+}
+
+fn report_dip(sim: &Sim, start: u64, end: u64, deepest: f32) {
+    let depth_db = -20.0 * deepest.max(1e-6).log10();
+    crate::assistant::trace::record(
+        "dip",
+        serde_json::json!({
+            "start": unix_ms(sim, start),
+            "end": unix_ms(sim, end),
+            "depth_db": (depth_db * 10.0).round() / 10.0,
+        }),
+    );
+}
+
 fn report(sim: &Sim, segment: Segment) {
-    let unix = |block: u64| {
-        let ns = sim.block_start_ns(block);
-        crate::desktop::events::now_ms() as i64 - (now_ns() as i64 - ns as i64) / 1_000_000
-    };
+    let unix = |block: u64| unix_ms(sim, block);
     let rms = (segment.sum_squares / segment.samples.max(1) as f64).sqrt() as f32;
     let to_db = |v: f32| (20.0 * v.max(1e-9).log10() * 10.0).round() / 10.0;
     crate::assistant::trace::record(

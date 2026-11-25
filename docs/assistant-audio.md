@@ -3,7 +3,7 @@
 One in-process engine for Vera's microphone and speakers, full duplex. The
 microphone is never paused: everything it hears is echo-cancelled against
 what Vera herself plays, so the user can talk over her at any time. When
-they do, she ducks within ~130 ms and stops within ~400 ms (median), and
+they do, she stops within ~300–400 ms (with speakers she ducks first, within ~130 ms), and
 what they said arrives as an ordinary `Final` with `during_playback: true`.
 Speech to text is v1 Ears (Parakeet Unified through Hex's engine, Silero, the
 700 ms pause, "Vera" as vocabulary) running on the cancelled signal. Vera
@@ -158,9 +158,11 @@ floor, its leak against Vera's level in that band (held for 160 ms, then
 decaying at 75 dB/s), and its leak against her total level (small speakers'
 distortion).
 
-1. **Suspect → duck at once (−20 dB).** 10 of the last 15 blocks are
-   candidates (suppressed output 15 dB over its floor, or ≥ 4 bands over
-   their bounds).
+1. **Suspect.** 10 of the last 15 blocks are candidates (suppressed output
+   15 dB over its floor, or ≥ 4 bands over their bounds). If what triggered
+   can't be Vera's echo (below), the suspicion is *silent*: no duck at all,
+   and step 2 is the speech detector alone. Otherwise Vera ducks at once
+   (−20 dB) and the duck is the test.
 2. **Probe with the duck.** Echo falls with the duck once it has come back
    through the room (AEC3's delay estimate says when); the user doesn't.
    After that point, the bands must still show the user for 10 blocks
@@ -178,8 +180,24 @@ distortion).
 4. **Rejected → restore** (150 ms ramp) and learn: echo that triggered
    raises that band's leak at once; steady noise raises the floor.
 
+**Silent suspicions (a headset).** The detector learns Vera's *coupling*:
+how far over its own floor the raw microphone gets against her reference
+envelope (95th percentile of the last 2 s of echo-only blocks, learned only
+where nothing stirred for 60 ms, forgotten when the canceller's delay
+changes, i.e. another device). A suspicion is echo-free when the raw
+microphone is 10 dB over the loudest echo that coupling allows and the
+canceller is removing less than 6 dB of it. Then Vera plays on at full
+level and Silero, over the linear output, decides: asked once there is
+100 ms of sound, every 80 ms after, and once more over all of it when the
+sound has stopped for 120 ms (so a short "Stop." is heard whole); six
+refusals, 800 ms, or the sound ending unheard dismiss it. Breathing, clicks,
+a knock or a fan in a headset never dip her voice; only speech stops her.
+Shawn's CORSAIR headset sends digital silence between sounds and hears
+none of Vera, so every suspicion there is silent.
+
 A first word followed by a pause ("Wait, … start a new thread") keeps Vera
-ducked for up to 800 ms until the next word confirms. Nothing is confirmed
+ducked for up to 800 ms until the next word confirms (with speakers; in a
+headset the first word stops her). Nothing is confirmed
 until the canceller has converged (its delay estimate steady for 1 s of
 Vera's audio): Vera's first second of speech after launch, or after the echo
 path changes, is not interruptible. While AEC3 isn't actually cancelling
@@ -286,6 +304,13 @@ This is how `assistant.exe` wires it (`src/assistant/runtime.rs`; `docs/assistan
   then rests on AEC3's suppressed output, which has only been checked live
   at low levels.
 - Someone else talking in the room interrupts Vera too: any speech does.
+- With speakers, a noise at the microphone about as loud as Vera's echo
+  (or louder, within 10 dB over it) still ducks her for the probe; only
+  echo-free suspicions are silent.
+- A silent suspicion trusts the coupling learned a moment before. If her
+  echo suddenly reaches the microphone along the same delay (a headset put
+  down next to its own mic) before the canceller notices, her own voice
+  could stop her once. A new device changes the delay, which resets it.
 - If the user starts talking while a `speak` is still being synthesized,
   Vera will start over them; Core can `stop_speaking` on `speech_start`.
 - Windows only for now; the code is platform-neutral except `now_ns` (QPC)
@@ -309,6 +334,8 @@ Environment: `ASSISTANT_AUDIO_SIM` (simulated devices: `1` or
 `echo_db=-30,delay_ms=60,noise_db=-75`), `ASSISTANT_VOICE_URL` (default voice service), `HEX_EARS_LOG`
 (`hex::assistant=debug` shows each rejected suspicion and why),
 `ASSISTANT_SIM_TRACE=<dir>` (the simulator writes per-block CSVs and the audio),
+the live `duplex` log line counts `ducks`, `restores`, silent `suspicions`
+and those `dismissed`, and `barge_ins`,
 `ASSISTANT_AUDIO_DUMP=<dir>` (the live engine writes its mic, reference, and
 cancelled audio on exit). `hex assistant-audio` isolates its data folder like
 `hex ears` (`~/.assistant/ears/hex`) and reads the installed Hex's models.
