@@ -17,7 +17,7 @@ use super::{Actions, Recent, SettingsView, Status, Tone, UiAction, send};
 use crate::vera::config::{Brain, Wake};
 
 /// The window: Hex's settings pane, without the sidebar.
-pub(crate) const SIZE: (f32, f32) = (600.0, 740.0);
+pub(crate) const SIZE: (f32, f32) = (600.0, 760.0);
 const SELECT_WIDTH: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,7 +73,8 @@ pub(crate) fn fixture_view() -> SettingsView {
         status: Status {
             tone: Tone::Ready,
             title: "Listening".into(),
-            detail: "Say \u{201c}Vera\u{201d} to start \u{00b7} Ctrl+Alt+Space stops her talking".into(),
+            detail: "Say \u{201c}Vera\u{201d} to start \u{00b7} Ctrl+Alt+Space stops her talking"
+                .into(),
         },
         muted: false,
         microphones: vec![
@@ -132,7 +133,10 @@ fn spec() -> AppSpec<VeraUi> {
     }
 }
 
-pub(crate) const SCENES: &[(&str, fn(&mut VeraUi))] = &[
+/// A named state for renders: it changes the fixture.
+type Scene = (&'static str, fn(&mut VeraUi));
+
+pub(crate) const SCENES: &[Scene] = &[
     ("settings", |_| {}),
     ("settings-muted", |ui| {
         ui.view.muted = true;
@@ -216,7 +220,7 @@ pub(crate) fn view(ui: &VeraUi, cx: &mut Cx<VeraUi>) -> El {
                 .px(METRICS.gutter)
                 .center_y()
                 .child(
-                    text("Vera")
+                    text("Settings")
                         .key("pane-title")
                         .role("heading")
                         .level(1)
@@ -234,7 +238,11 @@ pub(crate) fn view(ui: &VeraUi, cx: &mut Cx<VeraUi>) -> El {
 }
 
 fn status(ui: &VeraUi, p: Paint) -> El {
-    let Status { tone, title, detail } = &ui.view.status;
+    let Status {
+        tone,
+        title,
+        detail,
+    } = &ui.view.status;
     let dot = match tone {
         Tone::Ready => super::super::controls::pulsing_dot(p.success()),
         Tone::Quiet => status_dot(p.muted()),
@@ -423,11 +431,7 @@ fn voice_row(ui: &VeraUi, p: Paint, layer: &mut Vec<El>) -> El {
         })
         .collect();
     if choices.is_empty() {
-        choices.push((
-            "Default".into(),
-            true,
-            UiAction::SetVoice(current.clone()),
-        ));
+        choices.push(("Default".into(), true, UiAction::SetVoice(current.clone())));
     }
     icon_row(
         p,
@@ -455,14 +459,14 @@ fn volume_row(ui: &VeraUi, p: Paint) -> El {
         "volume-row",
         &icons::VOLUME,
         "Volume",
-        Some("Vera's own; the system volume stays as it is"),
+        Some("Vera's own, never the system's"),
         lists::inline_slider_in(
             p,
             "volume",
             "Volume",
             volume,
             format!("{:.0}%", volume * 100.0),
-            180.0,
+            160.0,
             |ui: &mut VeraUi, level: f32, done: bool| {
                 ui.volume_drag = if done { None } else { Some(level) };
                 if done {
@@ -497,7 +501,7 @@ fn brain_row(ui: &VeraUi, p: Paint) -> El {
         p,
         "brain-row",
         &icons::SPARKLES,
-        "Brain",
+        "Agent",
         Some("Decides what to do and hands work off"),
         control,
     )
@@ -519,7 +523,7 @@ fn model_row(ui: &VeraUi, p: Paint, layer: &mut Vec<El>) -> El {
         .into_iter()
         .map(|model| {
             let selected = model == current;
-            (model.clone(), selected, UiAction::SetModel(model))
+            (model_label(&model), selected, UiAction::SetModel(model))
         })
         .collect();
     icon_row(
@@ -532,13 +536,23 @@ fn model_row(ui: &VeraUi, p: Paint, layer: &mut Vec<El>) -> El {
             p,
             "model-select",
             "Model",
-            &current,
+            &model_label(&current),
             ui.open == Some(Open::Model),
             Open::Model,
             choices,
             layer,
         ),
     )
+}
+
+/// Claude Code's model aliases read as names; other ids stay as written.
+fn model_label(model: &str) -> String {
+    match model {
+        "sonnet" => "Sonnet".into(),
+        "opus" => "Opus".into(),
+        "haiku" => "Haiku".into(),
+        other => other.into(),
+    }
 }
 
 fn login_row(ui: &VeraUi, p: Paint) -> El {
@@ -606,7 +620,7 @@ fn recent(ui: &VeraUi, p: Paint) -> Option<El> {
             row()
                 .key(format!("recent{index}"))
                 .px(METRICS.row_px)
-                .py(9.0)
+                .py(8.0)
                 .gap(12.0)
                 .child(
                     text(if item.you { "You" } else { "Vera" })

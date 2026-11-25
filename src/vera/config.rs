@@ -219,7 +219,10 @@ impl Config {
             return Some(repo);
         }
         let exe = std::env::current_exe().ok()?;
-        exe.ancestors().skip(1).find(|dir| has_core(dir)).map(Path::to_path_buf)
+        exe.ancestors()
+            .skip(1)
+            .find(|dir| has_core(dir))
+            .map(Path::to_path_buf)
     }
 }
 
@@ -283,7 +286,8 @@ mod tests {
 
     #[test]
     fn slot_keeps_siblings() {
-        let mut root = json!({ "brain": { "harness": "claude-code", "codex": { "effort": "low" } } });
+        let mut root =
+            json!({ "brain": { "harness": "claude-code", "codex": { "effort": "low" } } });
         *slot(&mut root, &["brain", "codex", "model"]) = json!("m");
         assert_eq!(root["brain"]["codex"]["effort"], "low");
         assert_eq!(root["brain"]["codex"]["model"], "m");

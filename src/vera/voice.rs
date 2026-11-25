@@ -44,7 +44,9 @@ pub(crate) fn spec(config: &Config) -> Result<Spec, String> {
         ("VERA_APP".to_string(), "1".to_string()),
     ];
     if let Some(command) = &config.voice_service.command {
-        let (program, args) = command.split_first().ok_or("app.voiceService.command is empty")?;
+        let (program, args) = command
+            .split_first()
+            .ok_or("app.voiceService.command is empty")?;
         let program = which(program).unwrap_or_else(|| PathBuf::from(program));
         return Ok(Spec {
             program,
@@ -130,11 +132,7 @@ fn voices(value: &Value) -> Vec<Voice> {
 
 /// Watches the service at `url` until `stop`, calling `report` when what it
 /// sees changes. Quick while it isn't ready, slow once it is.
-pub(crate) fn probe(
-    url: String,
-    stop: Arc<AtomicBool>,
-    report: impl Fn(Status) + Send + 'static,
-) {
+pub(crate) fn probe(url: String, stop: Arc<AtomicBool>, report: impl Fn(Status) + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name("vera-voice-probe".into())
         .spawn(move || {

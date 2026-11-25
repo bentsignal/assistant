@@ -696,6 +696,41 @@ mod tests {
         assert_eq!(model.status(), None);
     }
 
+    /// Vera's looks come from any state and leave through done (or a fade
+    /// from listening), then hide.
+    #[test]
+    fn vera_looks_enter_move_and_leave() {
+        use DictationIndicatorEvent::Vera;
+        let start = Instant::now();
+        let mut model = IndicatorModel::new(Tuning::default(), start);
+        model.handle(Vera(VeraLook::Listening), start, false);
+        assert_eq!(model.status(), Some("Recording"));
+        assert!(model.recording());
+        model.handle(Vera(VeraLook::Thinking), start, false);
+        assert_eq!(model.status(), Some("Transcribing"));
+        assert!(!model.recording());
+        model.handle(Vera(VeraLook::Speaking), start, false);
+        assert_eq!(model.status(), Some("Speaking"));
+        assert!(model.recording(), "speaking is metered, like recording");
+        let mut now = start;
+        for _ in 0..30 {
+            now += Duration::from_millis(16);
+            model.step(now, 0.016, false);
+        }
+        assert!(model.frame().pose.cool > 0.5, "Vera's voice is agent blue");
+        model.handle(Vera(VeraLook::Idle), now, false);
+        assert_eq!(model.status(), None);
+        for _ in 0..120 {
+            now += Duration::from_millis(16);
+            model.step(now, 0.016, false);
+        }
+        assert!(!model.active(), "the HUD settled out of sight");
+        // Idle from listening fades without the done wipe.
+        model.handle(Vera(VeraLook::Listening), now, false);
+        model.handle(Vera(VeraLook::Idle), now, false);
+        assert_eq!(model.status(), None);
+    }
+
     /// Only the recording phase reports nothing but meters, so it is the only
     /// phase a recovery re-ask may act on: `active` stays true through the
     /// transcribing, done and failed looks, which draw their own frames (#1793).

@@ -71,18 +71,30 @@ impl PlaybackState {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum AudioEvent {
     /// The microphone is open and the speech model loaded.
-    Ready { mic: String, engine: String },
-    SpeechStart { t: u64 },
-    Partial { text: String, t: u64 },
+    Ready {
+        mic: String,
+        engine: String,
+    },
+    SpeechStart {
+        t: u64,
+    },
+    Partial {
+        text: String,
+        t: u64,
+    },
     Final {
         text: String,
         start: u64,
         end: u64,
         during_playback: bool,
     },
-    SpeechCancel { reason: String },
+    SpeechCancel {
+        reason: String,
+    },
     /// The user talked over Vera; playback stopped.
-    BargeIn { speak_id: String },
+    BargeIn {
+        speak_id: String,
+    },
     Playback {
         speak_id: String,
         state: PlaybackState,

@@ -39,7 +39,9 @@ pub(crate) fn set_enabled(enabled: bool) -> Result<()> {
         {
             Ok(key) => key,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error).wrap_err("could not open Windows startup applications"),
+            Err(error) => {
+                return Err(error).wrap_err("could not open Windows startup applications");
+            }
         };
         if let Err(error) = key.delete_value(VALUE_NAME)
             && error.kind() != ErrorKind::NotFound

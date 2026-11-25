@@ -138,7 +138,11 @@ pub(crate) struct Spec {
 impl Spec {
     pub(crate) fn describe(&self) -> String {
         std::iter::once(self.program.display().to_string())
-            .chain(self.args.iter().map(|arg| arg.to_string_lossy().into_owned()))
+            .chain(
+                self.args
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned()),
+            )
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -152,7 +156,9 @@ pub(crate) enum State {
     Starting,
     Running,
     /// Died; comes back at the time given.
-    Restarting { why: String },
+    Restarting {
+        why: String,
+    },
     Stopped,
 }
 

@@ -103,8 +103,14 @@ mod tests {
 
     #[test]
     fn parses_chords() {
-        assert_eq!(parse("Ctrl+Alt+Space").unwrap(), (MOD_CONTROL | MOD_ALT, 0x20));
-        assert_eq!(parse("ctrl + shift + F8").unwrap(), (MOD_CONTROL | MOD_SHIFT, 0x77));
+        assert_eq!(
+            parse("Ctrl+Alt+Space").unwrap(),
+            (MOD_CONTROL | MOD_ALT, 0x20)
+        );
+        assert_eq!(
+            parse("ctrl + shift + F8").unwrap(),
+            (MOD_CONTROL | MOD_SHIFT, 0x77)
+        );
         assert!(parse("Space").is_err());
         assert!(parse("Ctrl+A+B").is_err());
     }

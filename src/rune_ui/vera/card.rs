@@ -8,11 +8,12 @@
 use std::time::Duration;
 
 use rune::{
-    Align, Cx, El, KeyPolicy, OverlayHandle, OverlayInput, OverlayOptions, OverlaySpec,
-    ScreenEdge, Tx, col, el, row, text,
+    Align, Cx, El, KeyPolicy, OverlayHandle, OverlayInput, OverlayOptions, OverlaySpec, ScreenEdge,
+    Tx, col, el, row, text,
 };
 
 use super::super::Paint;
+use super::super::controls::CAPSULE;
 use super::{Actions, UiAction, send};
 
 /// The overlay's window; the card sits in its top right and is only as
@@ -21,7 +22,7 @@ pub(crate) const WINDOW: (f32, f32) = (432.0, 600.0);
 const CARD_WIDTH: f32 = 400.0;
 /// The window's margin around the card, room for its shadow.
 const INSET: f32 = 16.0;
-const RADIUS: f32 = 14.0;
+const RADIUS: f32 = CAPSULE.radius;
 const MAX_BODY: f32 = 460.0;
 const FADE: Duration = Duration::from_millis(140);
 
@@ -134,9 +135,9 @@ pub(crate) fn view(card: &VeraCard, cx: &mut Cx<VeraCard>) -> El {
         .role("button")
         .label("Close")
         .focusable(true)
-        .size(28.0, 28.0)
+        .size(CAPSULE.close, CAPSULE.close)
         .center()
-        .radius(14.0)
+        .radius(CAPSULE.close / 2.0)
         .hover(p.k.c.hover)
         .press(p.k.c.pressed)
         .on_press_tx(close)
@@ -148,8 +149,8 @@ pub(crate) fn view(card: &VeraCard, cx: &mut Cx<VeraCard>) -> El {
         );
     let header = row()
         .key("header")
-        .pl(18.0)
-        .pr(10.0)
+        .pl(16.0)
+        .pr(8.0)
         .pt(12.0)
         .pb(6.0)
         .gap(8.0)
@@ -176,7 +177,7 @@ pub(crate) fn view(card: &VeraCard, cx: &mut Cx<VeraCard>) -> El {
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
-        .px(18.0)
+        .px(16.0)
         .pt(2.0)
         .pb(16.0)
         .child(super::markdown::render(p, &shown.markdown));

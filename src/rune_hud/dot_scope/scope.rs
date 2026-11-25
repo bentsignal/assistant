@@ -688,7 +688,10 @@ impl Scope {
             Stage::Processing | Stage::Done => tuning.processing_width,
             Stage::Failed => self.width.target,
         };
-        let cool = if matches!(self.stage, Stage::Processing | Stage::Done | Stage::Speaking) {
+        let cool = if matches!(
+            self.stage,
+            Stage::Processing | Stage::Done | Stage::Speaking
+        ) {
             1.0
         } else {
             0.0

@@ -68,6 +68,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Quit the running Vera (and every process it started).
+    Quit,
     /// Draw Vera's screens (HUD looks, card, Settings) into a folder as PNGs.
     #[command(hide = true)]
     Shots {
@@ -94,6 +96,13 @@ pub(crate) fn main(dll_search: std::io::Result<()>) -> Result<()> {
     paths::isolate();
     match cli.command {
         Some(Command::Shots { dir, tray }) => shots::run(&dir, tray),
+        Some(Command::Quit) => {
+            if !instance::signal_quit() {
+                eprintln!("Vera isn't running");
+                std::process::exit(3);
+            }
+            Ok(())
+        }
         None => {
             crate::windows::detach_from_console();
             crate::windows::vulkan::check();

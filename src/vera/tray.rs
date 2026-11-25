@@ -26,15 +26,14 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, EndMenu, FindWindowW,
-    GWLP_USERDATA, GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
-    HICON, HMENU, KillTimer, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
-    SetForegroundWindow, SetMenuDefaultItem, SetTimer, SetWindowLongPtrW, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONUP, WM_NCCREATE,
-    WM_NCDESTROY, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, EndMenu, FindWindowW, GWLP_USERDATA,
+    GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, HICON, HMENU,
+    KillTimer, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SM_CXSMICON, SetForegroundWindow, SetMenuDefaultItem,
+    SetTimer, SetWindowLongPtrW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE,
+    WM_DESTROY, WM_LBUTTONUP, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE,
+    WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 const CALLBACK: u32 = WM_APP + 1;
@@ -140,7 +139,7 @@ fn refresh_icon(context: &Context, state: &TrayState) -> HICON {
     }
     let (size, light, badge, dim) = key;
     let mut bgra = super::icon::tray_rgba(size, light, badge, dim);
-    for pixel in bgra.chunks_exact_mut(4) {
+    for pixel in bgra.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     // A 1-bit AND mask of zeros: alpha decides. Rows are word aligned.
@@ -175,7 +174,11 @@ fn notify(hwnd: HWND, context: &Context, message: u32) -> bool {
     let mut data = data(hwnd, NIF_MESSAGE | NIF_ICON | NIF_TIP);
     data.uCallbackMessage = CALLBACK;
     data.hIcon = refresh_icon(context, &state);
-    let tip: Vec<u16> = state.tooltip.encode_utf16().take(data.szTip.len() - 1).collect();
+    let tip: Vec<u16> = state
+        .tooltip
+        .encode_utf16()
+        .take(data.szTip.len() - 1)
+        .collect();
     data.szTip[..tip.len()].copy_from_slice(&tip);
     data.szTip[tip.len()] = 0;
     // SAFETY: `data` is fully initialized for this window's icon.
@@ -190,12 +193,25 @@ fn menu(state: &TrayState) -> HMENU {
             return popup;
         }
         let item = |id: u16, label: &str, flags: u32| {
-            AppendMenuW(popup, MF_STRING | flags, usize::from(id), wide(label).as_ptr());
+            AppendMenuW(
+                popup,
+                MF_STRING | flags,
+                usize::from(id),
+                wide(label).as_ptr(),
+            );
         };
         item(ID_SETTINGS, "Settings…", 0);
         AppendMenuW(popup, MF_SEPARATOR, 0, ptr::null());
-        item(ID_MUTE, "Mute microphone", if state.muted { MF_CHECKED } else { 0 });
-        item(ID_STOP, "Stop talking", if state.speaking { 0 } else { MF_GRAYED });
+        item(
+            ID_MUTE,
+            "Mute microphone",
+            if state.muted { MF_CHECKED } else { 0 },
+        );
+        item(
+            ID_STOP,
+            "Stop talking",
+            if state.speaking { 0 } else { MF_GRAYED },
+        );
         AppendMenuW(popup, MF_SEPARATOR, 0, ptr::null());
         item(ID_QUIT, "Quit Vera", 0);
         SetMenuDefaultItem(popup, u32::from(ID_SETTINGS), 0);
@@ -214,7 +230,8 @@ fn pick(hwnd: HWND, context: &Context, at: POINT) -> Option<TrayEvent> {
     let picked = unsafe {
         // Without the foreground, the menu wouldn't close on a click elsewhere.
         SetForegroundWindow(hwnd);
-        let flags = TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN;
+        let flags =
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN;
         let picked = TrackPopupMenu(popup, flags, at.x, at.y, 0, hwnd, ptr::null());
         PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(popup);
@@ -232,9 +249,8 @@ fn pick(hwnd: HWND, context: &Context, at: POINT) -> Option<TrayEvent> {
 /// Copies the open menu's pixels off the screen.
 fn capture_menu() -> Option<Captured> {
     use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
-        CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC,
-        SRCCOPY, SelectObject,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
     };
     let class = wide("#32768");
     // SAFETY: GDI calls on handles made and released here.
@@ -253,7 +269,9 @@ fn capture_menu() -> Option<Captured> {
         let memory = CreateCompatibleDC(screen);
         let bitmap = CreateCompatibleBitmap(screen, width, height);
         let old = SelectObject(memory, bitmap);
-        BitBlt(memory, 0, 0, width, height, screen, rect.left, rect.top, SRCCOPY);
+        BitBlt(
+            memory, 0, 0, width, height, screen, rect.left, rect.top, SRCCOPY,
+        );
         let mut info: BITMAPINFO = std::mem::zeroed();
         info.bmiHeader = BITMAPINFOHEADER {
             biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -278,7 +296,7 @@ fn capture_menu() -> Option<Captured> {
         DeleteObject(bitmap);
         DeleteDC(memory);
         ReleaseDC(ptr::null_mut(), screen);
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
             pixel[3] = 255;
         }

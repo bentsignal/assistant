@@ -22,6 +22,9 @@ pub(crate) use macos::{activation_policy_changed, pointer_screen, screen_number}
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) mod rehome;
 pub(crate) mod spring;
+/// Vera's HUD looks drawn offscreen (`vera shots`).
+#[cfg(target_os = "windows")]
+pub(crate) mod vera_shots;
 /// Windows' first-frame watch and its failure backoff; see its module docs.
 mod watch;
 /// Windows' own HUD frame pacing; see its module docs.

@@ -158,7 +158,10 @@ mod tests {
                 kind: ChimeKind::Other
             })
         );
-        assert_eq!(parse(r#"{"cmd":"stop_speaking"}"#), Some(CoreCommand::StopSpeaking));
+        assert_eq!(
+            parse(r#"{"cmd":"stop_speaking"}"#),
+            Some(CoreCommand::StopSpeaking)
+        );
         assert_eq!(parse("Core v2 ready"), None);
         assert_eq!(parse(r#"{"cmd":"dance"}"#), None);
     }

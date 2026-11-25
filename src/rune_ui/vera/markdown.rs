@@ -106,7 +106,10 @@ fn inline(source: &str) -> (String, Vec<(usize, usize, Mark)>) {
         } else if c == '`' {
             ("`", Mark::Code)
         } else if (c == '*' || c == '_')
-            && out.chars().last().is_none_or(|before| !before.is_alphanumeric())
+            && out
+                .chars()
+                .last()
+                .is_none_or(|before| !before.is_alphanumeric())
         {
             (&rest[..1], Mark::Italic)
         } else {
@@ -153,7 +156,11 @@ fn styled(p: Paint, key: String, source: &str, font: rune::TextStyle, color: run
             }
         })
         .collect();
-    rich(content, spans).key(key).font(font).color(color).w_full()
+    rich(content, spans)
+        .key(key)
+        .font(font)
+        .color(color)
+        .w_full()
 }
 
 /// The card's body.
@@ -164,7 +171,11 @@ pub(super) fn render(p: Paint, source: &str) -> El {
         let key = format!("b{index}");
         column = column.child(match block {
             Block::Heading(level, line) => {
-                let font = if level <= 2 { p.k.ty.body_medium } else { p.k.ty.ui_medium };
+                let font = if level <= 2 {
+                    p.k.ty.body_medium
+                } else {
+                    p.k.ty.ui_medium
+                };
                 styled(p, key, &line, font, p.text())
                     .role("heading")
                     .level(level as u32)
@@ -176,13 +187,13 @@ pub(super) fn render(p: Paint, source: &str) -> El {
             Block::Quote(line) => row()
                 .key(key)
                 .w_full()
-                .gap(10.0)
+                .gap(8.0)
                 .child(el_bar(p))
                 .child(styled(p, "q".into(), &line, body, p.muted()).shrink()),
             Block::Code(code) => col()
                 .key(key)
                 .w_full()
-                .px(10.0)
+                .px(12.0)
                 .py(8.0)
                 .radius(p.k.radius.md)
                 .fill(p.k.c.layer_02)
@@ -208,7 +219,7 @@ fn list_item(p: Paint, key: String, marker: String, line: &str) -> El {
                 .key("marker")
                 .font(p.k.ty.ui)
                 .color(p.muted())
-                .w(14.0)
+                .w(10.0)
                 .a11y_hidden(),
         )
         .child(styled(p, "item".into(), line, p.k.ty.ui, p.text()).shrink())
@@ -243,7 +254,8 @@ mod tests {
 
     #[test]
     fn blocks_split_as_markdown_does() {
-        let source = "# Build\nAll green.\nShipped.\n\n- one\n- two\n1. first\n> note\n```\nfn x() {}\n```";
+        let source =
+            "# Build\nAll green.\nShipped.\n\n- one\n- two\n1. first\n> note\n```\nfn x() {}\n```";
         let kinds: Vec<&str> = blocks(source)
             .iter()
             .map(|block| match block {

@@ -6,6 +6,7 @@
 pub(crate) mod card;
 mod markdown;
 pub(crate) mod settings;
+pub(crate) mod shots;
 
 use std::sync::mpsc::Sender;
 

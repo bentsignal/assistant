@@ -15,22 +15,61 @@ pub(crate) struct Instance(HANDLE);
 // SAFETY: an event handle is usable from any thread.
 unsafe impl Send for Instance {}
 
-fn name() -> String {
+/// The session's event `kind` (`App`, `Quit`) for this `VERA_HOME`, so a
+/// test Vera with its own home runs beside the real one.
+fn name(kind: &str) -> String {
     let home = super::paths::home().display().to_string().to_lowercase();
-    // FNV-1a, so a test Vera with its own VERA_HOME runs beside the real one.
-    let hash = home
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    // FNV-1a.
+    let hash = home.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    });
+    format!("Local\\Vera.{kind}.{hash:016x}")
+}
+
+fn wide(name: &str) -> Vec<u16> {
+    name.encode_utf16().chain([0]).collect()
+}
+
+/// Asks the running Vera to quit (`vera quit`); false when none runs.
+pub(crate) fn signal_quit() -> bool {
+    use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW};
+    let name = wide(&name("Quit"));
+    // SAFETY: a NUL-terminated name that outlives the call.
+    let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+    if event.is_null() {
+        return false;
+    }
+    // SAFETY: a valid handle we own.
+    unsafe {
+        SetEvent(event);
+        CloseHandle(event);
+    }
+    true
+}
+
+/// Calls `on_quit` when `vera quit` signals this Vera.
+pub(crate) fn forward_quit(on_quit: impl Fn() + Send + 'static) {
+    let name = wide(&name("Quit"));
+    // SAFETY: as above; the handle stays open for the process's life.
+    let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) } as usize;
+    if event == 0 {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("vera-quit".into())
+        .spawn(move || {
+            // SAFETY: the handle is never closed.
+            while unsafe { WaitForSingleObject(event as HANDLE, INFINITE) } == 0 {
+                on_quit();
+            }
         });
-    format!("Local\\Vera.App.{hash:016x}")
 }
 
 impl Instance {
     /// `None` when a Vera already runs; it was asked to open Settings unless
     /// `hidden`.
     pub(crate) fn claim(hidden: bool) -> Result<Option<Self>> {
-        let name: Vec<u16> = name().encode_utf16().chain([0]).collect();
+        let name = wide(&name("App"));
         // SAFETY: a NUL-terminated name that outlives the call.
         let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
         if event.is_null() {

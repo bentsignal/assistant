@@ -13,7 +13,7 @@ pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, badge: bool, dim: bool) 
     let coverage = mark_coverage(size);
     let mut pixels = vec![0u8; n * n * 4];
     let dot = badge.then(|| {
-        let radius = size as f32 * 0.22;
+        let radius = size as f32 * 0.17;
         let center = (size as f32 - radius - 0.5, radius + 0.5);
         (center, radius)
     });
@@ -24,7 +24,7 @@ pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, badge: bool, dim: bool) 
             if let Some(((cx, cy), radius)) = dot {
                 let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
                 // A clear ring around the dot keeps it apart from the mark.
-                let gap = (d - radius - size as f32 * 0.08).clamp(0.0, 1.0);
+                let gap = (d - radius - size as f32 * 0.06).clamp(0.0, 1.0);
                 alpha *= gap;
                 let fill = (radius - d + 0.5).clamp(0.0, 1.0);
                 if fill > 0.0 {
@@ -109,7 +109,10 @@ mod tests {
             let inked = plain.chunks(4).filter(|p| p[3] > 128).count();
             assert!(inked > (size * size / 10) as usize, "{size}: {inked}");
             let badged = tray_rgba(size, false, true, false);
-            let blue = badged.chunks(4).filter(|p| p[..3] == BADGE && p[3] > 200).count();
+            let blue = badged
+                .chunks(4)
+                .filter(|p| p[..3] == BADGE && p[3] > 200)
+                .count();
             assert!(blue > 4, "{size}: {blue}");
             let light = tray_rgba(size, true, false, false);
             assert!(light.chunks(4).all(|p| p[..3] == [0, 0, 0]));
