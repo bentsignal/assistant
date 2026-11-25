@@ -4,6 +4,7 @@
   python  -m assistant_voice say "Text" [--voice ID] [--preset P] [--out file.wav]
   python  -m assistant_voice voices
   python  -m assistant_voice calibrate      (measure every voice's loudness gain; runs on demand otherwise)
+  python  -m assistant_voice add-voice --id ID --name Name --clip file [--text "..."] [--start S --end S]
 
 Defaults come from the "voice" section of ~/.assistant/config.json:
   {"voice": {"port": 7314, "voice": "vera", "preset": "vera"}}
@@ -102,6 +103,8 @@ def main(argv=None):
     for p in (s, sub.add_parser("say"), sub.add_parser("voices"), sub.add_parser("calibrate")):
         p.add_argument("--voice", default=cfg.get("voice"))
         p.add_argument("--preset", default=None, help="effects preset (default: the voice's own, else vera)")
+    from .add_voice import register, add_voice
+    register(sub, cfg)
     say = sub._name_parser_map["say"]
     say.add_argument("text")
     say.add_argument("--out", help="write a WAV instead of playing it")
@@ -109,6 +112,8 @@ def main(argv=None):
                      help="Vera's volume when playing, on the App's scale: 0-1, 40*(v-1) dB (0.7 = -12 dB)")
     args = ap.parse_args(argv)
     _logging(args.cmd != "serve")
+    if args.cmd == "add-voice":
+        return add_voice(args)
 
     from .synth import Synth
     synth = Synth(args.voice, args.preset or cfg.get("preset", "vera"))
@@ -146,4 +151,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

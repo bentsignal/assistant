@@ -40,6 +40,7 @@ $py = "$HOME\.assistant\voice\venv\Scripts\python.exe"
 & $py -m assistant_voice say "On it. I'll ping you when it's done." [--voice isla] [--preset P] [--out x.wav] [--volume 0.7]
 & $py -m assistant_voice voices
 & $py -m assistant_voice calibrate                  # re-measure loudness gains (normally automatic)
+& $py -m assistant_voice add-voice --id sam --name Sam --clip sam.mp3   # your own voice (see below)
 & $py assistant\voice\scripts\test_service.py [--voice eli] [--play]   # against a running service
 & $py -m unittest discover -s assistant\voice\tests  # model-free tests: text, DSP, silence shaping
 ```
@@ -51,7 +52,8 @@ $py = "$HOME\.assistant\voice\venv\Scripts\python.exe"
 | | |
 | --- | --- |
 | `GET /v1/health` | `{"ready": true, "voice": "isla", "preset": "vera", "sample_rate": 24000, "engines": ["qwen"], "error": null}` |
-| `GET /v1/voices` | `{"default": "isla", "default_preset": "vera", "sample_rate": 24000, "voices": [{"id", "name", "engine", "gender", "accent", "description", "available"}], "presets": [{"id", "description"}]}` |
+| `GET /v1/voices` | `{"default": "isla", "default_preset": "vera", "sample_rate": 24000, "voices": [{"id", "name", "engine", "gender", "accent", "description", "preset", "user", "available"}], "presets": [{"id", "description"}]}`. `preset` is the voice's own (or the default); `user` marks a voice made with `add-voice`. |
+| `POST /v1/voices/reload` | Reads the voice list again (user voices added or removed) and answers like `GET /v1/voices`. No restart needed. |
 | `POST /v1/speech` | body `{"text": "…", "voice"?: "isla", "preset"?: "vera"}`. Returns 200 with chunked raw **f32le mono** PCM. Headers: `X-Sample-Rate: 24000`, `X-Channels: 1`, `X-Sample-Format: f32le`, `X-Voice`, `X-Preset`. |
 
 - **Streaming.** Text is split into sentences (a long first sentence is cut at a clause).
@@ -116,6 +118,42 @@ Persona voices through the service (five lines each, own preset, Parakeet via
 | optimus | robot | 0% | −20.3 | 89 Hz | 3.3 st | 2.7 |
 | buzz | vera | 0% | −20.9 | 130 Hz | 3.7 st | 3.8 |
 | saul | vera | 0% | −20.1 | 175 Hz | 4.5 st | 3.7 |
+
+## Your own voices (`add-voice`)
+
+```powershell
+& $py -m assistant_voice add-voice --id sam --name Sam --clip D:\clips\sam.mp3 [--text "what it says"] [--start 62.5 --end 75] [--preset natural]
+```
+
+- **Any length.** A clip over about 15 s (minutes are fine) is cut automatically to its
+  cleanest 6–15 s stretch, preferring about 12 s. An energy VAD marks speech; the span
+  starts and ends at pauses of 300 ms or more (sentence boundaries); candidates are
+  scored for quiet pauses (music or noise under the voice keeps the floor up), a natural
+  amount of pausing (wall-to-wall sound is likely music), one steady speaker (the spread
+  of each sentence's median pitch), and no clipping. It prints the span it chose and why;
+  `--start/--end` (seconds) override it. A short clip is used whole, with silence trimmed.
+- The span is high-passed, levelled to about −23 LUFS with a −1.5 dBFS peak cap, and
+  saved as 16-bit 24 kHz WAV.
+- **Transcript.** Without `--text`, Parakeet transcribes the span through Hex's CLI
+  (`hex transcribe`; found via `--hex`, `$ASSISTANT_HEX`, `PATH`, or the installed copy
+  under `%APPDATA%\hexersions`). Cloning needs the transcript to match the audio, so
+  check the printed text and pass `--text` if it's off.
+- **Where it goes.** `~/.assistant/voices/<id>/`: `ref.wav`, `ref.txt`, `voice.json`
+  (name, description, optional preset, the clip's hash and source span) and
+  `calibration.json` (the loudness gains for every preset, measured on the spot, so
+  it plays at −20 LUFS like the built-in voices). Never in the repo.
+- **Overrides.** A user voice with a built-in id (say `alfred`) replaces the built-in
+  one; delete its folder to get the built-in back. Its calibration is keyed by the clip's
+  hash, so replacing a clip never reuses old gains.
+- **Picking it up.** The service loads user voices at startup, and `add-voice` calls
+  `POST /v1/voices/reload` on the running service when it's done (`--no-reload` skips
+  that). Removing a folder takes effect at the next reload.
+- Use recordings you have the right to clone. The service only reads what you give it.
+
+Tested on 2026-11-25 with a 36 s clip built from Isla lines (8 s of music, two sentences
+over a music bed, three clean sentences, more music): it chose 0:18.9–0:29.5, exactly
+the three clean sentences; Parakeet's transcript was word for word; the cloned voice
+read a new line at −20.6 LUFS and came back from Parakeet word for word.
 
 ## Samples (`samples/`)
 

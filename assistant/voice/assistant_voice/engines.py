@@ -27,6 +27,8 @@ HOME = Path(os.environ.get("ASSISTANT_HOME", Path.home() / ".assistant"))
 MODELS = Path(os.environ.get("ASSISTANT_VOICE_MODELS", HOME / "models"))
 HF_HOME = MODELS / "hf"
 VOICES_DIR = Path(__file__).parent / "voices"
+# Voices made with `add-voice`: <id>/voice.json, ref.wav, ref.txt, calibration.json (user data).
+USER_VOICES_DIR = HOME / "voices"
 
 QWEN_BASE = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
@@ -39,18 +41,50 @@ class Voice:
     description: str
     gender: str
     accent: str
-    ref: str = ""        # qwen: reference clip in voices/ (with a .txt transcript)
+    ref: str = ""        # qwen: reference clip in voices/ (with a .txt transcript), or an absolute path
     preset: str = ""     # this voice's own effects preset; empty uses the service default
+    user: bool = False   # made with add-voice; overrides a built-in voice with the same id
+    clip_sha: str = ""   # user voices: the reference clip's hash, so calibration follows the clip
+
+    @property
+    def cal_id(self) -> str:
+        return f"{self.id}#{self.clip_sha}" if self.clip_sha else self.id
 
     def public(self) -> dict:
         d = asdict(self)
-        d.pop("ref")
+        d.pop("ref"); d.pop("clip_sha")
         return d
 
 
-def load_voices() -> list[Voice]:
+def _voice(d: dict) -> Voice:
+    known = set(Voice.__dataclass_fields__)
+    return Voice(**{k: v for k, v in d.items() if k in known})
+
+
+def user_voices(root: Path | None = None) -> list[Voice]:
+    """Voices in ~/.assistant/voices/<id>/ (a broken one is logged and skipped)."""
+    root = root or USER_VOICES_DIR
+    out = []
+    for f in sorted(root.glob("*/voice.json")) if root.is_dir() else []:
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            d.update(id=f.parent.name, engine="qwen", user=True, ref=str(f.parent / "ref.wav"))
+            if not (f.parent / "ref.wav").is_file() or not (f.parent / "ref.txt").is_file():
+                raise FileNotFoundError("ref.wav or ref.txt is missing")
+            out.append(_voice(d))
+        except Exception as e:
+            log.warning("skipping user voice %s: %s", f.parent.name, e)
+    return out
+
+
+def load_voices(user_root: Path | None = None, include_user: bool = True) -> list[Voice]:
+    """Built-in voices, then user voices (a user voice replaces a built-in one with its id)."""
     data = json.loads((VOICES_DIR / "voices.json").read_text(encoding="utf-8"))
-    return [Voice(**v) for v in data]
+    voices = {v["id"]: _voice(v) for v in data}
+    if include_user:
+        for v in user_voices(user_root):
+            voices[v.id] = v
+    return list(voices.values())
 
 
 def cuda_available() -> bool:

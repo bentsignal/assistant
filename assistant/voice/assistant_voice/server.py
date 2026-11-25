@@ -2,6 +2,7 @@
 
 GET  /v1/health  -> {"ready": bool, "voice": "...", "sample_rate": 24000, ...}
 GET  /v1/voices  -> {"default": "...", "voices": [...], "presets": [...]}
+POST /v1/voices/reload -> the same, after reading the voice list again (user voices)
 POST /v1/speech  {"text": "...", "voice"?: "...", "preset"?: "..."}
                  -> chunked raw little-endian f32 mono PCM, X-Sample-Rate header.
                  Closing the connection stops synthesis at the next chunk.
@@ -50,6 +51,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == "/v1/voices/reload":
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            try:
+                return self._json(200, self.synth.reload_voices())
+            except Exception as e:
+                log.exception("reloading voices failed")
+                return self._json(500, {"error": f"{type(e).__name__}: {e}"})
         if self.path != "/v1/speech":
             return self._json(404, {"error": "not found"})
         try:

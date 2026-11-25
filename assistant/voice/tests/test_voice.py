@@ -199,3 +199,46 @@ class VoiceListTests(unittest.TestCase):
         self.assertEqual(s.preset("natural", robot).name, "natural")
         self.assertEqual(s.preset(None, plain).name, "vera")
         self.assertEqual(s.preset(None).name, "vera")
+
+
+class ClipTests(unittest.TestCase):
+    def test_picks_clean_speech_between_sentences_not_music(self):
+        from assistant_voice import clip
+        t = np.arange(8 * SR) / SR
+        music = (0.08 * (np.sin(2 * np.pi * 220 * t) + np.sin(2 * np.pi * 330 * t))).astype(np.float32)
+        gap = np.zeros(int(0.5 * SR), np.float32)
+        speech = np.concatenate([np.concatenate([speechlike(2.5, seed=k), gap]) for k in range(5)])
+        x = np.concatenate([music, gap, speech, music])
+        s = clip.pick_span(x)
+        start, end = 8.5, 8.5 + len(speech) / SR
+        self.assertGreaterEqual(s.start, start - 0.3)
+        self.assertLessEqual(s.end, end + 0.3)
+        self.assertTrue(clip.MIN_S <= s.seconds <= clip.MAX_S + 0.3, s)
+
+    def test_prepare_levels_and_caps_the_peak(self):
+        from assistant_voice import clip
+        y = clip.prepare(speechlike(6.0) * 4)
+        self.assertLess(20 * np.log10(np.abs(y).max()), -1.0)
+        self.assertAlmostEqual(dsp.loudness_lufs(y, SR), -23.0, delta=1.5)
+
+
+class UserVoiceTests(unittest.TestCase):
+    def test_user_voice_overrides_builtin_and_skips_broken_ones(self):
+        import json, tempfile
+        from pathlib import Path
+        from assistant_voice.engines import load_voices
+        with tempfile.TemporaryDirectory() as root:
+            for vid, files in (("alfred", ("ref.wav", "ref.txt")), ("mine", ("ref.wav", "ref.txt")), ("broken", ("ref.wav",))):
+                d = Path(root) / vid
+                d.mkdir()
+                (d / "voice.json").write_text(json.dumps({"name": vid.title(), "description": "", "gender": "",
+                                                          "accent": "", "clip_sha": "abc", "extra": 1}))
+                for f in files:
+                    (d / f).write_bytes(b"x")
+            voices = {v.id: v for v in load_voices(Path(root))}
+            self.assertTrue(voices["alfred"].user)
+            self.assertEqual(voices["alfred"].cal_id, "alfred#abc")
+            self.assertIn("mine", voices)
+            self.assertNotIn("broken", voices)
+            self.assertFalse(voices["isla"].user)
+            self.assertEqual(voices["isla"].cal_id, "isla")

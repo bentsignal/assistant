@@ -17,7 +17,7 @@ from typing import Iterator
 import numpy as np
 
 from . import dsp, text as textmod
-from .engines import Engines, Voice, load_voices, cuda_available, SAMPLE_RATE, HOME
+from .engines import Engines, Voice, load_voices, cuda_available, SAMPLE_RATE, HOME, USER_VOICES_DIR
 
 log = logging.getLogger("assistant.voice")
 
@@ -79,6 +79,17 @@ class Synth:
         self.ready = False
         self.error: str | None = None
 
+    def reload_voices(self) -> dict:
+        """Read the voice list again (user voices added or removed since startup)."""
+        voices = {v.id: v for v in load_voices()}
+        with self._cal_lock:
+            self._cal = {**self._cal, **self._load_calibration()}
+        self.voices = voices
+        if self.default_voice not in voices:
+            self.default_voice = self._pick_default(None)
+        log.info("reloaded voices: %s", ", ".join(voices))
+        return self.describe()
+
     def _pick_default(self, want: str | None) -> str:
         if want and want in self.voices and self.available(self.voices[want]):
             return want
@@ -133,9 +144,11 @@ class Synth:
 
     # --- loudness calibration ----------------------------------------------------
     def _load_calibration(self) -> dict:
-        """Shipped gains (measured on the dev machine) overlaid with this machine's."""
+        """Shipped gains (measured on the dev machine) overlaid with this machine's and
+        the user voices' own."""
         cal = {}
-        for f in (Path(__file__).parent / "voices" / "calibration.json", CALIBRATION_FILE):
+        users = sorted(USER_VOICES_DIR.glob("*/calibration.json")) if USER_VOICES_DIR.is_dir() else []
+        for f in (Path(__file__).parent / "voices" / "calibration.json", CALIBRATION_FILE, *users):
             try:
                 cal.update(json.loads(f.read_text()))
             except Exception:
@@ -143,7 +156,7 @@ class Synth:
         return cal
 
     def gain(self, v: Voice, p: dsp.Preset) -> float:
-        key = f"{v.id}|{v.engine}|{hash_preset(p)}|cal2"
+        key = cal_key(v, p)
         g = self._cal.get(key)
         if g is not None:
             return g
@@ -156,8 +169,14 @@ class Synth:
             g = dsp.calibrate_gain(dry, SAMPLE_RATE, p)
             self._cal[key] = g
             try:
-                CALIBRATION_FILE.parent.mkdir(parents=True, exist_ok=True)
-                CALIBRATION_FILE.write_text(json.dumps(self._cal, indent=1))
+                if v.user:  # kept with the voice, so it goes when the voice does
+                    f = Path(v.ref).parent / "calibration.json"
+                    own = {k: g for k, g in self._cal.items() if k.startswith(v.cal_id + "|")}
+                    f.write_text(json.dumps(own, indent=1))
+                else:
+                    CALIBRATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    CALIBRATION_FILE.write_text(json.dumps(
+                        {k: g for k, g in self._cal.items() if "#" not in k.split("|")[0]}, indent=1))
             except OSError:
                 log.warning("couldn't save calibration")
             log.info("calibrated %s: gain %.2f dB", key, 20 * np.log10(g))
@@ -211,6 +230,10 @@ class Synth:
             "presets": [{"id": p.name, "description": p.description}
                         for p in dsp.PRESETS.values() if p.name != "raw"],
         }
+
+
+def cal_key(v: Voice, p: dsp.Preset) -> str:
+    return f"{v.cal_id}|{v.engine}|{hash_preset(p)}|cal2"
 
 
 def hash_preset(p: dsp.Preset) -> str:
