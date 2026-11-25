@@ -136,7 +136,7 @@ Persona voices through the service (five lines each, own preset, Parakeet via
   saved as 16-bit 24 kHz WAV.
 - **Transcript.** Without `--text`, Parakeet transcribes the span through Hex's CLI
   (`hex transcribe`; found via `--hex`, `$ASSISTANT_HEX`, `PATH`, or the installed copy
-  under `%APPDATA%\hexersions`). Cloning needs the transcript to match the audio, so
+  under `%APPDATA%\hex\versions`). Cloning needs the transcript to match the audio, so
   check the printed text and pass `--text` if it's off.
 - **Where it goes.** `~/.assistant/voices/<id>/`: `ref.wav`, `ref.txt`, `voice.json`
   (name, description, optional preset, the clip's hash and source span) and
