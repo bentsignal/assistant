@@ -77,15 +77,6 @@ impl Controller {
                 detail: "{name} can't hear you until you unmute".into(),
             };
         }
-        if self.mic_silent {
-            let mic = self.ready.as_ref().map_or("The microphone", |(mic, _)| mic);
-            return problem(
-                "No sound from the microphone",
-                format!(
-                    "{mic} sends only silence. It may be muted: unmute it, or choose another microphone below"
-                ),
-            );
-        }
         match &self.voice_service.state {
             State::Missing(why) => return problem("{name} can listen but not speak", why.clone()),
             State::Restarting { why } => {
@@ -182,13 +173,13 @@ impl Controller {
         let (mic, _) = self.ready.as_ref()?;
         Some(if self.mic_silent {
             MicrophoneNote {
-                text: format!("No sound from {mic}. Is it muted?"),
-                silent: true,
+                text: self.named(&format!(
+                    "{mic} has sent no sound yet. If {{name}} can't hear you, check it isn't muted"
+                )),
             }
         } else {
             MicrophoneNote {
                 text: format!("Hearing {mic}"),
-                silent: false,
             }
         })
     }

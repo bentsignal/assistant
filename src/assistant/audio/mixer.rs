@@ -15,8 +15,9 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use super::resample::Resampler;
 
-/// Attenuation while barge-in suspects the user is talking: -20 dB.
-pub(crate) const DUCK_GAIN: f32 = 0.1;
+/// Attenuation while barge-in suspects the user is talking: about -8 dB,
+/// gentle enough that a false suspicion is barely heard.
+pub(crate) const DUCK_GAIN: f32 = 0.4;
 /// Speech that starts playing only once this much is buffered (or its
 /// stream ended), so a slow first chunk doesn't stutter.
 const PREBUFFER_SECONDS: f32 = 0.08;
@@ -504,14 +505,18 @@ mod tests {
     }
 
     #[test]
-    fn ducking_drops_twenty_db_fast_and_recovers_smoothly() {
+    fn ducking_drops_eight_db_fast_and_recovers_smoothly() {
         let mut rig = rig(1.0);
         speak(&rig, "a", 3.0);
         rig.render(200);
         let _ = rig.commands.send(Command::Duck(true));
         let out = rig.render(100);
-        // Within 50 ms the voice is at -20 dB.
-        assert!((out[480 * 5] - 0.05).abs() < 0.003, "{}", out[480 * 5]);
+        // Within 50 ms the voice is at the duck's level (about -8 dB).
+        assert!(
+            (out[480 * 5] - 0.5 * DUCK_GAIN).abs() < 0.01,
+            "{}",
+            out[480 * 5]
+        );
         let _ = rig.commands.send(Command::Duck(false));
         let out = rig.render(800);
         assert!((out[480 * 10] - 0.5).abs() > 0.05, "recovers gradually");

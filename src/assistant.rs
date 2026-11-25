@@ -24,6 +24,7 @@ mod icon;
 mod instance;
 mod login;
 mod paths;
+pub(crate) mod personality;
 mod protocol;
 mod runtime;
 mod shots;

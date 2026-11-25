@@ -36,6 +36,8 @@ export type CoreCommand =
   | { cmd: "error"; what: "brain" | "brain_timeout" | string; message: string }
   /** Her name changed (saved as `assistant.name`); the App applies it everywhere. */
   | { cmd: "name"; name: string }
+  /** Her voice changed (saved as `app.voice`); the App uses it from the next `speak`. */
+  | { cmd: "voice"; voice: string }
 
 const EVENT_TYPES = new Set(["ready", "speech_start", "partial", "final", "speech_cancel", "barge_in", "playback", "ui"])
 
@@ -156,7 +158,7 @@ export class AppMouth {
     private log: (line: string) => void = () => {},
     opts: AppMouthOptions = {},
   ) {
-    this.startTimeoutMs = opts.startTimeoutMs ?? 14_000
+    this.startTimeoutMs = opts.startTimeoutMs ?? 35_000
     this.graceMs = opts.graceMs ?? 200
   }
 

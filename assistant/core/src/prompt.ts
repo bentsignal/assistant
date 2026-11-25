@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unwatchFile, watchFile, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 /**
@@ -18,6 +18,9 @@ export function renderPrompt(text: string, name: string): string {
 export class SystemPrompt {
   private listeners = new Set<() => void>()
   private seq = 0
+  /** The text as last seen, so a change from outside (Settings) is noticed once. */
+  private seen: string | null = null
+  private watching = false
 
   constructor(
     readonly file: string,
@@ -29,6 +32,35 @@ export class SystemPrompt {
   onChange(cb: () => void): () => void {
     this.listeners.add(cb)
     return () => this.listeners.delete(cb)
+  }
+
+  /**
+   * Notice edits made outside Core (the App's Settings writes the file
+   * directly): each one applies like an `edit`, from the next turn.
+   */
+  watch(intervalMs = 500): void {
+    if (this.watching) return
+    this.watching = true
+    this.seen = this.read()
+    watchFile(this.file, { interval: intervalMs, persistent: false }, () => this.check())
+  }
+
+  unwatch(): void {
+    if (!this.watching) return
+    this.watching = false
+    unwatchFile(this.file)
+  }
+
+  /** Emits a change when the file's text differs from what was last seen. True when it did. */
+  check(): boolean {
+    const now = this.read()
+    if (this.seen === null) {
+      this.seen = now
+      return false
+    }
+    if (now === this.seen) return false
+    this.emit()
+    return true
   }
 
   read(): string {
@@ -105,6 +137,7 @@ export class SystemPrompt {
   }
 
   private emit() {
+    this.seen = this.read()
     for (const l of this.listeners) l()
   }
 }

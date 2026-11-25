@@ -100,3 +100,21 @@ test("renderPrompt fills in her name; a prompt without the placeholder is used a
   assert.equal(renderPrompt("You are {{name}}. {{ name }} is calm.", "Nova"), "You are Nova. Nova is calm.")
   assert.equal(renderPrompt("You are Vera.", "Nova"), "You are Vera.")
 })
+
+test("a change written from outside (Settings) is noticed once, like an edit; Core's own edits aren't seen twice", () => {
+  const { dir, prompt } = setup("Be brief.\n")
+  let n = 0
+  prompt.onChange(() => n++)
+  assert.equal(prompt.check(), false) // first look: nothing to compare with
+  writeFileSync(join(dir, "system-prompt.md"), "Be very brief.\n")
+  assert.equal(prompt.check(), true)
+  assert.equal(n, 1)
+  assert.equal(prompt.check(), false)
+  prompt.edit({ append: "Call him chef." })
+  assert.equal(n, 2)
+  assert.equal(prompt.check(), false)
+  prompt.revert()
+  assert.equal(prompt.read(), "Be very brief.\n")
+  assert.equal(prompt.check(), false)
+  assert.equal(n, 3)
+})

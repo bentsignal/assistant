@@ -93,7 +93,6 @@ impl Controller {
                 self.at_login = crate::assistant::login::registered().is_some();
             }
             UiAction::SetMuted(muted) => self.set_muted(muted),
-            UiAction::EditPersonality => super::launch::edit_personality(&self.config),
             UiAction::CardClosed(card_id) => self.tell_core(AppEvent::Ui {
                 action: "card_closed",
                 card_id,

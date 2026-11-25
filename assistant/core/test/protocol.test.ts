@@ -522,3 +522,31 @@ test("'Vera, call yourself Nova': saved, the App is told, Nova wakes her and Ver
     await app.stop()
   }
 })
+
+test("'Vera, switch to the next voice and say something': the list comes from the voice service, the choice is saved, the App is told before the line", async () => {
+  const { createServer } = await import("node:http")
+  const voices = createServer((req, res) => {
+    res.setHeader("content-type", "application/json")
+    res.end(JSON.stringify({ default: "isla", voices: [{ id: "isla", name: "Isla" }, { id: "eli", name: "Eli" }, { id: "x", name: "X", available: false }] }))
+  })
+  await new Promise<void>((r) => voices.listen(0, "127.0.0.1", () => r()))
+  const port = (voices.address() as any).port
+  const app = await FakeApp.start({
+    config: testConfig({ app: { voice: "isla", voiceService: { port } } }),
+    script: [{ match: "next voice", steps: [{ tool: "set_voice", args: { voice: "next" } }, { tool: "speak", args: { text: "This is Eli." } }] }],
+  })
+  try {
+    const m = app.mark
+    await app.say("Vera, switch to the next voice and say something.")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "This is Eli.", 5000, m)
+    const cmds = app.since(m)
+    const voice = cmds.findIndex(isCmd("voice"))
+    assert.ok(voice >= 0, "the App is told")
+    assert.equal((cmds[voice] as any).voice, "eli")
+    assert.ok(voice < cmds.findIndex(isCmd("speak")), "before the line")
+    assert.equal(JSON.parse(readFileSync(join(app.home, "config.json"), "utf8")).app.voice, "eli")
+  } finally {
+    await app.stop()
+    voices.close()
+  }
+})

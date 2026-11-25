@@ -3,6 +3,7 @@ import type { BrainHarness } from "./config.ts"
 import { oneLine, truncate } from "./inbox.ts"
 import type { Job, JobAgent } from "./jobs.ts"
 import type { Assistant } from "./assistant.ts"
+import { describeVoices, fetchVoices, pickVoice } from "./voices.ts"
 
 /** Daemon side of the Assistant MCP tools (see src/mcp/defs.ts for the schemas). */
 export type ToolHandler = (assistant: Assistant, args: any) => Promise<string> | string
@@ -165,8 +166,20 @@ export const HANDLERS: Record<string, ToolHandler> = {
     return `Done: you're ${to} now. Shawn wakes you with "${to}" from now on, and the next turn's prompt uses the new name. Confirm in a few words, as ${to}.`
   },
 
+  async set_voice(assistant, args) {
+    const list = await fetchVoices(assistant.voicePort)
+    const current = assistant.currentVoice ?? list.default
+    const wanted = typeof args.voice === "string" ? args.voice.trim() : ""
+    if (!wanted) return `Voices (* is the current one):
+${describeVoices(list.voices, current)}`
+    const v = pickVoice(list.voices, wanted, current)
+    if (v.id === current) return `You already speak as ${v.name}.`
+    assistant.setVoice(v.id)
+    return `Switched to ${v.name}. Your next speak line, this turn included, is in the new voice; say a few words in it.`
+  },
+
   set_brain(assistant, args) {
-    const harness = need(args, "harness") as BrainHarness
+    const harness = (typeof args.harness === "string" && args.harness.trim() ? args.harness.trim() : assistant.config.brain.harness) as BrainHarness
     if (!availableBrains().includes(harness)) throw new Error(`unknown harness ${harness}; have ${availableBrains().join(", ")}`)
     const label = assistant.setBrain(harness, args.model, args.effort)
     return `Switching to ${label} from the next turn.`

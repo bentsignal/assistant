@@ -188,17 +188,25 @@ export const TOOLS: ToolDef[] = [
     inputSchema: { type: "object", properties: { name: str("Your new name, one word, like Nova.") }, required: ["name"] },
   },
   {
+    name: "set_voice",
+    description:
+      "List your voices, or switch to one, when Shawn asks ('switch to Eli', 'try the next voice', 'what voices do you have?'). No voice: lists them (read them out briefly or show them). voice: a voice's name or id, or 'next' / 'previous' to step through them for auditioning. Applies from your next speak line, so after switching, speak a short line in the new voice. Saved for next time.",
+    inputSchema: {
+      type: "object",
+      properties: { voice: str("A voice name or id, or 'next' or 'previous'. Leave out to list the voices.") },
+    },
+  },
+  {
     name: "set_brain",
     description:
-      "Switch the harness that runs you, when Shawn asks (for example 'use Codex', 'switch to Claude'). Applies from the next turn; this conversation's recent lines carry over. Confirm the switch in a few words first.",
+      "Switch the harness that runs you, its model, or its effort, when Shawn asks (for example 'use Codex', 'switch to Claude', 'use opus', 'think harder'). Leave out harness to keep the current one and change only the model or effort. Applies from the next turn; this conversation's recent lines carry over. Confirm the switch in a few words first.",
     inputSchema: {
       type: "object",
       properties: {
-        harness: { type: "string", enum: ["claude-code", "codex"], description: "Which harness." },
+        harness: { type: "string", enum: ["claude-code", "codex"], description: "Which harness; leave out to keep the current one." },
         model: str("Optional model, like sonnet, opus, haiku, or a Codex model id."),
-        effort: str("Optional effort: low, medium, high."),
+        effort: str("Optional reasoning effort: low, medium, high (Claude also takes max; Codex also minimal)."),
       },
-      required: ["harness"],
     },
   },
 ]

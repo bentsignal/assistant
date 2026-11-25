@@ -7,7 +7,7 @@
 use rune::{AppSpec, Cx, El, TextEdit, Tx, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, Menu, MenuItem, Placement, SegmentedControl, Select, SelectAppearance,
-    TextInput,
+    TextArea, TextInput,
 };
 
 use super::super::controls::{
@@ -36,7 +36,32 @@ pub(crate) struct AssistantUi {
     open: Option<Open>,
     /// The volume while its slider is dragged; saved when it lets go.
     volume_drag: Option<f32>,
+    /// The personality editor, while it's open.
+    prompt: Option<PromptEditor>,
     actions: Actions,
+}
+
+/// Her system prompt being edited in Settings.
+struct PromptEditor {
+    edit: TextEdit,
+    /// The text as it was last loaded or saved.
+    saved: String,
+    /// What the last Save or Revert did.
+    note: Option<String>,
+}
+
+impl PromptEditor {
+    fn new(text: String) -> Self {
+        Self {
+            edit: TextEdit::new(text.clone()),
+            saved: text,
+            note: None,
+        }
+    }
+
+    fn dirty(&self) -> bool {
+        self.edit.text != self.saved
+    }
 }
 
 impl AssistantUi {
@@ -46,6 +71,7 @@ impl AssistantUi {
             name: TextEdit::new(crate::assistant::config::DEFAULT_NAME),
             open: None,
             volume_drag: None,
+            prompt: None,
             actions: Some(actions),
         }
     }
@@ -56,6 +82,7 @@ impl AssistantUi {
             view: fixture_view(),
             open: None,
             volume_drag: None,
+            prompt: None,
             actions: None,
         }
     }
@@ -81,6 +108,53 @@ impl AssistantUi {
         }
     }
 
+    /// Opens the personality editor on the prompt as it is now, or closes it.
+    fn toggle_prompt(&mut self) {
+        self.prompt = match self.prompt.take() {
+            Some(_) => None,
+            None => Some(PromptEditor::new(if self.actions.is_some() {
+                crate::assistant::personality::load()
+            } else {
+                FIXTURE_PROMPT.to_owned()
+            })),
+        };
+    }
+
+    /// Saves the editor's text; Core applies it from her next turn.
+    fn save_prompt(&mut self) {
+        let live = self.actions.is_some();
+        let name = self.view.name.clone();
+        let Some(editor) = &mut self.prompt else {
+            return;
+        };
+        let text = editor.edit.text.clone();
+        let saved = if live {
+            crate::assistant::personality::save(&text)
+        } else {
+            Ok(())
+        };
+        editor.note = Some(match saved {
+            Ok(()) => {
+                editor.saved = text;
+                format!("Saved \u{00b7} {name} uses it from her next turn")
+            }
+            Err(error) => format!("Couldn't save: {error}"),
+        });
+    }
+
+    /// Puts the stock personality back (the old one is backed up).
+    fn default_prompt(&mut self) {
+        let text = if self.actions.is_some() {
+            crate::assistant::personality::default_text()
+        } else {
+            FIXTURE_PROMPT.to_owned()
+        };
+        if let Some(editor) = &mut self.prompt {
+            editor.edit = TextEdit::new(text);
+        }
+        self.save_prompt();
+    }
+
     fn toggle(&mut self, menu: Open) {
         self.open = if self.open == Some(menu) {
             None
@@ -89,6 +163,9 @@ impl AssistantUi {
         };
     }
 }
+
+/// The stock prompt, for renders and scenes.
+const FIXTURE_PROMPT: &str = include_str!("../../../assistant/core/prompts/system.md");
 
 /// Realistic content for renders and scenes.
 pub(crate) fn fixture_view() -> SettingsView {
@@ -109,7 +186,6 @@ pub(crate) fn fixture_view() -> SettingsView {
         microphone: Some("Microphone (Shure MV7+)".into()),
         microphone_note: Some(super::MicrophoneNote {
             text: "Hearing Microphone (Shure MV7+)".into(),
-            silent: false,
         }),
         volume: crate::assistant::config::DEFAULT_VOLUME,
         voices: vec![
@@ -175,18 +251,18 @@ pub(crate) const SCENES: &[Scene] = &[
         };
     }),
     ("settings-voice-menu", |ui| ui.open = Some(Open::Voice)),
+    ("settings-personality", |ui| ui.toggle_prompt()),
     ("settings-problem", |ui| {
         ui.view.status = Status {
             tone: Tone::Problem,
-            title: "No sound from the microphone".into(),
-            detail: "Headset Microphone (Jabra Evolve2 65) sends only silence. It may be muted: \
-                unmute it, or choose another microphone below"
-                .into(),
+            title: "Voice service stopped".into(),
+            detail: "Starting it again · it exited with code 1".into(),
         };
         ui.view.microphone = None;
         ui.view.microphone_note = Some(super::MicrophoneNote {
-            text: "No sound from Headset Microphone (Jabra Evolve2 65). Is it muted?".into(),
-            silent: true,
+            text: "Headset Microphone (CORSAIR HS80) has sent no sound yet. If Vera can't hear \
+                you, check it isn't muted"
+                .into(),
         });
         ui.view.recent.clear();
     }),
@@ -236,6 +312,7 @@ pub(crate) fn view(ui: &AssistantUi, cx: &mut Cx<AssistantUi>) -> El {
             "General",
             vec![login_row(ui, p), personality_row(ui, p), hotkey_row(ui, p)],
         ))
+        .children(personality_editor(ui, p))
         .children(recent(ui, p))
         .child(footer(ui, p));
     let panel = col()
@@ -402,8 +479,8 @@ fn microphone_row(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> El {
         )
     }));
     let note = ui.view.microphone_note.as_ref().map(|note| {
-        let color = if note.silent { p.danger() } else { p.muted() };
-        (note.text.clone(), color)
+        // Silence is a hint, never an error: always the muted grey.
+        (note.text.clone(), p.muted())
     });
     icon_described_row(
         p,
@@ -471,7 +548,7 @@ fn name_row(ui: &AssistantUi, p: Paint) -> El {
     } else if typed != ui.view.name {
         "Press Enter to apply".to_string()
     } else {
-        format!("Her wake word: \u{201c}{}, \u{2026}\u{201d}", ui.view.name)
+        "Say it to wake the assistant".to_string()
     };
     icon_row(p, "name-row", &icons::PEN, "Name", Some(&hint), field)
 }
@@ -645,18 +722,81 @@ fn login_row(ui: &AssistantUi, p: Paint) -> El {
 }
 
 fn personality_row(ui: &AssistantUi, p: Paint) -> El {
+    let open = ui.prompt.is_some();
     icon_row(
         p,
         "personality",
         &icons::PEN,
         "Personality",
-        Some(&format!("{}'s system prompt, in your editor", ui.view.name)),
-        Button::new("Edit personality\u{2026}")
+        Some(&format!("How {} talks and behaves: her system prompt", ui.view.name)),
+        Button::new(if open { "Close" } else { "Edit\u{2026}" })
             .variant(ButtonVariant::Neutral)
-            .on_press_tx(|ui: &mut AssistantUi, _: &mut Tx| ui.act(UiAction::EditPersonality))
+            .on_press_tx(|ui: &mut AssistantUi, _: &mut Tx| ui.toggle_prompt())
             .build_push(p.k)
             .key("edit-personality"),
     )
+}
+
+/// The personality editor, under General while it's open.
+fn personality_editor(ui: &AssistantUi, p: Paint) -> Option<El> {
+    let editor = ui.prompt.as_ref()?;
+    let dirty = editor.dirty();
+    let note = if dirty {
+        "Unsaved changes".to_string()
+    } else {
+        editor.note.clone().unwrap_or_else(|| {
+            format!(
+                "{{{{name}}}} is her name ({}). Saved changes apply from her next turn",
+                ui.view.name
+            )
+        })
+    };
+    let body = col()
+        .key("personality-body")
+        .px(METRICS.row_px)
+        .py(10.0)
+        .gap(10.0)
+        .child(
+            TextArea::new(&editor.edit)
+                .placeholder("Who she is, how she talks, what she does")
+                .rows(12)
+                .width(None)
+                .on_edit(|ui: &mut AssistantUi| {
+                    &mut ui.prompt.as_mut().expect("the editor is open").edit
+                })
+                .build(p.k)
+                .key("prompt"),
+        )
+        .child(
+            row()
+                .key("personality-actions")
+                .gap(8.0)
+                .center_y()
+                .child(
+                    text(note)
+                        .key("personality-note")
+                        .font(DESCRIPTION)
+                        .color(p.muted())
+                        .grow(1.0)
+                        .shrink(),
+                )
+                .child(
+                    Button::new("Revert to default")
+                        .variant(ButtonVariant::Neutral)
+                        .on_press_tx(|ui: &mut AssistantUi, _: &mut Tx| ui.default_prompt())
+                        .build_push(p.k)
+                        .key("prompt-default"),
+                )
+                .child(
+                    Button::new("Save")
+                        .variant(ButtonVariant::Submit)
+                        .disabled(!dirty)
+                        .on_press_tx(|ui: &mut AssistantUi, _: &mut Tx| ui.save_prompt())
+                        .build_push(p.k)
+                        .key("prompt-save"),
+                ),
+        );
+    Some(section(p, "personality-editor", "Personality", vec![body]))
 }
 
 fn hotkey_row(ui: &AssistantUi, p: Paint) -> El {

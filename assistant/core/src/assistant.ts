@@ -179,6 +179,7 @@ export class Assistant {
       this.brainDirty = true
       this.log("system prompt changed; brain restarts before the next turn")
     })
+    this.prompt.watch()
     this.jobs.on((job, ev) => {
       if (ev === "end") setTimeout(() => this.jobEnded(job), 50)
       this.changed()
@@ -856,6 +857,26 @@ export class Assistant {
     return closing.map((c) => c.id)
   }
 
+  /** The voice service's port (the App's `app.voiceService.port`). */
+  get voicePort(): number {
+    return loadConfig().app?.voiceService?.port ?? 7314
+  }
+
+  /** The voice she speaks in now: `app.voice`, else undefined (the service's default). */
+  get currentVoice(): string | undefined {
+    return loadConfig().app?.voice ?? undefined
+  }
+
+  /**
+   * "Vera, switch to Eli": saves `app.voice` and tells the App, which uses
+   * it from the next line (this turn's next `speak` included).
+   */
+  setVoice(id: string) {
+    this.config = saveConfigPatch({ app: { voice: id } })
+    this.log(`voice: ${id}`)
+    this.send({ cmd: "voice", voice: id })
+  }
+
   setBrain(harness: BrainHarness, model?: string, effort?: string): string {
     const patch: any = { brain: { harness } }
     if (model || effort) patch.brain[harness] = { ...(model ? { model } : {}), ...(effort ? { effort } : {}) }
@@ -960,6 +981,7 @@ export class Assistant {
 
   async close() {
     this.watcher.stop()
+    this.prompt.unwatch()
     this.jobs.shutdown()
     this.mouth.close()
     await this.brain?.close().catch(() => {})

@@ -49,6 +49,11 @@ pub(crate) enum CoreCommand {
     Name {
         name: String,
     },
+    /// Core switched the voice (Shawn asked, by voice) and saved it as
+    /// `app.voice`; the next line uses it.
+    Voice {
+        voice: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -203,6 +208,12 @@ mod tests {
             parse(r#"{"cmd":"name","name":"Nova"}"#),
             Some(CoreCommand::Name {
                 name: "Nova".into()
+            })
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"voice","voice":"eli"}"#),
+            Some(CoreCommand::Voice {
+                voice: "eli".into()
             })
         );
         assert_eq!(parse("Core v2 ready"), None);

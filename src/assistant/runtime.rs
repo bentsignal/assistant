@@ -58,9 +58,12 @@ const RECENT: usize = 6;
 /// A raw microphone peak at or under this (about -120 dBFS) is digital
 /// silence: a muted or dead device, not a quiet room.
 const SILENT_PEAK: f32 = 1e-6;
-/// How long an open microphone may send only silence before Settings and
-/// the tray say so.
-const SILENT_FOR: Duration = Duration::from_secs(4);
+/// How long an open microphone may send only digital silence, with no
+/// speech heard since launch, before Settings shows a quiet hint by the
+/// microphone picker. Some headsets (a CORSAIR wireless one) send pure zeros
+/// whenever nobody talks, so silence is never a fault: no chime, no tray
+/// dot, no problem line.
+const SILENT_FOR: Duration = Duration::from_secs(4 * 60);
 /// The longest each HUD look may stay up without a change, whatever Core
 /// says: listening covers the barge-in window (20 s), thinking the brain's
 /// own timeout (Core gives up at 90 s), speaking a line's deadline once
@@ -71,6 +74,9 @@ const SPEAKING_CAP: Duration = Duration::from_secs(180);
 const SPEAKING_IDLE_CAP: Duration = Duration::from_secs(4);
 /// How long the HUD's error look holds before any other look shows.
 const ERROR_HOLD: Duration = Duration::from_millis(1700);
+/// How long a line may wait for the voice service to be ready (it loads for
+/// about 10 s after launch) before it fails.
+const HOLD_FOR: Duration = Duration::from_secs(20);
 /// How soon a stopped audio engine comes back: 1, 2, 5, 10, then 30 s.
 const ENGINE_BACKOFF: [u64; 5] = [1, 2, 5, 10, 30];
 
@@ -124,12 +130,14 @@ pub(crate) fn run(hidden: bool) -> Result<()> {
                 }
             });
         });
+    // Closing Settings only hides it: the window keeps its GPU device and
+    // renderer. Releasing them (`release_gpu_when_closed`) and recreating
+    // them on reopen sometimes drew a blank skeleton with no text.
     let mut app = if hidden {
         app.windowless()
     } else {
         app.keep_running()
-    }
-    .release_gpu_when_closed();
+    };
     let hud = crate::rune_hud::install(&mut app);
     hud.set_position(if config.hud_bottom {
         IndicatorPosition::Bottom
@@ -229,8 +237,11 @@ struct Controller {
     mic_unavailable: bool,
     /// When the open microphone last delivered anything but digital silence.
     mic_heard_at: Instant,
-    /// The open microphone has sent only digital silence for `SILENT_FOR`.
+    /// The open microphone has sent only digital silence for `SILENT_FOR`,
+    /// and no speech was heard since launch.
     mic_silent: bool,
+    /// Speech was heard since launch: the microphone works.
+    heard_speech: bool,
     muted: bool,
     /// The utterance playing now (the engine's id).
     speaking: Option<String>,
@@ -245,6 +256,10 @@ struct Controller {
     error_until: Option<Instant>,
     alerts: Alerts,
     recent: VecDeque<(bool, String, Instant)>,
+    /// Lines Core sent while the voice or the audio engine wasn't ready yet:
+    /// (Core's speak id, text, when). They play once it is, or fail after
+    /// `HOLD_FOR`.
+    held: VecDeque<(String, String, Instant)>,
     /// The last transcript, until Core acts on it (thinks or speaks): only
     /// then is it a turn worth listing, not speech Vera overheard.
     heard: Option<(String, Instant)>,
@@ -336,6 +351,7 @@ impl Controller {
             mic_unavailable: false,
             mic_heard_at: Instant::now(),
             mic_silent: false,
+            heard_speech: false,
             muted: false,
             speaking: None,
             badge: 0,
@@ -346,6 +362,7 @@ impl Controller {
             error_until: None,
             alerts: Alerts::default(),
             recent: VecDeque::new(),
+            held: VecDeque::new(),
             heard: None,
             at_login: super::login::registered().is_some(),
             checked_at: Instant::now(),
@@ -614,6 +631,7 @@ impl Controller {
         match command {
             CoreCommand::Speak { speak_id, text } => self.speak(speak_id, text),
             CoreCommand::StopSpeaking => {
+                self.drop_held(true);
                 if let Some(audio) = &self.audio {
                     audio.stop_playback();
                 }
@@ -654,6 +672,19 @@ impl Controller {
                 }
                 self.apply_name();
             }
+            CoreCommand::Voice { voice } => {
+                // Core saved it as `app.voice` (Shawn asked, by voice): the
+                // next line uses it.
+                self.config = Config::load();
+                let voice = self.config.voice.clone().or(Some(voice));
+                tracing::info!(?voice, "Core switched the voice");
+                trace::record("voice_set", json!({"voice": voice}));
+                if let Some(audio) = &self.audio {
+                    audio.set_voice(voice.clone());
+                }
+                self.config.voice = voice;
+                self.publish(true);
+            }
             CoreCommand::Error { what, message } => {
                 let title = match what.as_str() {
                     "brain" => "{name}'s brain failed",
@@ -668,6 +699,55 @@ impl Controller {
     fn speak(&mut self, speak_id: String, text: String) {
         self.commit_heard();
         self.remember(false, &text);
+        if !self.can_speak() && self.voice_may_come() {
+            // Still loading (just launched, or restarting): hold the line
+            // until the voice is ready rather than fail it.
+            tracing::info!(speak_id, "holding a line until the voice is ready");
+            self.held.push_back((speak_id, text, Instant::now()));
+            return;
+        }
+        self.send_speech(speak_id, text);
+    }
+
+    /// The audio engine runs and the voice service answers.
+    fn can_speak(&self) -> bool {
+        self.audio.is_some() && self.voice.ready
+    }
+
+    /// The voice service is starting or restarting, not missing.
+    fn voice_may_come(&self) -> bool {
+        !matches!(self.voice_service.state, super::child::State::Missing(_))
+    }
+
+    /// Plays held lines once the voice is ready; fails the ones that waited
+    /// too long.
+    fn release_held(&mut self) {
+        while let Some((_, _, at)) = self.held.front() {
+            let late = at.elapsed() >= HOLD_FOR || !self.voice_may_come();
+            if !late && !self.can_speak() {
+                return;
+            }
+            let (speak_id, text, at) = self.held.pop_front().expect("front");
+            if self.can_speak() {
+                tracing::info!(speak_id, waited_ms = at.elapsed().as_millis(), "a held line plays");
+            }
+            self.send_speech(speak_id, text);
+        }
+    }
+
+    /// Drops held lines (stop talking, a new Core): each ends `interrupted`.
+    fn drop_held(&mut self, tell: bool) {
+        for (speak_id, _, _) in std::mem::take(&mut self.held) {
+            if tell {
+                self.tell_core(AppEvent::Playback {
+                    speak_id,
+                    state: "interrupted",
+                });
+            }
+        }
+    }
+
+    fn send_speech(&mut self, speak_id: String, text: String) {
         let Some(audio) = &self.audio else {
             // No engine right now: this line ends at once, and Shawn knows.
             self.tell_core(AppEvent::Playback {
@@ -733,6 +813,7 @@ impl Controller {
                 // shortcut press).
                 warm_hud();
                 self.utterance_open = true;
+                self.heard_speech = true;
                 self.tell_core(AppEvent::SpeechStart { t });
             }
             AudioEvent::Partial { text, t } => self.tell_core(AppEvent::Partial { text, t }),
@@ -841,6 +922,7 @@ impl Controller {
 
     fn tick(&mut self) {
         self.watch_children();
+        self.release_held();
         if self.audio.is_none() && self.audio_restart_at.is_some_and(|at| Instant::now() >= at) {
             tracing::info!("starting the audio engine again");
             self.start_audio();
@@ -901,6 +983,7 @@ impl Controller {
             Tick::Started => {
                 // A (re)started Core starts from nothing: it hears where
                 // things stand, and nothing of the old one's plays on.
+                self.drop_held(false);
                 if self.ledger.new_core() > 0
                     && let Some(audio) = &self.audio
                 {
@@ -921,6 +1004,7 @@ impl Controller {
             Tick::Exited => {
                 // What the dead Core asked to say is cut, and the HUD stops
                 // showing a turn nobody is running.
+                self.drop_held(false);
                 if let Some(audio) = &self.audio {
                     audio.stop_playback();
                 }
@@ -943,8 +1027,9 @@ impl Controller {
         }
     }
 
-    /// Notices an open microphone that sends only digital silence (muted at
-    /// the device, or dead), so Settings and the tray can say so.
+    /// Notices an open microphone that has sent only digital silence for
+    /// minutes with no speech heard since launch, for a quiet hint in
+    /// Settings. Never a problem: some headsets send zeros between words.
     fn watch_microphone(&mut self) {
         let Some(audio) = &self.audio else {
             return;
@@ -953,23 +1038,15 @@ impl Controller {
         if self.muted || self.ready.is_none() || peak > SILENT_PEAK {
             self.mic_heard_at = Instant::now();
         }
-        let silent = self.mic_heard_at.elapsed() >= SILENT_FOR;
+        let silent = !self.heard_speech && self.mic_heard_at.elapsed() >= SILENT_FOR;
         if silent != self.mic_silent {
             self.mic_silent = silent;
             let mic = self
                 .ready
                 .as_ref()
                 .map_or(String::new(), |(mic, _)| mic.clone());
-            if silent {
-                tracing::warn!(mic, "the microphone sends only silence (muted?)");
-                self.problem(
-                    "No sound from the microphone",
-                    &format!("{mic} sends only silence. Is it muted?"),
-                );
-            } else {
-                tracing::info!(mic, "the microphone hears sound again");
-                self.resolve_alert("No sound from the microphone");
-            }
+            tracing::info!(mic, silent, "microphone digital silence");
+            self.publish(true);
         }
     }
 

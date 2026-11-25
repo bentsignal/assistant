@@ -97,9 +97,11 @@ spoken message.
 ### Barge-in
 
 The mic stays live while Vera speaks. Its signal is echo-cancelled against
-Vera's own playback. When VAD detects user speech during playback, the app
-ducks Vera at once, and stops playback once the speech is confirmed (about
-250–300 ms) or restores the volume if it was a false alarm. It then tells Core
+Vera's own playback. When the echo-cancelled signal rises and the speech
+detector hears voiced speech in it (about 100 ms; breaths, a chair or the
+room don't count), the app ducks Vera gently (about 8 dB), and stops playback
+once the speech is confirmed (about 300 ms) or restores the volume if it was
+a false alarm. It then tells Core
 `barge_in`. The transcript that follows is treated as an in-conversation turn,
 so no wake word is needed. The tray "Stop talking" item and a global hotkey
 also stop speech.
@@ -134,6 +136,7 @@ core → app:
 {"cmd":"badge","count":2}
 {"cmd":"error","what":"brain|brain_timeout|speech","message":"…"}
 {"cmd":"name","name":"Nova"}
+{"cmd":"voice","voice":"eli"}
 ```
 
 **Nothing is ever left hanging** (v2's live test failed this way: an engine
@@ -152,12 +155,19 @@ replies piled up behind it):
 - When a new user turn starts, Core drops every line left from earlier
   turns (playing or queued), and a turn still running is cut and its brain
   interrupted. No reply ever plays after a newer question.
+- A line Core sends while the voice service is still loading (the ~10 s
+  after launch, or a restart) is held until the voice is ready, for up to
+  20 s, and only then fails.
 - Every failure is heard and seen (the App's `alerts`): the soft error
   chime, the HUD's coral error look, a coral dot and tooltip on the tray, and
   a red line at the top of Settings for a minute (or until fixed). Core says
   `error` for its own (the brain failed, or didn't answer within 45 s).
   Children restart with backoff (1, 2, 5, 10, 30 s), the audio engine too,
-  and Settings says it's restarting.
+  and Settings says it's restarting. Only real failures alert (a device
+  that goes away, a stream error, a child down, the brain failing): a
+  microphone sending digital silence is not one (some headsets send zeros
+  whenever nobody talks), so it gets at most a grey hint by the microphone
+  picker after minutes of zeros with no speech heard since launch.
 - The HUD leaves every look: Core's states all have exits, and the App
   hides a look that outstays its cap (listening 30 s, thinking 100 s,
   speaking once nothing plays).
@@ -228,5 +238,7 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
 
 ## User state (`~/.assistant/`, never in the repo)
 
-`config.json`, `system-prompt.md` (+ `prompt-history/`), `logs/`, `jobs/`,
+`config.json`, `system-prompt.md` (+ `prompt-history/`; Settings › General ›
+Personality edits it in place, with Save and Revert to default, and Core picks
+up the change from the next turn), `logs/`, `jobs/`,
 `models/`, `ears/`.

@@ -29,7 +29,6 @@ pub(crate) enum UiAction {
     SetWake(Wake),
     SetStartAtLogin(bool),
     SetMuted(bool),
-    EditPersonality,
     /// The card's close button: the card it showed.
     CardClosed(Option<String>),
     Quit,
@@ -63,12 +62,11 @@ pub(crate) struct Recent {
     pub(crate) when: String,
 }
 
-/// The line under Microphone: the device Vera hears, or that it sends
-/// only silence (muted at the device?).
+/// The line under Microphone: the device Vera hears, or a quiet hint that
+/// it has sent only silence for minutes (muted at the device?).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MicrophoneNote {
     pub(crate) text: String,
-    pub(crate) silent: bool,
 }
 
 /// Everything Settings shows, as the runtime last published it.

@@ -109,6 +109,11 @@ export interface AssistantConfig {
     cli?: string
     pollSeconds: number
   }
+  /**
+   * The App's own settings (it owns them; Core reads a few and writes only
+   * `app.voice`, when Shawn asks for another voice).
+   */
+  app?: { voice?: string | null; voiceService?: { port?: number } }
   voice: {
     /**
      * Vera's own output level until the App reports one: 0-1 on the App's
