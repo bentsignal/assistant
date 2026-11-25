@@ -1,0 +1,14 @@
+[
+  {"id": "isla", "engine": "qwen", "name": "Isla", "gender": "female", "accent": "British",
+   "description": "Calm, measured and even; soft standard British accent.", "ref": "isla.wav"},
+  {"id": "nora", "engine": "qwen", "name": "Nora", "gender": "female", "accent": "American",
+   "description": "Calm, slightly low, matter-of-fact; neutral American accent.", "ref": "nora.wav"},
+  {"id": "june", "engine": "qwen", "name": "June", "gender": "female", "accent": "American",
+   "description": "Warm and relaxed, a little brighter; neutral American accent.", "ref": "june.wav"},
+  {"id": "eli", "engine": "qwen", "name": "Eli", "gender": "male", "accent": "American",
+   "description": "Calm, warm mid-low male voice, unhurried.", "ref": "eli.wav"},
+  {"id": "heart", "engine": "kokoro", "name": "Heart (Kokoro)", "gender": "female", "accent": "American",
+   "description": "Kokoro af_heart, v1's voice without v1's processing. Runs on the CPU.", "kokoro": "af_heart"},
+  {"id": "river", "engine": "kokoro", "name": "River (Kokoro)", "gender": "female", "accent": "American",
+   "description": "Kokoro af_river: even and plain. Runs on the CPU.", "kokoro": "af_river"}
+]

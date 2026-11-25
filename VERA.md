@@ -123,6 +123,12 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   ready. The `X-Sample-Rate` response header gives the rate. Character effects
   (reverb, tint) are applied in the service. Volume is **not**; the app owns it.
   Output is loudness-normalized (about −20 LUFS) with peaks under −3 dBFS.
+- `GET /v1/voices` returns `{"default", "voices": [{"id","name","engine","gender","accent","description","available"}], "presets": [{"id","description"}]}` for the settings window.
+- Closing the speech connection cancels synthesis. Unknown voice or preset: 400.
+- Implemented in `vera/voice` (see its README). Setup: `vera\voice\scripts\setup.ps1`.
+  Spawn: `~\.vera\voice\venv\Scripts\pythonw.exe -m vera_voice serve --port 7314
+  --parent-pid <app pid>` (no console; exits when the App does). Default voice `isla`,
+  preset `vera` (others: `natural`, `synthetic`).
 
 ## Rules that shape the experience
 
