@@ -73,7 +73,30 @@ pub enum DictationIndicatorEvent {
         /// Why it failed, for Labs › Failure notices; the HUD ignores it.
         message: Option<String>,
     },
+    /// Vera (VERA.md) sets the HUD's look directly, from any state, with no
+    /// dictation lifecycle; meters follow whichever voice the look shows.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    Vera(VeraLook),
 }
+
+/// What Vera's HUD shows: Hex's own looks, with Vera speaking as the
+/// recording braid in the agent's blue (`Stage::Speaking`).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VeraLook {
+    /// Shawn's voice: the recording look, following the microphone.
+    Listening,
+    /// The processing look.
+    Thinking,
+    /// Vera's voice: following her output level.
+    Speaking,
+    /// Done from thinking or speaking (the wipe), a fade from listening;
+    /// then hidden.
+    Idle,
+}
+
+/// The job a Vera thinking look stands for, which no dictation uses.
+const VERA_JOB: u64 = u64::MAX;
 
 impl DictationIndicatorEvent {
     /// A `Meter` event from captured samples: their RMS and absolute peak
@@ -151,6 +174,8 @@ enum HudState {
     /// Showing the failed look until [`FAILED_VISIBLE_DURATION`] elapses, then
     /// hidden.
     Failed { started: Instant },
+    /// Vera speaking: Dot scope follows her output level.
+    Speaking,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,7 +192,8 @@ impl HudState {
             Self::Hidden
             | Self::Completing { .. }
             | Self::Completed { .. }
-            | Self::Failed { .. } => BTreeSet::new(),
+            | Self::Failed { .. }
+            | Self::Speaking => BTreeSet::new(),
         }
     }
 
@@ -176,6 +202,7 @@ impl HudState {
             Self::Recording { .. } => Some("Recording"),
             Self::Transcribing { .. } | Self::Completing { .. } => Some("Transcribing"),
             Self::Failed { .. } => Some("Failed"),
+            Self::Speaking => Some("Speaking"),
             Self::Hidden | Self::Completed { .. } => None,
         }
     }
@@ -187,6 +214,7 @@ impl HudState {
             Self::Transcribing { .. } | Self::Completing { .. } => Some(Stage::Processing),
             Self::Completed { .. } => Some(Stage::Done),
             Self::Failed { .. } => Some(Stage::Failed),
+            Self::Speaking => Some(Stage::Speaking),
             Self::Hidden => None,
         }
     }
@@ -280,7 +308,7 @@ impl IndicatorModel {
     /// are meters, so the only one a recovery re-ask may act on (#1793).
     #[cfg(any(target_os = "windows", test))]
     pub fn recording(&self) -> bool {
-        matches!(self.state, HudState::Recording { .. })
+        matches!(self.state, HudState::Recording { .. } | HudState::Speaking)
     }
 
     /// The meter's loudness, dBFS: tests check that a meter still updates it
@@ -392,6 +420,64 @@ impl IndicatorModel {
             DictationIndicatorEvent::Failed { .. } => {
                 self.finish_capture(now, true);
             }
+            DictationIndicatorEvent::Vera(look) => self.vera(look, now, reduce),
+        }
+    }
+
+    /// Vera's look, from whatever shows: a hidden or leaving HUD enters
+    /// afresh, and one already up moves to the new look in place.
+    fn vera(&mut self, look: VeraLook, now: Instant, reduce: bool) {
+        let entering = matches!(
+            self.state,
+            HudState::Hidden | HudState::Completed { .. } | HudState::Failed { .. }
+        );
+        let enter = |model: &mut Self| {
+            if entering {
+                model.demo_voice = None;
+                model.stage = Stage::Recording;
+                model.scope.restart(reduce);
+            }
+        };
+        match look {
+            VeraLook::Listening => {
+                enter(self);
+                if !matches!(self.state, HudState::Recording { .. }) {
+                    self.loudness = SILENT;
+                }
+                self.state = HudState::Recording {
+                    jobs: BTreeSet::new(),
+                };
+            }
+            VeraLook::Thinking => {
+                enter(self);
+                let working_since = match self.state {
+                    HudState::Transcribing { working_since, .. } => working_since,
+                    _ => now,
+                };
+                self.state = HudState::Transcribing {
+                    jobs: BTreeSet::from([VERA_JOB]),
+                    working_since,
+                };
+            }
+            VeraLook::Speaking => {
+                enter(self);
+                if self.state != HudState::Speaking {
+                    self.loudness = SILENT;
+                }
+                self.state = HudState::Speaking;
+            }
+            VeraLook::Idle => {
+                self.state = match std::mem::replace(&mut self.state, HudState::Hidden) {
+                    HudState::Transcribing { working_since, .. }
+                    | HudState::Completing { working_since } => {
+                        HudState::Completing { working_since }
+                    }
+                    HudState::Speaking => HudState::Completed { started: now },
+                    HudState::Completed { started } => HudState::Completed { started },
+                    HudState::Failed { started } => HudState::Failed { started },
+                    HudState::Hidden | HudState::Recording { .. } => HudState::Hidden,
+                };
+            }
         }
     }
 
@@ -444,7 +530,8 @@ impl IndicatorModel {
             HudState::Hidden
             | HudState::Completing { .. }
             | HudState::Completed { .. }
-            | HudState::Failed { .. } => {}
+            | HudState::Failed { .. }
+            | HudState::Speaking => {}
         }
     }
 

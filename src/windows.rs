@@ -310,7 +310,7 @@ pub(crate) fn attach_parent_console() {
     }
 }
 
-fn detach_from_console() {
+pub(crate) fn detach_from_console() {
     // The native app leaves the terminal it joined (`attach_parent_console`)
     // once startup errors have had their chance to print there: it outlives
     // that terminal, whose shell has already moved on.

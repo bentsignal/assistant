@@ -17,6 +17,17 @@ repository = "https://github.com/anomalyco/hex"
 members = ["crates/console", "crates/router"]
 exclude = ["crates/capture", "crates/capture-core"]
 
+[[bin]]
+name = "hex"
+path = "src/main.rs"
+
+# Vera (VERA.md): the same sources as a second Windows app with its own name,
+# icon, tray entry, instance, and data folder. `main` dispatches on
+# CARGO_BIN_NAME; build it with `cargo build --bin vera`.
+[[bin]]
+name = "vera"
+path = "src/main.rs"
+
 [[test]]
 name = "keyboard_layout"
 harness = false
@@ -190,6 +201,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
   "Win32_System_DataExchange",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
