@@ -45,16 +45,18 @@ export const DEFAULT_CONFIG: MouthConfig = {
   autoDownload: true,
   numThreads: Math.max(1, Math.min(6, Math.floor(cpus().length / 2))),
   player: { warm: 2 },
-  chimeVolume: 0.5,
+  chimeVolume: 0.4,
   log: (m) => process.stderr.write(`${m}\n`),
 }
 
 export function resolveConfig(partial: Partial<MouthConfig> = {}): MouthConfig {
-  return {
+  const cfg: MouthConfig = {
     ...DEFAULT_CONFIG,
     ...stripUndefined(partial),
     player: { ...DEFAULT_CONFIG.player, ...stripUndefined(partial.player ?? {}) },
   }
+  cfg.modelsDir = cfg.modelsDir.replace(/^~(?=[\\/]|$)/, homedir())
+  return cfg
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {

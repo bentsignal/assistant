@@ -10,6 +10,7 @@ import { splitForSpeech } from "./text/split.ts"
 import { writeWav } from "./wav.ts"
 import { CHIME_KINDS, type ChimeKind } from "./chimes.ts"
 import { concat } from "./dsp/effects.ts"
+import { resolve } from "node:path"
 
 const USAGE = `usage: say "text" [options]
   --preset <${PRESET_NAMES.join("|")}>   character preset (default from ~/.vera/config.json, else vera)
@@ -57,7 +58,8 @@ async function main(): Promise<void> {
   if (typeof opts.voice === "string") cfg.voice = opts.voice
   if (typeof opts.engine === "string") cfg.engine = opts.engine as MouthConfig["engine"]
   if (typeof opts.speed === "string") cfg.speed = Number(opts.speed)
-  const out = typeof opts.out === "string" ? opts.out : undefined
+  // pnpm runs scripts in the package folder; resolve --out against where the command was typed.
+  const out = typeof opts.out === "string" ? resolve(process.env.INIT_CWD ?? process.cwd(), opts.out) : undefined
   if (out) cfg.player = { warm: 0 }
   const t0 = performance.now()
   const mouth = (await createMouth(cfg)) as VeraMouth & { renderChime(kind: ChimeKind): Float32Array }
