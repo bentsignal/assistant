@@ -82,6 +82,8 @@ mod suppression;
 mod transcription;
 mod updater;
 #[cfg(target_os = "windows")]
+mod vera_ears;
+#[cfg(target_os = "windows")]
 mod windows;
 
 #[cfg(target_os = "macos")]
@@ -941,6 +943,11 @@ fn main() -> Result<()> {
     windows::attach_parent_console();
     if let Err(error) = dll_search {
         eprintln!("hex: SetDefaultDllDirectories failed: {error}");
+    }
+    // `hex ears` (Vera) keeps its own data folder; set before the checks
+    // below read markers there.
+    if std::env::args_os().nth(1).is_some_and(|command| command == "ears") {
+        vera_ears::isolate();
     }
     windows::vulkan::check();
     windows::gpu_fallback::choose();

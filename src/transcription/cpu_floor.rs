@@ -76,10 +76,11 @@ pub fn require() {
         return;
     }
     eprintln!("{MESSAGE}");
-    // `hex service` never opens windows; its stderr reaches the journal.
+    // `hex service` and `hex ears` never open windows; their stderr reaches
+    // the journal or the process that spawned them.
     if arguments
         .get(1)
-        .is_none_or(|argument| argument != "service")
+        .is_none_or(|argument| argument != "service" && argument != "ears")
     {
         show();
     }

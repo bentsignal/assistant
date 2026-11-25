@@ -92,6 +92,9 @@ enum Command {
     },
     /// List microphone devices visible through WASAPI.
     Devices,
+    /// Vera's ears: listen hands-free and print each utterance's transcript
+    /// as JSON lines (VERA.md, "Ears"); reads pause/resume/shutdown on stdin.
+    Ears(crate::vera_ears::EarsArgs),
     /// Compare live-stream and full-clip transcription of a WAV file.
     #[command(hide = true)]
     StreamBench {
@@ -169,6 +172,14 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
         crate::rune_ui::render_app(rune_args.clone()).run();
         return Ok(());
     }
+    // Vera's ears log to stderr and write nothing to Hex's data folder.
+    let command = match command {
+        Command::Ears(args) => {
+            shutdown.store(false, Ordering::Relaxed);
+            return crate::vera_ears::run(args, shutdown);
+        }
+        command => command,
+    };
     let log_dir = crate::app_paths::init_process_logging(shutdown)?;
     // 2.3.1's updater installed this build into its own folder.
     if matches!(command, Command::App { .. }) && crate::updater::legacy::take_over() {
@@ -241,7 +252,7 @@ pub fn run(shutdown: &'static AtomicBool) -> Result<()> {
             speed,
             selection,
         } => stream_bench(&wav, speed, &selection.resolve()?),
-        Command::Control(_) => unreachable!("handled before logging"),
+        Command::Control(_) | Command::Ears(_) => unreachable!("handled before logging"),
     }
 }
 
