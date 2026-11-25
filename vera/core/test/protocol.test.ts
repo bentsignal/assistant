@@ -1,6 +1,6 @@
 /**
- * The App ⇄ Core stdio protocol, end to end: a fake App spawns Core in
- * --stdio mode with the scripted brain and plays app events.
+ * The App ⇄ Core stdio protocol, end to end: a fake App spawns Core (with
+ * --stdio, as vera.exe does) with the scripted brain and plays app events.
  */
 import { test } from "node:test"
 import assert from "node:assert/strict"
@@ -15,11 +15,11 @@ test("stdout carries only protocol JSON, and startup sends the HUD and badge", a
   try {
     app.send({ type: "ready", mic: "Test mic", engine: "parakeet_unified_en" })
     await app.waitFor(isCmd("badge"))
-    for (let i = 0; i < 50 && !/Vera core \(--stdio\) up/.test(app.stderr); i++) await sleep(100)
+    for (let i = 0; i < 50 && !/Vera core up/.test(app.stderr); i++) await sleep(100)
     assert.equal(app.cmds[0].cmd, "hud")
     assert.equal((app.cmds[0] as any).state, "idle")
     // FakeApp throws on any non-JSON stdout line; make sure logs went to stderr.
-    assert.match(app.stderr, /Vera core \(--stdio\) up/)
+    assert.match(app.stderr, /Vera core up/)
   } finally {
     assert.equal(await app.stop(), 0)
   }
@@ -200,7 +200,7 @@ test("set_volume: 'you're way too loud' changes Vera's own volume, not the compu
     await sleep(100)
     await app.say("Vera, you're way too loud, turn yourself down.")
     const vol = await app.waitFor(isCmd("set_volume"))
-    assert.equal((vol as any).level, 0.25)
+    assert.equal((vol as any).level, 0.2, "0.5 minus a big step (0.3, 12 dB)")
     const speak = await app.waitFor(isCmd("speak"))
     assert.ok(app.cmds.indexOf(vol) < app.cmds.indexOf(speak), "volume changes before she answers")
     await app.waitFor(isHud("listening"), 3000, app.cmds.indexOf(speak))
@@ -211,6 +211,68 @@ test("set_volume: 'you're way too loud' changes Vera's own volume, not the compu
     const st = await app.state()
     assert.deepEqual(st.jobs, [])
     assert.equal(st.volume, 0.5)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("volume steps on the App's scale: default 0.7, 0.15 a step, 0.3 a big one, within [0.1, 1]", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [
+      { match: "much louder", steps: [{ tool: "set_volume", args: { relative: "louder", a_lot: true } }] },
+      { match: "louder", steps: [{ tool: "set_volume", args: { relative: "louder" } }] },
+      { match: "way too loud", steps: [{ tool: "set_volume", args: { relative: "quieter", a_lot: true } }] },
+      { match: "quieter", steps: [{ tool: "set_volume", args: { relative: "quieter" } }] },
+      { match: "thirty", steps: [{ tool: "set_volume", args: { level: 30 } }] },
+    ],
+  })
+  const levels: number[] = []
+  const turn = async (text: string) => {
+    const m = app.mark
+    await app.api("/api/utterance", { text, direct: true, wait: true })
+    levels.push(((await app.waitFor(isCmd("set_volume"), 3000, m)) as any).level)
+  }
+  try {
+    // No `ready` volume yet: Core starts from the default.
+    await turn("A bit quieter.")
+    await turn("Much louder.")
+    await turn("Louder.")
+    await turn("Louder.")
+    assert.deepEqual(levels, [0.55, 0.85, 1, 1])
+    // The App's level (here from settings) is where the next step starts.
+    app.send({ type: "ui", action: "settings_changed", volume: 0.3 })
+    await sleep(100)
+    await turn("You're way too loud.")
+    await turn("Quieter.")
+    await turn("Set yourself to thirty.")
+    assert.deepEqual(levels.slice(4), [0.1, 0.1, 0.3])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("playback failed ends that item and the next one is sent; the turn goes on", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    autoPlay: false,
+    script: [{ match: "two things", steps: [{ tool: "speak", args: { text: "First." } }, { tool: "speak", args: { text: "Second." } }] }],
+  })
+  try {
+    await app.say("Vera, tell me two things.")
+    const first = (await app.waitFor(isCmd("speak"))) as any
+    assert.equal(first.text, "First.")
+    // The voice service couldn't say it (the App plays its own error chime).
+    app.send({ type: "playback", speak_id: first.speak_id, state: "failed" })
+    const second = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Second.", 3000)) as any
+    assert.equal(app.since(0).filter(isCmd("stop_speaking")).length, 0, "not treated as an interruption")
+    app.send({ type: "playback", speak_id: second.speak_id, state: "started" })
+    await app.waitFor(isHud("speaking"))
+    app.send({ type: "playback", speak_id: second.speak_id, state: "finished" })
+    await app.waitFor(isHud("listening"), 3000, app.cmds.indexOf(second))
+    const st = await app.state()
+    assert.deepEqual(st.turns[0].spoken, ["First.", "Second."])
+    assert.equal(st.turns[0].muted, undefined)
   } finally {
     await app.stop()
   }
@@ -322,7 +384,7 @@ test("bare wake word chimes and opens the window; mic mute ignores speech", asyn
   }
 })
 
-test("POST /api/utterance still works as a debug hook in --stdio mode", async () => {
+test("POST /api/utterance works as a debug hook", async () => {
   const app = await FakeApp.start({ config: testConfig(), script: [{ match: "ping", steps: [{ tool: "speak", args: { text: "Pong." } }] }] })
   try {
     const r = await app.api("/api/utterance", { text: "ping", direct: true, wait: true })

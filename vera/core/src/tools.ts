@@ -51,7 +51,7 @@ export const HANDLERS: Record<string, ToolHandler> = {
 
   show(vera, args) {
     const card = vera.addCard(need(args, "title"), String(args.markdown ?? ""))
-    return vera.mode === "stdio" ? `Showing card ${card.id} in a popup. Close it with hide when he's done with it.` : `Shown on the panel (card ${card.id}).`
+    return `Showing card ${card.id} in a popup. Close it with hide when he's done with it.`
   },
 
   hide(vera, args) {

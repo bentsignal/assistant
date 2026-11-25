@@ -25,7 +25,7 @@ export interface BrainOptions {
 
 export interface TurnResult {
   ok: boolean
-  /** The brain's plain text output for this turn. Goes to the panel, never spoken. */
+  /** The brain's plain text output for this turn. Kept with the turn (GET /api/state), never spoken. */
   text: string
   error?: string
   interrupted?: boolean

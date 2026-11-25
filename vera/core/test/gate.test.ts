@@ -99,19 +99,6 @@ test("hangers-on after the wake word are dropped", () => {
   assert.deepEqual(gate({ text: "Vera, uh, set a timer" }, closed, now), { action: "turn", text: "set a timer", via: "wake" })
 })
 
-test("barge-in: wake word + stop that Vera isn't saying", async () => {
-  const { findBargeIn } = await import("../src/gate.ts")
-  assert.equal(findBargeIn("Vera, stop.", "It's eleven forty two."), "vera stop")
-  assert.equal(findBargeIn("eleven forty Vera stop two", "It's eleven forty two."), "vera stop")
-  assert.equal(findBargeIn("Hey Vera, be quiet", "The pasta needs ten more minutes."), "vera be quiet")
-  assert.equal(findBargeIn("Vera okay stop", "Sure."), "vera stop")
-  // Her own words don't stop her.
-  assert.equal(findBargeIn("Tell Vera to stop the timer", "I'll tell Vera to stop the timer."), null)
-  assert.equal(findBargeIn("it's eleven forty two", "It's eleven forty two."), null)
-  assert.equal(findBargeIn("stop", "Okay."), null, "needs the wake word")
-  assert.equal(findBargeIn("Sarah, stop", "Okay."), null, "soft wake words don't barge in")
-})
-
 test("stop phrases used after a barge-in", () => {
   for (const p of ["Stop.", "Never mind.", "Be quiet.", "Okay, stop.", "That's enough.", "Shh.", "Wait.", "Hold on."]) {
     assert.equal(isStopPhrase(p), true, p)

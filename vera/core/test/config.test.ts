@@ -1,27 +1,20 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { DEFAULT_CONFIG, earsCandidates, merge, resolveEarsCommand } from "../src/config.ts"
-import { existsSync } from "node:fs"
-import { sep } from "node:path"
+import { DEFAULT_CONFIG, merge } from "../src/config.ts"
 
-const ears = (over: object) => merge(DEFAULT_CONFIG.ears, over)
-
-test("ears: null and [] mean no microphone", () => {
-  assert.equal(resolveEarsCommand(ears({ command: null })).argv, null)
-  assert.equal(resolveEarsCommand(ears({ command: [] })).argv, null)
+test("defaults: Vera's volume starts at the App's default level, 0.7", () => {
+  assert.equal(DEFAULT_CONFIG.voice.defaultVolume, 0.7)
 })
 
-test("ears: an explicit argv is used as is", () => {
-  assert.deepEqual(resolveEarsCommand(ears({ command: ["node", "fake-ears.mjs"] })).argv, ["node", "fake-ears.mjs"])
+test("defaults have no v1 standalone keys", () => {
+  for (const key of ["ears", "mouth", "panel"]) assert.equal(key in DEFAULT_CONFIG, false, key)
 })
 
-test("ears: auto finds the repo's hex.exe or says how to build it", () => {
-  const r = resolveEarsCommand(ears({ command: "auto", args: ["--device", "Headset"] }))
-  const built = earsCandidates().find((p) => existsSync(p))
-  if (built) assert.deepEqual(r.argv, [built, "ears", "--device", "Headset"])
-  else {
-    assert.equal(r.argv, null)
-    assert.match(r.note, /vera-ears-build\.sh/)
-  }
-  assert.ok(earsCandidates()[0].split(sep).join("/").includes("/target/release/hex"))
+test("merge: objects merge, arrays and values replace, unknown keys stay", () => {
+  const got = merge(DEFAULT_CONFIG, { wake: { followUpSeconds: 3, words: ["vee"] }, app: { volume: 0.4 } }) as any
+  assert.equal(got.wake.followUpSeconds, 3)
+  assert.deepEqual(got.wake.words, ["vee"])
+  assert.equal(got.wake.soft, DEFAULT_CONFIG.wake.soft)
+  assert.equal(got.app.volume, 0.4)
+  assert.equal(got.voice.defaultVolume, 0.7)
 })

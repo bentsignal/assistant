@@ -1,17 +1,14 @@
-import { EventEmitter } from "node:events"
 import { randomBytes } from "node:crypto"
 import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import { CORE_DIR, loadConfig, paths, resolveEarsCommand, saveConfigPatch, type BrainHarness, type VeraConfig } from "./config.ts"
-import { findBargeIn, gate, stripWakeWord, type GateResult } from "./gate.ts"
+import { CORE_DIR, loadConfig, paths, saveConfigPatch, type BrainHarness, type VeraConfig } from "./config.ts"
+import { gate, stripWakeWord, type GateResult } from "./gate.ts"
 import { Inbox, oneLine, truncate } from "./inbox.ts"
 import { SystemPrompt } from "./prompt.ts"
 import { Jobs, type Job } from "./jobs.ts"
 import { T3, T3Watcher, isBusy } from "./t3.ts"
-import { createMouth, type ChimeKind, type Mouth } from "./mouth.ts"
-import { Ears, type EarsMessage } from "./ears.ts"
-import { AppMouth, type AppEvent, type AppLink, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
+import { AppMouth, type AppEvent, type AppLink, type ChimeKind, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
 import { createBrain, type Brain, type TurnResult } from "./brain/index.ts"
 
 export type Status = HudState
@@ -60,8 +57,8 @@ export interface UtteranceInput {
   /** When the speech ended (epoch ms), for latency. */
   end?: number
   direct?: boolean
-  source?: "ears" | "app" | "panel" | "api"
-  /** Heard while Vera was playing (App duplex): an in-conversation turn. */
+  source?: "app" | "api"
+  /** Heard while Vera was playing: an in-conversation turn. */
   duringPlayback?: boolean
 }
 
@@ -73,18 +70,22 @@ interface Interruption {
   unsaid: string[]
 }
 
-export interface VeraOptions {
-  /** "stdio": headless sidecar of the App (it owns audio). "standalone": v1, spawns Ears and Mouth itself. */
-  mode?: "standalone" | "stdio"
-  link?: AppLink
-}
-
 /** Epoch ms look like this; anything smaller is some other clock. */
 const EPOCH_MS = 1e12
 
 /**
+ * Vera's volume is the App's 0-1 level, where level v is 40 × (v − 1) dB
+ * (1 is the voice service's own level, 0 is silent). A relative step is
+ * 0.15 (6 dB), a big one 0.3 (12 dB), and stays within [0.1, 1].
+ */
+const VOLUME_STEP = 0.15
+const VOLUME_BIG_STEP = 0.3
+const VOLUME_MIN_STEPPED = 0.1
+
+/**
  * Vera's conversation loop: gate -> brain turn -> tools -> speech, with the
- * inbox, jobs, T3 watches and the HUD around it.
+ * inbox, jobs, T3 watches and the HUD around it. The App (over `link`) owns
+ * the microphone, playback, the HUD, cards and the tray.
  *
  * Turn policy: one brain turn at a time. Utterances that pass the gate while
  * a turn is in flight are QUEUED and sent together as the next turn (Shawn
@@ -92,9 +93,8 @@ const EPOCH_MS = 1e12
  * "Vera, stop" / "never mind" is never queued: it stops speech, interrupts
  * the turn, and clears the queue.
  */
-export class Vera extends EventEmitter {
+export class Vera {
   config: VeraConfig
-  readonly mode: "standalone" | "stdio"
   readonly token = randomBytes(16).toString("hex")
   /** Port the HTTP server ended up on (MCP tool calls come back through it). */
   port: number
@@ -103,13 +103,10 @@ export class Vera extends EventEmitter {
   jobs: Jobs
   t3: T3
   watcher: T3Watcher
-  mouth!: Mouth
-  mouthName = ""
-  ears: Ears | null = null
-  earsState: "none" | "starting" | "ready" | "error" = "none"
+  /** Speech through the App: one `speak` at a time, `playback` events back. */
+  readonly mouth: AppMouth
   brain: Brain | null = null
-  readonly link: AppLink | null
-  private appMouth: AppMouth | null = null
+  readonly link: AppLink
 
   cards: Card[] = []
   lines: Line[] = []
@@ -117,8 +114,8 @@ export class Vera extends EventEmitter {
   lastHeard = ""
   partial = ""
   followUpUntil = 0
-  /** Vera's own output gain (0-1). The App applies and persists it. */
-  volume = 0.35
+  /** Vera's own output level (0-1, see VOLUME_STEP). The App applies and persists it. */
+  volume: number
   /** Microphone muted from the tray: nothing heard counts. */
   micMuted = false
   hud: HudState = "idle"
@@ -130,12 +127,6 @@ export class Vera extends EventEmitter {
   private brainDirty = false
   /** Recent lines to replay into a brain that starts a fresh conversation. */
   private recapNext = false
-  private resumeTimer: NodeJS.Timeout | null = null
-  /** Why Ears are paused right now ("speaking", "chime"); resumed after a tail once empty. */
-  private earsHolds = new Set<string>()
-  /** Start of the current or last deaf stretch, and when it ended (0 while deaf). */
-  private deafFrom = 0
-  private deafUntil = 0
   /** Speech started and the final or cancel hasn't come yet. */
   private inSpeech = false
   /** When the current utterance started (local clock), and whether it's addressed to Vera. */
@@ -146,8 +137,6 @@ export class Vera extends EventEmitter {
   private lastActiveAt = 0
   /** Turn waiting for its first audio, to measure end-of-speech -> audio. */
   private awaitingAudio: TurnRecord | null = null
-  /** What Vera is saying in the current speaking stretch (v1 barge-in echo check). */
-  private speakingText = ""
   /** Barge-in happened; the next final is Shawn's reply. */
   private interruption: Interruption | null = null
   private bargePending = false
@@ -158,13 +147,12 @@ export class Vera extends EventEmitter {
   private followUpTimer: NodeJS.Timeout | null = null
   private logFile: string
 
-  constructor(opts: VeraOptions = {}) {
-    super()
-    this.mode = opts.mode ?? "standalone"
-    this.link = opts.link ?? null
+  constructor(link: AppLink) {
+    this.link = link
     this.config = loadConfig()
     this.port = this.config.port
     this.logFile = join(paths.logs, `core-${new Date().toISOString().slice(0, 10)}.log`)
+    this.mouth = new AppMouth(link, (l) => this.log(l))
     this.volume = this.loadState().volume ?? this.config.voice.defaultVolume
     this.inbox = new Inbox(paths.inbox)
     this.prompt = new SystemPrompt(paths.systemPrompt, paths.promptHistory)
@@ -199,50 +187,32 @@ export class Vera extends EventEmitter {
     try {
       appendFileSync(this.logFile, stamped + "\n")
     } catch {}
-    this.emit("log", stamped)
   }
 
   private send(cmd: CoreCommand) {
-    if (!this.link) return
     if (cmd.cmd !== "hud" && cmd.cmd !== "badge") this.log(`-> app ${truncate(JSON.stringify(cmd), 300)}`)
     this.link.send(cmd)
   }
 
   async start(): Promise<void> {
-    if (this.mode === "stdio") {
-      if (!this.link) throw new Error("stdio mode needs an App link")
-      const m = new AppMouth(this.link, (l) => this.log(l))
-      this.appMouth = m
-      this.mouth = m
-      this.mouthName = "app"
-      m.on("start", (item: SpeechItem) => this.onSpeechStart(item))
-      m.on("end", () => this.onSpeechEnd())
-      this.link.on("event", (ev: AppEvent) => this.onAppEvent(ev))
-      this.syncHud(true)
-      this.syncBadge()
-    } else {
-      const { mouth, name } = await createMouth(this.config.mouth)
-      this.mouth = mouth
-      this.mouthName = name
-      this.log(`mouth: ${name}`)
-      mouth.on("start", () => this.onSpeechStart())
-      mouth.on("end", () => this.onSpeechEnd())
-      const ears = resolveEarsCommand(this.config.ears)
-      this.log(ears.note)
-      if (ears.argv) this.startEars(ears.argv)
-    }
+    this.mouth.on("start", () => this.onSpeechStart())
+    this.mouth.on("end", () => this.onSpeechEnd())
+    // Events the App sent while Core was starting were buffered; they arrive now.
+    this.link.on("event", (ev: AppEvent) => this.onAppEvent(ev))
+    this.syncHud(true)
+    this.syncBadge()
     this.watcher.start(this.config.t3.pollSeconds * 1000)
     // Warm the brain so the first turn doesn't pay for process start.
     this.ensureBrain().catch((err) => this.log(`brain failed to start: ${err.message}`))
   }
 
-  // ---- the App (stdio mode) -------------------------------------------------
+  // ---- the App --------------------------------------------------------------
 
   private onAppEvent(ev: AppEvent) {
     if (ev.type !== "partial") this.log(`<- app ${truncate(JSON.stringify(ev), 300)}`)
     switch (ev.type) {
       case "ready":
-        this.log(`app ready: mic ${ev.mic ?? "?"}, engine ${ev.engine ?? "?"}`)
+        this.log(`app ready: mic ${ev.mic ?? "?"}, engine ${ev.engine ?? "?"}, volume ${ev.volume ?? "?"}`)
         if (typeof ev.volume === "number") this.adoptVolume(ev.volume)
         this.syncHud(true)
         this.syncBadge(true)
@@ -280,7 +250,7 @@ export class Vera extends EventEmitter {
         this.bargeIn(ev.speak_id, "barge_in")
         break
       case "playback":
-        this.appMouth?.onPlayback(ev.speak_id, ev.state)
+        this.mouth.onPlayback(ev.speak_id, ev.state)
         break
       case "ui":
         this.onUi(ev)
@@ -321,7 +291,7 @@ export class Vera extends EventEmitter {
   private speechStarted() {
     this.inSpeech = true
     this.speechStartedAt = Date.now()
-    this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil > Date.now() || this.mouth?.speaking)
+    this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil > Date.now() || this.mouth.speaking)
     this.partial = "…"
   }
 
@@ -348,8 +318,7 @@ export class Vera extends EventEmitter {
    * next as part of the conversation.
    */
   private bargeIn(speakId: string | undefined, why: string) {
-    const m = this.appMouth
-    if (!m) return
+    const m = this.mouth
     const playing = m.playing
     const item = (speakId && m.get(speakId)) || playing
     const turnId = item?.turnId
@@ -382,55 +351,6 @@ export class Vera extends EventEmitter {
       }
     }
     this.changed()
-  }
-
-  // ---- Ears (standalone mode) -----------------------------------------------
-
-  private startEars(argv: string[]) {
-    const ears = new Ears(argv, this.config.ears.cwd)
-    this.ears = ears
-    this.earsState = "starting"
-    ears.on("message", (m: EarsMessage) => {
-      switch (m.type) {
-        case "ready":
-          this.earsState = "ready"
-          this.log(`ears ready: ${m.engine ?? "?"} ${m.model ?? ""}${m.device ? ` on "${m.device}"` : ""}${m.backend ? ` (${m.backend})` : ""}`)
-          break
-        case "speech_start":
-          this.inSpeech = true
-          if (!this.isDeaf(m.t)) this.partial = "…"
-          break
-        case "partial":
-          if (this.bargeInHeard(m.text)) break
-          if (!this.isDeaf(m.t)) this.partial = m.text
-          break
-        case "final":
-          this.inSpeech = false
-          this.partial = ""
-          if (this.bargeInHeard(m.text)) {
-            this.flushChimes()
-            break
-          }
-          this.log(`heard: "${m.text}"${m.latency_ms ? ` (+${m.latency_ms} ms)` : ""}`)
-          void this.utterance({ text: m.text, start: m.start, end: m.end, source: "ears" })
-          this.flushChimes()
-          break
-        case "speech_cancel":
-          this.inSpeech = false
-          this.partial = ""
-          this.flushChimes()
-          break
-        case "paused":
-        case "resumed":
-          break
-        case "error":
-          this.earsState = "error"
-          this.log(`ears error: ${m.message}`)
-          break
-      }
-      this.changed()
-    })
-    ears.start()
   }
 
   // ---- brain ----------------------------------------------------------------
@@ -487,13 +407,8 @@ export class Vera extends EventEmitter {
   /** Feed one utterance (heard, typed, or injected). */
   async utterance(input: UtteranceInput): Promise<GateResult & { turnId?: number }> {
     const now = Date.now()
-    // Belt and braces for half-duplex: drop speech that began while Vera was talking or chiming.
-    if (input.source === "ears" && input.start && this.isDeaf(input.start, input.end)) {
-      this.log(`dropped (heard while speaking): ${input.text}`)
-      return { action: "ignore", reason: "heard while speaking" }
-    }
     // While Vera is talking (or was just talked over) the window is open; it opens fully when she stops.
-    const open = this.mouth?.speaking || input.duringPlayback || this.bargePending
+    const open = this.mouth.speaking || input.duringPlayback || this.bargePending
     const followUpUntil = open ? Number.MAX_SAFE_INTEGER : this.followUpUntil
     const g = gate(input, { followUpUntil }, now, {
       extra: this.config.wake.words,
@@ -504,7 +419,6 @@ export class Vera extends EventEmitter {
     const wasBarge = this.bargePending
     this.bargePending = false
     this.lastHeard = input.text
-    this.emit("heard", { text: input.text, gate: g })
     switch (g.action) {
       case "ignore":
         this.log(`ignored (${g.reason}): ${input.text}`)
@@ -513,7 +427,7 @@ export class Vera extends EventEmitter {
       case "wake":
         this.lastActiveAt = now
         this.openFollowUp()
-        void this.chime("listening")
+        this.chime("listening")
         this.changed()
         return g
       case "stop":
@@ -591,10 +505,7 @@ export class Vera extends EventEmitter {
     this.log(
       `turn ${rec.id} done in ${rec.durationMs} ms (first speak ${rec.firstSpeakMs ?? "-"} ms; tools ${rec.tools.join(", ") || "none"})${result.error ? " error: " + result.error : ""}`,
     )
-    if (!result.ok && !result.interrupted) {
-      void this.chime("error")
-      if (this.mode === "standalone") this.addCard("Brain error", "```\n" + (result.error ?? "unknown") + "\n```")
-    }
+    if (!result.ok && !result.interrupted) this.chime("error")
     this.current = null
     this.turnWaiters.get(rec.id)?.(rec)
     this.turnWaiters.delete(rec.id)
@@ -645,16 +556,15 @@ export class Vera extends EventEmitter {
     this.bargePending = false
     this.interruption = null
     if (this.current) this.current.muted = true
-    this.mouth?.stop()
+    this.mouth.stop()
     this.followUpUntil = 0
     void this.brain?.interrupt()
     this.changed()
   }
 
-  /** Talk button / bare wake word: next utterance needs no wake word. */
+  /** Bare wake word, or Vera stopped speaking: the next utterance needs no wake word. */
   openFollowUp(seconds = this.config.wake.followUpSeconds) {
     this.followUpUntil = Date.now() + seconds * 1000
-    if (!this.earsHolds.size && !this.resumeTimer) this.ears?.resume()
     if (this.followUpTimer) clearTimeout(this.followUpTimer)
     this.followUpTimer = setTimeout(() => this.changed(), seconds * 1000 + 20)
     this.followUpTimer.unref()
@@ -677,126 +587,48 @@ export class Vera extends EventEmitter {
       }
       rec.spoken.push(text)
     }
-    this.speakingText += " " + text
     this.lines.push({ who: "vera", text, at: Date.now() })
     this.trimLines()
-    this.emit("said", text)
     this.changed()
-    if (this.appMouth) {
-      const item = this.appMouth.say(text, rec?.id)
-      if (rec) {
-        const list = this.speechByTurn.get(rec.id) ?? []
-        list.push(item)
-        this.speechByTurn.set(rec.id, list)
-        if (this.speechByTurn.size > 20) this.speechByTurn.delete(this.speechByTurn.keys().next().value!)
-      }
-    } else {
-      this.mouth.speak(text).catch((err) => this.log(`mouth failed: ${err.message}`))
+    const item = this.mouth.say(text, rec?.id)
+    if (rec) {
+      const list = this.speechByTurn.get(rec.id) ?? []
+      list.push(item)
+      this.speechByTurn.set(rec.id, list)
+      if (this.speechByTurn.size > 20) this.speechByTurn.delete(this.speechByTurn.keys().next().value!)
     }
     return true
   }
 
-  private onSpeechStart(_item?: SpeechItem) {
+  private onSpeechStart() {
     const rec = this.awaitingAudio
     if (rec?.heardEndAt) {
       rec.endToAudioMs = Date.now() - rec.heardEndAt
       this.log(`turn ${rec.id}: end of speech -> first audio ${rec.endToAudioMs} ms`)
     }
     this.awaitingAudio = null
-    // Standalone barge-in keeps Ears listening (only for "Vera, stop"); otherwise they're paused.
-    if (this.mode === "standalone") this.holdEars("speaking", !this.config.ears.bargeIn)
     this.changed()
   }
 
   private onSpeechEnd() {
     this.lastActiveAt = Date.now()
-    if (this.mode === "stdio") {
-      this.speakingText = ""
-      // Talked over: the barge-in window is already open; otherwise the follow-up opens now.
-      if (!this.bargePending) this.openFollowUp()
-    } else {
-      this.releaseEars("speaking", this.config.ears.tailMs, () => {
-        this.speakingText = ""
-        this.openFollowUp()
-      })
-    }
+    // Talked over: the barge-in window is already open; otherwise the follow-up opens now.
+    if (!this.bargePending) this.openFollowUp()
     this.changed()
   }
 
-  /**
-   * Half-duplex (standalone). Each reason pauses Ears (or with `pause` false,
-   * only marks the time as deaf so finals from it are dropped); the last
-   * release resumes them after `tailMs`, then runs `then`.
-   */
-  private holdEars(reason: string, pause = true) {
-    if (!this.earsHolds.size && !this.resumeTimer) this.deafFrom = Date.now()
-    this.deafUntil = 0
-    this.earsHolds.add(reason)
-    if (this.resumeTimer) clearTimeout(this.resumeTimer)
-    this.resumeTimer = null
-    if (pause) this.ears?.pause()
-  }
-
-  private releaseEars(reason: string, tailMs: number, then?: () => void) {
-    this.earsHolds.delete(reason)
-    if (this.earsHolds.size) return
-    if (this.resumeTimer) clearTimeout(this.resumeTimer)
-    this.resumeTimer = setTimeout(() => {
-      this.resumeTimer = null
-      if (this.earsHolds.size) return
-      this.deafUntil = Date.now()
-      if (this.ears && !this.ears.isPaused && this.config.ears.bargeIn) {
-        // Listened through Vera's speech: drop whatever echo utterance is open so the next one starts clean.
-        this.ears.pause()
-      }
-      this.ears?.resume()
-      then?.()
-      this.changed()
-    }, tailMs)
-  }
-
-  /**
-   * Speech from `t` (to `end`) overlaps a deaf stretch: Vera talking or
-   * chiming, plus the tail. With barge-in, Ears keep listening, so a
-   * transcript that began just before Vera started is her echo too.
-   */
-  private isDeaf(t: number, end = t): boolean {
-    if (!this.deafFrom || end < this.deafFrom) return false
-    return this.earsHolds.size > 0 || !!this.resumeTimer || t <= this.deafUntil
-  }
-
-  /** Standalone, while Vera talks with barge-in on: did Shawn say "Vera, stop"? Stops her if so. */
-  private bargeInHeard(text: string): boolean {
-    if (!this.config.ears.bargeIn || !this.earsHolds.has("speaking")) return false
-    const hit = findBargeIn(text, this.speakingText, this.config.wake.words)
-    if (!hit) return false
-    this.stop(`barge-in, heard "${text}"`)
-    return true
-  }
-
-  /**
-   * Play a chime. Standalone pauses Ears around it so it isn't heard as
-   * speech. An inbox ping while Shawn is mid-sentence waits until he's done.
-   */
-  async chime(kind: ChimeKind): Promise<void> {
-    if (kind === "notify" && this.inSpeech && (this.mode === "stdio" || !this.isDeaf(Date.now()))) {
+  /** Play a chime (the App plays it). An inbox ping while Shawn is mid-sentence waits until he's done. */
+  chime(kind: ChimeKind): void {
+    if (kind === "notify" && this.inSpeech) {
       if (!this.deferredChimes.includes(kind)) this.deferredChimes.push(kind)
       this.log("chime notify waits until Shawn finishes speaking")
       return
     }
-    if (this.mode === "stdio") return this.mouth?.chime(kind)
-    this.holdEars("chime")
-    try {
-      await this.mouth.chime(kind)
-    } catch (err) {
-      this.log(`chime failed: ${(err as Error).message}`)
-    } finally {
-      this.releaseEars("chime", this.config.ears.chimeTailMs)
-    }
+    this.mouth.chime(kind)
   }
 
   private flushChimes() {
-    for (const kind of this.deferredChimes.splice(0)) void this.chime(kind)
+    for (const kind of this.deferredChimes.splice(0)) this.chime(kind)
   }
 
   // ---- volume ---------------------------------------------------------------
@@ -817,7 +649,7 @@ export class Vera extends EventEmitter {
 
   /** The App reported its volume (it owns it): remember it, don't echo it back. */
   private adoptVolume(level: number) {
-    this.volume = clamp01(level)
+    this.volume = round2(clamp01(level))
     this.saveState()
   }
 
@@ -826,13 +658,16 @@ export class Vera extends EventEmitter {
     const from = this.volume
     let to: number
     if (typeof change.level === "number" && Number.isFinite(change.level)) {
-      to = change.level > 1 ? change.level / 100 : change.level // "set it to 30" means 30%
+      to = clamp01(change.level > 1 ? change.level / 100 : change.level) // "set it to 30" means 30%
     } else if (change.relative === "quieter" || change.relative === "louder") {
-      const f = change.a_lot ? 2 : 1.4
-      to = change.relative === "quieter" ? from / f : from * f
-      to = Math.max(0.05, to)
+      const step = change.a_lot ? VOLUME_BIG_STEP : VOLUME_STEP
+      // Within [0.1, 1], and never the wrong way (quieter from below 0.1 stays put).
+      to =
+        change.relative === "quieter"
+          ? Math.min(from, Math.max(VOLUME_MIN_STEPPED, from - step))
+          : Math.max(from, Math.min(1, from + step))
     } else throw new Error("give level (0-1) or relative: quieter | louder")
-    to = Math.round(clamp01(to) * 100) / 100
+    to = round2(to)
     this.volume = to
     this.saveState()
     this.send({ cmd: "set_volume", level: to })
@@ -845,7 +680,7 @@ export class Vera extends EventEmitter {
   notify(item: { kind: "job" | "t3" | "system"; title: string; summary: string; ref?: string }) {
     this.inbox.add(item)
     this.log(`inbox: ${item.title}`)
-    if (this.mouth) void this.chime("notify")
+    this.chime("notify")
   }
 
   markJobSync(id: string) {
@@ -903,17 +738,16 @@ export class Vera extends EventEmitter {
     return `${harness} ${s.model ?? "default"}/${s.effort ?? "default"}`
   }
 
-  // ---- state: HUD, badge, panel ---------------------------------------------
+  // ---- state: HUD, badge, snapshot ------------------------------------------
 
   status(): HudState {
     const now = Date.now()
-    if (this.mouth?.speaking) return "speaking"
+    if (this.mouth.speaking) return "speaking"
     if (this.micMuted) return this.current ? "thinking" : this.backgroundBusy() ? "working" : "idle"
     // Shawn is talking to Vera (after the wake word, in the window, or over her).
     if (this.bargePending || (this.inSpeech && this.speechEngaged)) return "listening"
-    if (this.current || this.queue.length || this.appMouth?.pendingStart) return "thinking"
+    if (this.current || this.queue.length || this.mouth.pendingStart) return "thinking"
     if (this.followUpUntil > now) return "listening"
-    if (this.mode === "standalone" && this.partial && this.ears && !this.ears.isPaused) return "listening"
     if (this.backgroundBusy()) return "working"
     return "idle"
   }
@@ -932,18 +766,16 @@ export class Vera extends EventEmitter {
     this.send({ cmd: "badge", count: n })
   }
 
+  /** GET /api/state (debug and tests). */
   snapshot() {
     const lastSaid = [...this.lines].reverse().find((l) => l.who === "vera")?.text ?? ""
     return {
-      mode: this.mode,
       status: this.status(),
       hud: this.hud,
       volume: this.volume,
       micMuted: this.micMuted,
       badge: this.inbox.unread().length,
       brain: this.brain?.label ?? `${this.config.brain.harness} (starting)`,
-      mouth: this.mouthName,
-      ears: this.earsState,
       lastHeard: this.lastHeard,
       partial: this.partial,
       lastSaid,
@@ -984,16 +816,14 @@ export class Vera extends EventEmitter {
 
   private changeTimer: NodeJS.Timeout | null = null
   changed() {
-    if (this.link) {
-      // The HUD and badge follow state at once; the panel snapshot is debounced.
-      this.syncHud()
-      this.syncBadge()
-    }
+    // The HUD and badge follow state at once, and the HUD is checked again
+    // shortly after, for state that settles right after a change.
+    this.syncHud()
+    this.syncBadge()
     if (this.changeTimer) return
     this.changeTimer = setTimeout(() => {
       this.changeTimer = null
-      if (this.link) this.syncHud()
-      this.emit("state", this.snapshot())
+      this.syncHud()
     }, 30)
   }
 
@@ -1004,12 +834,17 @@ export class Vera extends EventEmitter {
   async close() {
     this.watcher.stop()
     this.jobs.shutdown()
-    await Promise.allSettled([this.brain?.close(), this.ears?.close(), this.mouth?.close()])
+    this.mouth.close()
+    await this.brain?.close().catch(() => {})
   }
 }
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n))
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
 }
 
 /** Roughly what Shawn heard of a sentence cut after `playedMs` (speech runs about 15 characters a second). */

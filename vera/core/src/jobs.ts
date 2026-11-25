@@ -20,7 +20,7 @@ export interface Job {
   error?: string
   /** Harness session id, so a later job could resume it. */
   sessionId?: string
-  /** Latest progress line for the panel. */
+  /** Latest progress line (job_status, /api/state). */
   progress?: string
   transcript: string
 }

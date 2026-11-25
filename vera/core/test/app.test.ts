@@ -79,6 +79,26 @@ test("stop() sends stop_speaking once and ignores the App's late interrupted", a
   assert.deepEqual(events, ["start", "end"])
 })
 
+test("playback failed ends that item (not an interruption) and sends the next", async () => {
+  const { sent, mouth, events } = setup()
+  const a = mouth.say("One.")
+  const b = mouth.say("Two.")
+  mouth.onPlayback(a.id, "failed")
+  assert.equal(a.state, "failed")
+  assert.deepEqual(
+    sent.map((c) => c.cmd),
+    ["speak", "speak"],
+    "no stop_speaking, and the next item goes out",
+  )
+  assert.equal((sent[1] as any).speak_id, b.id)
+  mouth.onPlayback(b.id, "started")
+  mouth.onPlayback(b.id, "failed") // it can also fail part-way
+  await tick()
+  assert.equal(b.state, "failed")
+  assert.deepEqual(events, ["start", "end"])
+  assert.equal(mouth.speaking, false)
+})
+
 test("a speak the App never starts is skipped after the timeout", async () => {
   const { sent, mouth } = setup()
   const a = mouth.say("One.")

@@ -104,7 +104,8 @@ def main(argv=None):
     say = sub._name_parser_map["say"]
     say.add_argument("text")
     say.add_argument("--out", help="write a WAV instead of playing it")
-    say.add_argument("--volume", type=float, default=0.35, help="playback gain (0-1) when playing")
+    say.add_argument("--volume", type=float, default=0.7,
+                     help="Vera's volume when playing, on the App's scale: 0-1, 40*(v-1) dB (0.7 = -12 dB)")
     args = ap.parse_args(argv)
     _logging(args.cmd != "serve")
 
@@ -138,7 +139,8 @@ def main(argv=None):
             sf.write(args.out, pcm, 24000)
         else:
             import sounddevice as sd
-            sd.play(pcm * args.volume, 24000)
+            gain = 0.0 if args.volume <= 0 else 10 ** (40 * (min(args.volume, 1.0) - 1) / 20)
+            sd.play(pcm * gain, 24000)
             sd.wait()
 
 

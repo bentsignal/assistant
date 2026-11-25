@@ -6,14 +6,14 @@ export interface InboxItem {
   id: string
   kind: InboxKind
   title: string
-  /** Short text for the panel and the digest. */
+  /** Short text for the digest. */
   summary: string
   /** Job id or T3 thread id this is about. */
   ref?: string
   createdAt: number
   /** Shown to the brain in a turn digest. */
   delivered: boolean
-  /** Shawn has heard/seen it (brain read it out, or he dismissed it on the panel). */
+  /** Shawn has heard/seen it (the brain read it out). */
   read: boolean
 }
 

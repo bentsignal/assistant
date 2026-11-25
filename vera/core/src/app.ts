@@ -1,15 +1,16 @@
 import { EventEmitter } from "node:events"
 import type { Readable, Writable } from "node:stream"
-import type { ChimeKind, Mouth } from "./mouth.ts"
 import { onLines } from "./proc.ts"
 
 /**
  * The App ⇄ Core stdio protocol (VERA.md): JSON lines, app events on stdin,
- * core commands on stdout. Nothing else may ever be written to stdout in
- * `--stdio` mode; logs go to stderr.
+ * core commands on stdout. Nothing else may ever be written to stdout; logs
+ * go to stderr.
  */
 export type HudState = "idle" | "listening" | "thinking" | "speaking" | "working"
-export type PlaybackState = "started" | "finished" | "interrupted"
+/** `failed`: the voice service couldn't synthesize it (the App plays its own error chime). */
+export type PlaybackState = "started" | "finished" | "interrupted" | "failed"
+export type ChimeKind = "notify" | "listening" | "done" | "error"
 export type UiAction = "stop_talking" | "mute" | "unmute" | "settings_changed" | "card_closed"
 
 export type AppEvent =
@@ -17,7 +18,7 @@ export type AppEvent =
   | { type: "speech_start"; t?: number }
   | { type: "partial"; text: string; t?: number }
   | { type: "final"; text: string; start?: number; end?: number; during_playback?: boolean }
-  | { type: "speech_cancel"; reason?: string }
+  | { type: "speech_cancel"; reason?: string; t?: number }
   | { type: "barge_in"; speak_id?: string }
   | { type: "playback"; speak_id: string; state: PlaybackState }
   | { type: "ui"; action: UiAction; card_id?: string; volume?: number }
@@ -120,9 +121,10 @@ export interface AppMouthOptions {
  * item's end), with a short grace so two speak calls in a row are one
  * stretch. Any `interrupted` Core didn't ask for (barge-in, the App's own
  * stop) ends the stretch and drops what's queued: the App stopped Vera for a
- * reason, and sending the next sentence would talk over Shawn.
+ * reason, and sending the next sentence would talk over Shawn. A `failed`
+ * item just ends (the voice service couldn't say it), and the next is sent.
  */
-export class AppMouth implements Mouth {
+export class AppMouth {
   speaking = false
   private ev = new EventEmitter()
   private queue: Internal[] = []
@@ -152,7 +154,7 @@ export class AppMouth implements Mouth {
     this.ev.emit(event, arg)
   }
 
-  /** Queue a sentence. Resolves when it was played, cut, dropped, or failed. */
+  /** Queue a sentence. Its `done` resolves when it was played, cut, dropped, or failed. */
   say(text: string, turnId?: number): SpeechItem {
     let resolve!: (i: SpeechItem) => void
     const done = new Promise<SpeechItem>((r) => (resolve = r))
@@ -162,10 +164,6 @@ export class AppMouth implements Mouth {
     this.queue.push(item)
     this.pump()
     return item
-  }
-
-  async speak(text: string): Promise<void> {
-    await this.say(text).done
   }
 
   get(id: string): SpeechItem | undefined {
@@ -228,6 +226,10 @@ export class AppMouth implements Mouth {
     }
     if (item.state !== "sent" && item.state !== "playing") return
     if (state === "finished") return this.end(item, "done")
+    if (state === "failed") {
+      this.log(`speech ${item.id}: the App couldn't play it; going on`)
+      return this.end(item, "failed")
+    }
     // interrupted
     if (this.stopping) return this.end(item, "cut")
     this.log(`speech ${item.id} interrupted by the App`)
@@ -292,11 +294,11 @@ export class AppMouth implements Mouth {
     this.cut(true)
   }
 
-  async chime(kind: ChimeKind) {
+  chime(kind: ChimeKind) {
     this.link.send({ cmd: "chime", kind })
   }
 
-  async close() {
+  close() {
     this.cut(false)
   }
 }

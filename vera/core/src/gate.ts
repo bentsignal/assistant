@@ -5,7 +5,7 @@
  *  - it contains the wake word ("Vera", fuzzy) within the first few words or
  *    as a trailing vocative ("..., Vera?"), or anywhere else in the sentence; or
  *  - it started inside the follow-up window (after Vera stopped speaking); or
- *  - it is direct (panel text box, API with direct:true).
+ *  - it is direct (the debug hook with direct:true).
  *
  * Leading wake words and fillers ("hey", "okay") are stripped from the text the
  * brain sees. A bare "Vera" opens the follow-up window without a turn. Stop
@@ -213,30 +213,4 @@ export function gate(
   if (!text) return { action: "wake", text: "" }
   if (isStopPhrase(text)) return { action: "stop", text }
   return { action: "turn", text, via }
-}
-
-/** What counts as "stop" right after the wake word when barging in. */
-const BARGE_STOPS = ["stop", "be quiet", "quiet", "shush", "hush", "shut up", "enough", "cancel", "never mind", "nevermind", "pause", "wait"]
-
-/**
- * Barge-in: does a transcript heard while Vera is talking hold the wake word
- * followed by a stop ("Vera, stop", "Vera be quiet") that isn't in what Vera
- * herself is saying (her own voice reaching the microphone)? Only the strict
- * wake word counts, never the soft ones. Returns the matched phrase or null.
- */
-export function findBargeIn(heard: string, spoken: string, extra: string[] = []): string | null {
-  const words = normalizePhrase(heard).split(" ").filter(Boolean)
-  const said = ` ${normalizePhrase(spoken)} `
-  for (let i = 0; i < words.length; i++) {
-    if (!isWakeWord(words[i], extra)) continue
-    let j = i + 1
-    while (j < words.length && j <= i + 2 && FILLERS.has(words[j])) j++
-    const rest = words.slice(j, j + 2).join(" ")
-    const stop = BARGE_STOPS.find((p) => rest === p || rest.startsWith(p + " "))
-    if (!stop) continue
-    const phrase = `${words[i]} ${stop}`
-    if (said.includes(` ${phrase} `) || said.includes(` ${stop} `)) continue
-    return phrase
-  }
-  return null
 }

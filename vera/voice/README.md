@@ -3,7 +3,7 @@
 Vera v2's voice: a local TTS service that implements the **Voice service contract**
 in [`VERA.md`](../../VERA.md). It streams calm, natural speech as f32 PCM over HTTP
 on `127.0.0.1`, with a gentle plate reverb and a faint synthetic sheen. The App owns
-volume. It replaces `vera/mouth` (v1), which is still there for reference.
+volume. It replaced `vera/mouth` (v1), which has been removed.
 
 **Default: Qwen3-TTS 1.7B on the GPU, voice `isla`, preset `vera`.** About 220 ms to
 first audio, UTMOSv2 3.99, Whisper WER 0%, −20 LUFS, peaks under −3 dBFS.
@@ -37,7 +37,7 @@ Command line (from a terminal):
 
 ```powershell
 $py = "$HOME\.vera\voice\venv\Scripts\python.exe"
-& $py -m vera_voice say "On it. I'll ping you when it's done." [--voice isla] [--preset vera] [--out x.wav] [--volume 0.35]
+& $py -m vera_voice say "On it. I'll ping you when it's done." [--voice isla] [--preset vera] [--out x.wav] [--volume 0.7]
 & $py -m vera_voice voices
 & $py -m vera_voice calibrate                  # re-measure loudness gains (normally automatic)
 & $py vera\voice\scripts\test_service.py [--voice eli] [--play]   # against a running service

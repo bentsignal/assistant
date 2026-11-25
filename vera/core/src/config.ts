@@ -5,10 +5,6 @@ import { fileURLToPath } from "node:url"
 
 /** Root of the @vera/core package (vera/core). */
 export const CORE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-/** Root of the vera/ pnpm workspace. */
-export const WORKSPACE_DIR = resolve(CORE_DIR, "..")
-/** Root of the vera-voice repo (the Hex fork that builds Ears). */
-export const REPO_DIR = resolve(WORKSPACE_DIR, "..")
 
 /** ~/.vera, or $VERA_HOME (tests and benches point this elsewhere). */
 export function veraHome(): string {
@@ -43,14 +39,11 @@ export const paths = {
   get brainDir() {
     return join(veraHome(), "brain")
   },
-  get sounds() {
-    return join(veraHome(), "sounds")
-  },
   /** Core's small runtime state (Vera's last volume). */
   get state() {
     return join(veraHome(), "core-state.json")
   },
-  /** Written at startup in --stdio mode: {pid, port, url} of the debug/tool HTTP hook. */
+  /** Written at startup: {pid, port, url} of the loopback HTTP server (tool calls, debug hook). */
   get runtime() {
     return join(veraHome(), "core-runtime.json")
   },
@@ -67,6 +60,7 @@ export interface BrainSettings {
 }
 
 export interface VeraConfig {
+  /** Loopback HTTP port to try first (the brain's tool calls, the debug hook); a free one if it's taken. */
   port: number
   brain: {
     harness: BrainHarness
@@ -88,31 +82,6 @@ export interface VeraConfig {
     /** How many leading words may come before the wake word ("hey", "okay"). */
     maxLeadingWords: number
   }
-  ears: {
-    /**
-     * argv of the Ears process; "auto" (default) runs this repo's
-     * target/release/hex.exe (else target/ears-dev/hex.exe) with `ears`;
-     * null for none (text box and API only).
-     */
-    command: "auto" | string[] | null
-    /** Extra flags for the auto command, e.g. ["--device", "Headset"]. */
-    args: string[]
-    cwd?: string
-    /** Milliseconds Ears stay paused after Mouth stops, so Vera doesn't hear its own tail. */
-    tailMs: number
-    /** Milliseconds Ears stay paused after a chime. */
-    chimeTailMs: number
-    /**
-     * Keep listening while Vera speaks, but only for "Vera, stop" (and other
-     * stop phrases after the wake word) that Vera isn't saying herself.
-     */
-    bargeIn: boolean
-  }
-  mouth: {
-    /** "auto" tries @vera/mouth then falls back to "sapi"; "stub" only logs; "sapi" speaks with Windows SAPI. */
-    module: "auto" | "@vera/mouth" | "sapi" | "stub"
-    options?: Record<string, unknown>
-  }
   jobs: {
     /** Default working directory for ask_* jobs. */
     defaultCwd: string
@@ -128,7 +97,10 @@ export interface VeraConfig {
     pollSeconds: number
   }
   voice: {
-    /** Vera's own output volume (0-1) until the App or Shawn sets one. */
+    /**
+     * Vera's own output level until the App reports one: 0-1 on the App's
+     * scale, where v is 40 × (v − 1) dB (1 = the voice service's level).
+     */
     defaultVolume: number
   }
 }
@@ -144,8 +116,6 @@ export const DEFAULT_CONFIG: VeraConfig = {
     script: {},
   },
   wake: { words: [], soft: true, warmSeconds: 120, followUpSeconds: 8, maxLeadingWords: 3 },
-  ears: { command: "auto", args: [], tailMs: 300, chimeTailMs: 150, bargeIn: true },
-  mouth: { module: "auto" },
   jobs: {
     defaultCwd: "D:\\dev",
     waitTimeoutSeconds: 90,
@@ -154,7 +124,7 @@ export const DEFAULT_CONFIG: VeraConfig = {
     grok: {},
   },
   t3: { pollSeconds: 10 },
-  voice: { defaultVolume: 0.35 },
+  voice: { defaultVolume: 0.7 },
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -172,7 +142,7 @@ export function merge<T>(base: T, over: unknown): T {
 }
 
 export function ensureHome(): void {
-  for (const d of [paths.home, paths.promptHistory, paths.jobs, paths.logs, paths.brainDir, paths.sounds]) {
+  for (const d of [paths.home, paths.promptHistory, paths.jobs, paths.logs, paths.brainDir]) {
     mkdirSync(d, { recursive: true })
   }
   if (!existsSync(paths.systemPrompt)) copyFileSync(paths.seedPrompt, paths.systemPrompt)
@@ -202,29 +172,4 @@ export function saveConfigPatch(patch: unknown): VeraConfig {
   mkdirSync(dirname(paths.config), { recursive: true })
   writeFileSync(paths.config, JSON.stringify(next, null, 2) + "\n")
   return merge(DEFAULT_CONFIG, next)
-}
-
-/** Ears executables auto mode looks for, best first. */
-export function earsCandidates(): string[] {
-  const exe = process.platform === "win32" ? "hex.exe" : "hex"
-  return [join(REPO_DIR, "target", "release", exe), join(REPO_DIR, "target", "ears-dev", exe)]
-}
-
-/** Resolve config.ears into an argv, or null with the reason. */
-export function resolveEarsCommand(ears: VeraConfig["ears"]): { argv: string[] | null; note: string } {
-  if (ears.command === null || (Array.isArray(ears.command) && ears.command.length === 0)) {
-    return { argv: null, note: "ears off (ears.command is null): panel and API only" }
-  }
-  if (Array.isArray(ears.command)) return { argv: ears.command, note: `ears: ${ears.command.join(" ")}` }
-  const found = earsCandidates().find((p) => existsSync(p))
-  if (!found) {
-    return {
-      argv: null,
-      note:
-        `ears off: no ${earsCandidates()[0]} yet. Build it once from Git Bash in the repo root:\n` +
-        `    sh scripts/vera-ears-build.sh\n` +
-        `  (about 4 minutes; then restart Vera). Until then use the panel's text box.`,
-    }
-  }
-  return { argv: [found, "ears", ...(ears.args ?? [])], note: `ears: ${found} ears ${(ears.args ?? []).join(" ")}`.trim() }
 }

@@ -1,5 +1,5 @@
 /**
- * A fake Vera App: spawns Core in `--stdio` mode (hidden, the way vera.exe
+ * A fake Vera App: spawns Core with `--stdio` (hidden, the way vera.exe
  * does), plays scripted app events, and records every core command. Used by
  * test/protocol.test.ts, and runnable by hand against a real brain:
  *
@@ -129,7 +129,7 @@ export class FakeApp {
     this.playing.set(id, { text, timers })
   }
 
-  endPlayback(id: string, state: "finished" | "interrupted") {
+  endPlayback(id: string, state: "finished" | "interrupted" | "failed") {
     const p = this.playing.get(id)
     if (!p) return
     p.timers.forEach(clearTimeout)
