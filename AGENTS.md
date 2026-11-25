@@ -3,7 +3,8 @@
 
 This repo is **vera-voice**, Shawn's fork of Hex that becomes **Vera**: a
 hands-free voice front end for coding agents. Read [`VERA.md`](VERA.md) for
-the design and the contracts between Ears, Mouth, and Core.
+the design and the contracts between the App (`vera.exe`), Core, and the
+voice service ([`docs/vera-app.md`](docs/vera-app.md) for the app).
 
 These rules override the upstream Hex guide below:
 
@@ -13,8 +14,10 @@ These rules override the upstream Hex guide below:
   regeneration requirement. Keep Hex's own dictation working. Don't break it
   for no reason.
 - Development machine is **Windows 11 x64**. Build and test here.
-- Vera TypeScript lives in `vera/` (a pnpm workspace on Node 22). Hex's Rust
-  code is used for speech to text (Ears).
+- Vera's app is `vera.exe`, a second binary of this crate (`src/vera.rs`,
+  `src/vera/`, `src/rune_ui/vera/`; `scripts/vera-app-build.sh`). Core is
+  TypeScript in `vera/core` (a pnpm workspace on Node 22); the voice service
+  is Python in `vera/voice`.
 - Never commit secrets or anything from `~/.vera/`.
 - Don't push to the upstream remote.
 

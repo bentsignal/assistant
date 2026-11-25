@@ -3,66 +3,63 @@
 This fork is **Vera**, a hands-free voice front end for coding agents (design:
 [`VERA.md`](VERA.md)). Hex's own README follows below.
 
-**Run it** (Windows, from this repo):
-
-```sh
-cd vera
-pnpm start
-```
-
-That starts the daemon, opens the panel (http://127.0.0.1:7313) as an Edge
-app window, and listens on the default microphone. One-time setup is
-already done on this machine. On a fresh one:
-
-```sh
-sh scripts/vera-ears-build.sh            # Git Bash, ~4 min: builds target/release/hex.exe (Ears)
-cd vera && pnpm install
-pnpm --filter @vera/mouth run setup      # Vera's voice (~350 MB) to ~/.vera/models; needs ffplay (scoop install ffmpeg)
-claude auth login                        # if the brain says it isn't signed in
-```
-
-Ears needs the installed Hex's speech models (`%LOCALAPPDATA%\hex\models`).
-If `target/release/hex.exe` is missing, `pnpm start` says how to build it and
-runs with the panel's text box only.
+**It's already running.** Vera lives in the tray (the ^ overflow: a white
+nested triangle, with a blue dot when something new arrived), starts at
+login, and shows nothing else until you talk to her: a small HUD at the
+bottom of the screen while she listens, thinks, or speaks, and a card at the
+top right when she has something to show you. Left-click the tray
+icon for Settings; right-click for Mute microphone, Stop talking, and Quit.
 
 **Things to say**
 
-- "Vera, what time is it?" then, within 8 s of her answer and without "Vera":
-  "And what day is it?"
-- "Hey Vera, give me a fun fact about tomatoes." then "Vera, stop." while
-  she talks (works with a headset; over speakers use the panel's Stop or Esc)
-- "Vera." alone: a chime, then say the request without the wake word
-- "Vera, ask Claude to ..." / "ask Codex to ..." for background work: a chime
-  when it's done, then "Vera, what's new?"
+- "Vera, what time is it?" then, within 8 s of her answer and without
+  "Vera": "And what day is it?"
+- Talk over her at any time ("Wait, …", "Stop"): she ducks at once and stops
+  within about half a second, then hears the rest as your next turn. "Stop"
+  or "never mind" on its own just ends it. `Ctrl+Alt+Space` or the tray's
+  Stop talking also stop her.
+- "Vera, you're too loud" / "speak up": her own volume, never the
+  computer's (also the Volume slider in Settings).
+- "Vera, show me …" opens a card; "close that" closes it.
+- "Vera, ask Claude to …" / "ask Codex to …" for background work: a chime
+  and a tray badge when it's done, then "Vera, what's new?"
 - "Vera, what are my T3 threads doing?", "Vera, start a T3 thread in hex
-  to ..."
-- "Vera, never mind" / "Vera, stop" ends a turn
+  to …"
+- "Vera, switch to Codex" (or "… to Claude"), or pick the agent in Settings.
 
-**Switch brains:** say "Vera, switch to Codex" (or "... to Claude"), or set
-`brain.harness` to `"codex"` or `"claude-code"` in `~/.vera/config.json`.
-Default: Claude Code, Sonnet, low effort.
+**Settings** (left-click the tray icon): microphone (System default follows
+Windows' default input), wake-word strictness, voice (Isla by default; Nora,
+June, Eli), volume, agent and model, start at login, and Edit personality
+(her system prompt). Everything lives in `~/.vera/` (`config.json`, `logs/`).
 
-**Voice samples:** [`vera/mouth/samples/`](vera/mouth/samples/) (`preset-vera.mp3`
-is the voice she uses). Other voices and presets: [`vera/mouth/README.md`](vera/mouth/README.md).
+**Quit:** tray → Quit Vera, or `vera quit`. That stops Core, the brain, and
+the voice service (and frees its GPU memory). Start it again from
+`target\release\vera.exe` (or log in again).
 
-**Measured:** end of your speech to Vera's first sound is about 2 s for a
-short answer (0.7 s waiting to be sure you stopped, ~1 s brain, ~0.3 s voice),
-about 3 s for a long one. Test: `node vera/core/scripts/e2e/run.mjs` (see
-[`vera/core/README.md`](vera/core/README.md)).
+**Known limits**
 
-**Known limitations**
+- Vera hears the **Windows default microphone**. If it's muted at the device
+  (the CORSAIR headset was), Settings turns red and says "No sound from the
+  microphone"; unmute it or pick another one there.
+- Her voice takes about 20 s to load after launch (Settings says so); she
+  can't speak before that.
+- She can't be interrupted during her first second of speech after launch,
+  while the echo canceller learns the room. Very weak, late echo (the HDMI
+  monitor speakers) leaves the canceller unlocked; a headset is the most
+  reliable. Anyone talking in the room interrupts her.
+- About 2 s from the end of your sentence to her first word (0.7 s to be
+  sure you stopped, ~1 s brain, ~0.2 s voice).
+- The voice service holds about 5.5 GB of GPU memory while Vera runs.
+- A Claude Code sign-in expires now and then; run `claude auth login`.
+- Windows only.
 
-- "Vera, stop" while she talks only works when her voice doesn't reach the
-  microphone (a headset). Over speakers, Ears is deaf to you until she
-  finishes, plus 0.3 s.
-- A Claude Code sign-in expires around Dec 1 to 4; run `claude auth login`.
-- The follow-up window is 8 s after she stops; after that you need "Vera"
-  again. Misheard wake words like "Variable," / "Sarah," work only at the
-  start of a sentence; "Hey there," only within 2 minutes of her last reply.
-- Ears and the installed Hex each hold a copy of the speech model on the GPU
-  (about 0.7 GB each). Don't rebuild Ears while Vera is running (the exe is
-  locked).
-- Windows only for now.
+**Rebuilding:** quit Vera first (the exe is locked), then
+`sh scripts/vera-app-build.sh` (Git Bash). Setup on a fresh machine:
+`cd vera && pnpm install`, `vera\voice\scripts\setup.ps1`, and the installed
+Hex's speech models. Details: [`docs/vera-app.md`](docs/vera-app.md),
+[`docs/vera-audio.md`](docs/vera-audio.md),
+[`vera/core/README.md`](vera/core/README.md),
+[`vera/voice/README.md`](vera/voice/README.md).
 
 ---
 

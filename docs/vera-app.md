@@ -52,7 +52,8 @@ suspended, put in its own kill-on-close job object, then resumed, so nothing
 they start can escape. They restart after 1, 2, 5, 10, then 30 s (the count
 resets once a child has run a minute). Quitting closes Core's stdin, waits
 1.5 s, then closes the job; a crashed Vera's jobs close with it. Stderr goes
-to `~/.vera/logs/core.log` and `voice.log`; the app logs to
+to `~/.vera/logs/core.log` and `voice-service.log` (the services keep their
+own logs too: `core-<date>.log`, `voice.log`); the app logs to
 `~/.vera/logs/vera-app.log`.
 
 - **Core**: `app.core.command` if set (argv), else
@@ -60,12 +61,17 @@ to `~/.vera/logs/core.log` and `voice.log`; the app logs to
   `<repo>/vera/core` (`app.core.entry`, `app.core.args` adjust it). Node is
   found on PATH; Core's packages must be installed (`pnpm install` in
   `vera/`). Env: `VERA_APP=1`, `VERA_VOICE_URL`.
-- **Voice service**: `app.voiceService.command` if set, else the first of
-  `src/server.ts`, `src/main.ts`, `src/index.ts` in `<repo>/vera/voice`, with
-  `--port <app.voiceService.port>` (default 7314) and `VERA_VOICE_PORT`. The
-  app polls `GET /v1/health` and lists voices from `GET /v1/voices`
-  (`{"voices":[{"id","name"}]}`, a list of those, or a list of ids; health's
-  `voice` alone otherwise).
+- **Voice service** (`vera/voice`, Qwen3-TTS on the GPU):
+  `app.voiceService.command` if set, else
+  `~/.vera/voice/venv/Scripts/pythonw.exe -m vera_voice serve --port <port>
+  --parent-pid <vera.exe's pid>` in `<repo>/vera/voice` (so the repo's code
+  runs), port `app.voiceService.port` (default 7314). `pythonw` has no
+  console; `--parent-pid` makes it exit, freeing its ~5.5 GB of VRAM, the
+  moment Vera does. It needs `veraoice\scripts\setup.ps1` once. It's
+  ready about 20 s after launch; until then Settings says the voice is
+  loading and a `speak` fails (an error chime). The app polls
+  `GET /v1/health` and lists voices from `GET /v1/voices`, leaving out the
+  ones marked `available: false`.
 - The repo is `app.repo`, else `$VERA_REPO`, else the first folder above
   `vera.exe` with `vera/core/package.json`.
 
@@ -99,7 +105,7 @@ re-reading the file first so Core's keys survive: `brain.harness`
 
 ```json
 "app": {
-  "microphone": null, "volume": 0.35, "voice": null,
+  "microphone": null, "volume": 0.7, "voice": null,
   "startAtLogin": true, "stopHotkey": "Ctrl+Alt+Space", "hud": "bottom",
   "repo": null,
   "core": { "command": null, "entry": "vera/core/src/main.ts", "args": ["--stdio"] },
@@ -112,24 +118,26 @@ speaks), so overheard speech never shows there. "Edit personality…" opens
 `~/.vera/system-prompt.md` in the default editor (Notepad if none), seeding
 it from Core's prompt when missing.
 
-## Audio engine seam
+## Audio engine
 
-`src/vera/audio.rs` is a stub until `vera/duplex` lands; replace that one
-file. The app uses exactly:
+`src/vera/audio.rs` is the full-duplex engine (`docs/vera-audio.md`):
+WebRTC AEC3 against Vera's own playback, barge-in, Parakeet speech to text,
+and Vera's own volume. The runtime starts it with `app.microphone` (`null`
+follows the Windows default input live), `app.volume`, `app.voice`, and the
+voice service's URL (`http://127.0.0.1:<app.voiceService.port>`), and
+forwards its events to Core. `Ready` carries Vera's `volume` so Core's
+"quieter" starts from the real level; Settings' slider sends
+`settings_changed` with the new `volume`. A `playback` `failed` (the voice
+service couldn't speak) plays the error chime and goes to Core, which skips
+that line. Engine errors show in Settings' status line.
 
-```rust
-VeraAudio::start(AudioConfig { microphone, volume, mic_muted, voice_url, voice })
-    -> (VeraAudio, Receiver<AudioEvent>)
-.speak(speak_id, text) .stop_playback() .set_volume(f32) .set_mic_muted(bool)
-.chime(Chime) .levels() -> (mic_rms, out_rms)
-AudioEvent: Ready{mic, engine} | SpeechStart{t} | Partial{text, t}
-          | Final{text, start, end, during_playback} | SpeechCancel{reason}
-          | BargeIn{speak_id} | Playback{speak_id, state: Started|Finished|Interrupted}
-```
-
-A microphone or voice change in Settings drops the engine and starts a new
-one. `levels()` feeds the HUD about 30 times a second while it listens or
-speaks: linear RMS, the output before Vera's volume.
+A microphone that's open but sends only digital silence for 4 s (a headset
+muted at the device, a dead input) turns Settings' status red ("No sound from
+the microphone", naming it) and says so in the tray tooltip, until it hears
+sound again. A microphone or voice change in Settings drops the engine and
+starts a new one. `levels()` feeds the HUD about 30 times a second while it
+listens or speaks: the user's voice after echo cancellation, and Vera's
+output before her volume.
 
 ## HUD
 

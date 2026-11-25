@@ -85,14 +85,14 @@ also stop speech.
 app → core:
 
 ```json
-{"type":"ready","mic":"…","engine":"parakeet_unified_en"}
+{"type":"ready","mic":"…","engine":"parakeet_unified_en","volume":0.7}
 {"type":"speech_start","t":0}
 {"type":"partial","text":"vera can you","t":0}
 {"type":"final","text":"Vera, can you check on the hex thread?","start":0,"end":0,"during_playback":false}
-{"type":"speech_cancel","reason":"…"}
+{"type":"speech_cancel","t":0,"reason":"…"}
 {"type":"barge_in","speak_id":"s12"}
-{"type":"playback","speak_id":"s12","state":"started|finished|interrupted"}
-{"type":"ui","action":"stop_talking|mute|unmute|settings_changed|card_closed"}
+{"type":"playback","speak_id":"s12","state":"started|finished|interrupted|failed"}
+{"type":"ui","action":"stop_talking|mute|unmute|settings_changed|card_closed","card_id"?:"c3","volume"?:0.7}
 ```
 
 core → app:
@@ -104,11 +104,18 @@ core → app:
 {"cmd":"chime","kind":"notify|listening|done|error"}
 {"cmd":"show","card_id":"c3","title":"…","markdown":"…"}
 {"cmd":"hide","card_id":"c3"}
-{"cmd":"set_volume","level":0.35}
+{"cmd":"set_volume","level":0.55}
 {"cmd":"badge","count":2}
 ```
 
-Volume level is 0–1 and is Vera's own output gain; the app persists it.
+Volume level is 0–1 and is Vera's own output gain; the app owns and persists
+it (`app.volume`) and sends it to Core on `ready` and `settings_changed`. The
+scale is the audio engine's: level `v` is `40 × (v − 1)` dB under the voice
+service's own level, so each 0.1 is 4 dB and 0 is silent. The default, 0.7
+(−12 dB, about −32 LUFS), is roughly half as loud as v1. "Quieter" and
+"louder" are steps of 0.15 (6 dB), 0.3 with "a lot". `failed` means the voice
+service couldn't speak that line (the app chimes an error); Core treats it as
+done, not as an interruption.
 Logs go to stderr, and the app writes them to `~/.vera/logs/`. In
 `--stdio` mode Core runs no web panel; a debug HTTP hook
 (`POST /api/utterance`) may stay on localhost for tests.
