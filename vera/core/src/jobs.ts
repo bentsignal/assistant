@@ -1,6 +1,6 @@
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, type WriteStream } from "node:fs"
 import { join } from "node:path"
-import type { ChildProcess } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { killTree, onLines, spawnCli } from "./proc.ts"
 import type { BrainSettings } from "./config.ts"
 
@@ -197,10 +197,10 @@ export class Jobs {
     }
     this.jobs.set(id, job)
     const log = createWriteStream(job.transcript)
-    const child = spawnCli(spec.cli, spec.args(job, this.settings()[agent] ?? {}), {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-    })
+    const s = this.settings()[agent] ?? {}
+    const child = s.command?.length
+      ? spawn(s.command[0], s.command.slice(1), { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })
+      : spawnCli(spec.cli, spec.args(job, s), { cwd, stdio: ["pipe", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
     let lastEmit = 0

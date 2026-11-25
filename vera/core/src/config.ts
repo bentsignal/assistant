@@ -46,14 +46,24 @@ export const paths = {
   get sounds() {
     return join(veraHome(), "sounds")
   },
+  /** Core's small runtime state (Vera's last volume). */
+  get state() {
+    return join(veraHome(), "core-state.json")
+  },
+  /** Written at startup in --stdio mode: {pid, port, url} of the debug/tool HTTP hook. */
+  get runtime() {
+    return join(veraHome(), "core-runtime.json")
+  },
   seedPrompt: join(CORE_DIR, "prompts", "system.md"),
 }
 
-export type BrainHarness = "claude-code" | "codex" | "grok" | "gemini"
+export type BrainHarness = "claude-code" | "codex" | "grok" | "gemini" | "script"
 
 export interface BrainSettings {
   model?: string
   effort?: string
+  /** Jobs only: run this argv instead of the agent's CLI (tests use a fake agent). */
+  command?: string[]
 }
 
 export interface VeraConfig {
@@ -64,6 +74,7 @@ export interface VeraConfig {
     codex: BrainSettings
     grok: BrainSettings
     gemini: BrainSettings
+    script: BrainSettings
   }
   wake: {
     /** Extra exact words (lowercase) that count as the wake word, beside the built-in fuzzy match. */
@@ -116,10 +127,9 @@ export interface VeraConfig {
     cli?: string
     pollSeconds: number
   }
-  panel: {
-    /** Open the panel as a Chrome/Edge --app window on `pnpm start`. */
-    open: boolean
-    browser?: string
+  voice: {
+    /** Vera's own output volume (0-1) until the App or Shawn sets one. */
+    defaultVolume: number
   }
 }
 
@@ -131,6 +141,7 @@ export const DEFAULT_CONFIG: VeraConfig = {
     codex: { model: "gpt-6.2-sol", effort: "low" },
     grok: {},
     gemini: {},
+    script: {},
   },
   wake: { words: [], soft: true, warmSeconds: 120, followUpSeconds: 8, maxLeadingWords: 3 },
   ears: { command: "auto", args: [], tailMs: 300, chimeTailMs: 150, bargeIn: true },
@@ -143,7 +154,7 @@ export const DEFAULT_CONFIG: VeraConfig = {
     grok: {},
   },
   t3: { pollSeconds: 10 },
-  panel: { open: true },
+  voice: { defaultVolume: 0.35 },
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

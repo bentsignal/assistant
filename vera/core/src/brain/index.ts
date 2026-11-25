@@ -1,6 +1,7 @@
 import type { BrainHarness } from "../config.ts"
 import { ClaudeBrain } from "./claude.ts"
 import { CodexBrain } from "./codex.ts"
+import { ScriptBrain } from "./script.ts"
 import type { Brain, BrainFactory } from "./types.ts"
 
 export type { Brain, BrainOptions, TurnResult, McpLaunch } from "./types.ts"
@@ -15,10 +16,12 @@ export type { Brain, BrainOptions, TurnResult, McpLaunch } from "./types.ts"
 export const BRAINS: Partial<Record<BrainHarness, BrainFactory>> = {
   "claude-code": (o) => new ClaudeBrain(o),
   codex: (o) => new CodexBrain(o),
+  // Scripted stand-in for headless tests (src/brain/script.ts).
+  script: (o) => new ScriptBrain(o),
 }
 
 export function availableBrains(): BrainHarness[] {
-  return Object.keys(BRAINS) as BrainHarness[]
+  return (Object.keys(BRAINS) as BrainHarness[]).filter((b) => b !== "script")
 }
 
 export function createBrain(harness: BrainHarness, opts: Parameters<BrainFactory>[0]): Brain {

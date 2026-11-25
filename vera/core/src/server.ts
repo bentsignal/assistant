@@ -39,15 +39,36 @@ async function readBody(req: IncomingMessage, limit = 1_000_000): Promise<any> {
  * Vera's full-permission tools. /api/tool also needs the per-run token that
  * only the brain's MCP server gets.
  */
-export function startServer(vera: Vera): Promise<{ close: () => void; url: string }> {
-  const port = vera.config.port
-  const allowedOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`])
-  const originOk = (req: IncomingMessage) => !req.headers.origin || allowedOrigins.has(req.headers.origin)
+export interface ServerOptions {
+  /** Serve the v1 panel and its WebSocket (standalone mode only). */
+  panel?: boolean
+  /** Port to try first; 0 picks a free one. */
+  port?: number
+  /** If the port is taken, take a free one instead of failing (stdio mode: the App's Core must always start). */
+  fallback?: boolean
+}
+
+export async function startServer(vera: Vera, opts: ServerOptions = {}): Promise<{ close: () => void; url: string; port: number }> {
+  const want = opts.port ?? vera.config.port
+  try {
+    return await listen(vera, want, opts.panel ?? true)
+  } catch (err: any) {
+    if (err.code !== "EADDRINUSE" || !opts.fallback || want === 0) throw err
+    vera.log(`port ${want} is busy; using a free port`)
+    return listen(vera, 0, opts.panel ?? true)
+  }
+}
+
+function listen(vera: Vera, wantPort: number, panel: boolean): Promise<{ close: () => void; url: string; port: number }> {
+  let port = wantPort
+  const allowedOrigins = () => new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`])
+  const originOk = (req: IncomingMessage) => !req.headers.origin || allowedOrigins().has(req.headers.origin)
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`)
     try {
       if (req.method === "GET" && !url.pathname.startsWith("/api/")) {
+        if (!panel) return json(res, 404, { error: "no panel in --stdio mode" })
         const rel = url.pathname === "/" ? "index.html" : normalize(url.pathname).replace(/^[\\/]+/, "")
         if (rel.includes("..")) return json(res, 400, { error: "bad path" })
         try {
@@ -85,6 +106,7 @@ export function startServer(vera: Vera): Promise<{ close: () => void; url: strin
             text: body.text,
             direct: !!body.direct,
             start: typeof body.start === "number" ? body.start : undefined,
+            end: typeof body.end === "number" ? body.end : undefined,
             source: body.source === "panel" ? "panel" : "api",
           })
           // {wait:true}: answer once the turn ends (test hook and benchmarks).
@@ -127,7 +149,7 @@ export function startServer(vera: Vera): Promise<{ close: () => void; url: strin
   const wss = new WebSocketServer({ noServer: true })
   const clients = new Set<WebSocket>()
   server.on("upgrade", (req, socket, head) => {
-    if (!req.url?.startsWith("/ws") || !originOk(req)) return socket.destroy()
+    if (!panel || !req.url?.startsWith("/ws") || !originOk(req)) return socket.destroy()
     wss.handleUpgrade(req, socket, head, (ws) => {
       clients.add(ws)
       ws.send(JSON.stringify({ type: "state", state: vera.snapshot() }))
@@ -139,15 +161,19 @@ export function startServer(vera: Vera): Promise<{ close: () => void; url: strin
     const s = JSON.stringify(msg)
     for (const c of clients) if (c.readyState === c.OPEN) c.send(s)
   }
-  vera.on("state", (state) => broadcast({ type: "state", state }))
-  vera.on("log", (line) => broadcast({ type: "log", line }))
-  vera.on("said", (text) => broadcast({ type: "said", text }))
-  vera.on("heard", (e) => broadcast({ type: "heard", ...e }))
+  if (panel) {
+    vera.on("state", (state) => broadcast({ type: "state", state }))
+    vera.on("log", (line) => broadcast({ type: "log", line }))
+    vera.on("said", (text) => broadcast({ type: "said", text }))
+    vera.on("heard", (e) => broadcast({ type: "heard", ...e }))
+  }
 
   return new Promise((resolve, reject) => {
     server.once("error", reject)
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(wantPort, "127.0.0.1", () => {
+      port = (server.address() as { port: number }).port
       resolve({
+        port,
         url: `http://127.0.0.1:${port}`,
         close: () => {
           for (const c of clients) c.close()

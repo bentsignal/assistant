@@ -43,7 +43,7 @@ async function handle(msg: any) {
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: "vera", version: "0.1.0" },
           instructions:
-            "Vera's tools. Speak only with `speak`. Delegate real work: T3 threads for coding, ask_codex for computer use, ask_grok for X/Twitter, ask_claude for quick local file questions.",
+            "Vera's tools. Speak only with `speak`. Your own loudness is `set_volume`, never the computer's. Popups: `show` / `hide`. Delegate real work: T3 threads for coding, ask_codex for computer use, ask_grok for X/Twitter, ask_claude for quick local file questions.",
         },
       })
     case "ping":

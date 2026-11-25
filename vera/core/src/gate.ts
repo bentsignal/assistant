@@ -48,6 +48,14 @@ const STOP_PHRASES = [
   "nothing",
   "no thanks",
   "no thank you",
+  "enough",
+  "that's enough",
+  "thats enough",
+  "shh",
+  "shhh",
+  "stop stop",
+  "hold on",
+  "wait",
 ]
 
 /** Misheard "Vera" that is a real word or name: leading vocative only. */
