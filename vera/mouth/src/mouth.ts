@@ -67,7 +67,7 @@ class MouthImpl implements VeraMouth {
   private _speaking = false
   private queue: Job[] = []
   private running = false
-  private current: { cancelled: boolean; playback?: Playback } | undefined
+  private current: { job: Job; cancelled: boolean; playback?: Playback } | undefined
   private closed = false
   private chimeCache = new Map<ChimeKind, Float32Array>()
 
@@ -144,7 +144,7 @@ class MouthImpl implements VeraMouth {
 
   private async play(job: Job): Promise<void> {
     const chunks = this.plan(job.text)
-    const ctx: { cancelled: boolean; playback?: Playback } = { cancelled: false }
+    const ctx: { job: Job; cancelled: boolean; playback?: Playback } = { job, cancelled: false }
     this.current = ctx
     const timing: SpeakTiming = { firstAudioMs: -1, synthMs: [], audioSeconds: 0, chunks: chunks.map((c) => c.text), stopped: false }
     this.lastTiming = timing
@@ -194,7 +194,7 @@ class MouthImpl implements VeraMouth {
       throw e
     } finally {
       timing.audioSeconds = samplesOut / this.sampleRate
-      timing.stopped = ctx.cancelled
+      timing.stopped ||= ctx.cancelled
       if (this.current === ctx) this.current = undefined
     }
   }
@@ -204,7 +204,10 @@ class MouthImpl implements VeraMouth {
     for (const j of queued) this.settle(j)
     if (this.current) {
       this.current.cancelled = true
+      if (this.lastTiming) this.lastTiming.stopped = true
       this.current.playback?.kill()
+      // Resolve now; an in-flight synthesis finishes in the background and is discarded.
+      this.settle(this.current.job)
     }
     this.setSpeaking(false)
   }

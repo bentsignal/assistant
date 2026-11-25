@@ -139,12 +139,15 @@ export interface PlayerOptions {
   volume: number
 }
 
+const REFILL_DELAY_MS = 1500
+
 export class PlayerPool {
   private sampleRate: number
   private opts: PlayerOptions
   private parked: Playback[] = []
   private all = new Set<Playback>()
   private closed = false
+  private refillTimer: NodeJS.Timeout | undefined
 
   constructor(sampleRate: number, opts: PlayerOptions) {
     this.sampleRate = sampleRate
@@ -180,7 +183,15 @@ export class PlayerPool {
     let pb: Playback | undefined
     while ((pb = this.parked.shift()) && !pb.alive) {}
     if (!pb) pb = this.spawn()
-    setImmediate(() => this.refill())
+    // Refill later: starting ffplay costs ~700 ms of CPU and disk, which would compete with
+    // synthesizing the first sentence. The second warm player covers anything in between.
+    if (!this.refillTimer) {
+      this.refillTimer = setTimeout(() => {
+        this.refillTimer = undefined
+        this.refill()
+      }, REFILL_DELAY_MS)
+      this.refillTimer.unref()
+    }
     return pb
   }
 
@@ -195,7 +206,13 @@ export class PlayerPool {
 
   close(): void {
     this.closed = true
+    if (this.refillTimer) clearTimeout(this.refillTimer)
     for (const pb of this.all) pb.kill()
     this.parked = []
   }
+}
+
+/** PIDs of the ffplay processes this module currently owns (for tests and diagnostics). */
+export function livePids(): number[] {
+  return [...live].map((p) => p.pid).filter((p): p is number => typeof p === "number")
 }

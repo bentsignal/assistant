@@ -37,7 +37,7 @@ export interface MouthConfig {
 
 export const DEFAULT_CONFIG: MouthConfig = {
   engine: "kokoro",
-  voice: "bf_emma",
+  voice: "af_heart",
   speed: 1,
   preset: "vera",
   volume: 1,

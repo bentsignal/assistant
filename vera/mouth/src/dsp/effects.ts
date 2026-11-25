@@ -45,9 +45,9 @@ export const PRESETS = {
     pitchShift: 0,
     comb: { mix: 0.12, delayMs: 4.5, feedback: 0.45 },
     ring: { mix: 0, hz: 0 },
-    reverb: { wet: 0.16, size: 0.42, damping: 0.45, scale: 0.75, predelayMs: 12, lowCutHz: 300, highCutHz: 6500 },
+    reverb: { wet: 0.1, size: 0.35, damping: 0.5, scale: 0.7, predelayMs: 14, lowCutHz: 350, highCutHz: 6000 },
     eq: CLARITY_EQ,
-    levelDb: -20,
+    levelDb: -18,
     gain: 1,
   },
   /** Same character without the room: the most intelligible over cooking noise. */
@@ -58,18 +58,18 @@ export const PRESETS = {
     ring: { mix: 0, hz: 0 },
     reverb: NO_REVERB,
     eq: CLARITY_EQ,
-    levelDb: -20,
+    levelDb: -18,
     gain: 1,
   },
   /** More robot: near-monotone, a stronger metallic ring, a slightly bigger plate. */
   "robot+": {
     flatten: 0.85,
     pitchShift: -0.5,
-    comb: { mix: 0.28, delayMs: 5.0, feedback: 0.6 },
-    ring: { mix: 0.14, hz: 70 },
+    comb: { mix: 0.22, delayMs: 5.0, feedback: 0.55 },
+    ring: { mix: 0.1, hz: 70 },
     reverb: { wet: 0.2, size: 0.5, damping: 0.4, scale: 0.6, predelayMs: 10, lowCutHz: 300, highCutHz: 7000 },
     eq: CLARITY_EQ,
-    levelDb: -20,
+    levelDb: -18,
     gain: 1,
   },
   /** The engine's own voice: only leveling and the safety limiter. */
@@ -80,7 +80,7 @@ export const PRESETS = {
     ring: { mix: 0, hz: 0 },
     reverb: NO_REVERB,
     eq: [{ kind: "highpass", hz: 60, q: 0.7 }],
-    levelDb: -20,
+    levelDb: -18,
     gain: 1,
   },
 } satisfies Record<string, EffectsConfig>
