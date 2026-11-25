@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Vera Core: daemon, brain adapters, Vera MCP server, panel",
+  "description": "Vera Core: wake gate, brain adapters, Vera MCP server, jobs, T3; the Vera App's --stdio sidecar",
   "main": "src/main.ts",
   "bin": {
     "vera-core": "src/main.ts"
   },
   "scripts": {
-    "start": "tsx src/main.ts --open",
+    "start": "tsx src/main.ts",
+    "stdio": "node --import tsx src/main.ts --stdio",
     "dev": "tsx src/main.ts",
     "mcp": "tsx src/mcp/server.ts",
     "bench": "tsx scripts/bench.ts",
+    "fake-app": "tsx scripts/fake-app.ts",
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

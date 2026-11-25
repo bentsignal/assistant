@@ -58,6 +58,27 @@ export class SystemPrompt {
     return { backup, text: after }
   }
 
+  /**
+   * Move an unedited (or only appended-to) copy of an older seed prompt to
+   * the current seed. The old text is backed up as an edit, so
+   * `revert_system_prompt` brings it back. A prompt Shawn changed in the
+   * middle is left alone. Returns what happened, for the log.
+   */
+  upgradeSeed(previousSeeds: string[], seed: string): "upgraded" | "current" | "custom" {
+    const norm = (t: string) => t.replace(/\r\n/g, "\n").replace(/^\uFEFF/, "")
+    const now = norm(this.read())
+    if (now.trim() === norm(seed).trim()) return "current"
+    for (const old of previousSeeds.map(norm)) {
+      if (!old.trim() || !now.startsWith(old.trimEnd())) continue
+      const added = now.slice(old.trimEnd().length).trim()
+      this.backup(now, "edit")
+      writeFileSync(this.file, norm(seed).trimEnd() + "\n" + (added ? "\n" + added + "\n" : ""))
+      this.emit()
+      return "upgraded"
+    }
+    return "custom"
+  }
+
   /** Edits that can still be reverted, newest first. */
   history(): string[] {
     return readdirSync(this.historyDir)

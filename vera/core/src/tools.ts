@@ -45,13 +45,28 @@ async function resolveThreadTitle(vera: Vera, id: string): Promise<string> {
 export const HANDLERS: Record<string, ToolHandler> = {
   speak(vera, args) {
     const text = need(args, "text")
-    vera.say(text)
+    if (!vera.say(text)) return "Not spoken: Shawn talked over you or said stop. Say nothing more this turn."
     return "Speaking."
   },
 
   show(vera, args) {
     const card = vera.addCard(need(args, "title"), String(args.markdown ?? ""))
-    return `Shown on the panel (card ${card.id}).`
+    return vera.mode === "stdio" ? `Showing card ${card.id} in a popup. Close it with hide when he's done with it.` : `Shown on the panel (card ${card.id}).`
+  },
+
+  hide(vera, args) {
+    const id = typeof args?.card_id === "string" && args.card_id.trim() ? args.card_id.trim() : undefined
+    const closed = vera.hideCard(id)
+    if (!closed.length) return id ? `Card ${id} isn't open.` : "Nothing is showing."
+    return `Closed ${closed.join(", ")}.`
+  },
+
+  set_volume(vera, args) {
+    const level = typeof args?.level === "number" ? args.level : typeof args?.level === "string" && args.level.trim() ? Number(args.level) : undefined
+    const relative = args?.relative === "quieter" || args?.relative === "louder" ? args.relative : undefined
+    const { from, to } = vera.setVolume({ level, relative, a_lot: !!args?.a_lot })
+    const pct = (n: number) => `${Math.round(n * 100)}%`
+    return `Your voice volume is now ${pct(to)} (was ${pct(from)}). The computer's volume is unchanged.`
   },
 
   ask_claude: (vera, args) => ask(vera, "claude", args),
@@ -156,5 +171,6 @@ export async function runTool(vera: Vera, name: string, args: unknown): Promise<
   const h = HANDLERS[name]
   if (!h) throw new Error(`unknown tool ${name}`)
   vera.log(`tool ${name} ${truncate(oneLine(JSON.stringify(args ?? {})), 300)}`)
+  vera.currentTurn?.tools.push(name)
   return h(vera, args ?? {})
 }

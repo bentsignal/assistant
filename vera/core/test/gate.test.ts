@@ -111,3 +111,10 @@ test("barge-in: wake word + stop that Vera isn't saying", async () => {
   assert.equal(findBargeIn("stop", "Okay."), null, "needs the wake word")
   assert.equal(findBargeIn("Sarah, stop", "Okay."), null, "soft wake words don't barge in")
 })
+
+test("stop phrases used after a barge-in", () => {
+  for (const p of ["Stop.", "Never mind.", "Be quiet.", "Okay, stop.", "That's enough.", "Shh.", "Wait.", "Hold on."]) {
+    assert.equal(isStopPhrase(p), true, p)
+  }
+  assert.equal(isStopPhrase("Wait, what about tomorrow?"), false)
+})

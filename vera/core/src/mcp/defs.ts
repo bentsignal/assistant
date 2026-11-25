@@ -29,18 +29,37 @@ export const TOOLS: ToolDef[] = [
   {
     name: "speak",
     description:
-      "Say something out loud. This is the ONLY way Shawn hears you; your plain text output is never spoken. Keep it to one or two short spoken sentences: no markdown, lists, URLs, code, or symbols; say numbers the way a person would. Put anything long or visual in `show` and speak a one-line summary. Call it early in a turn; later calls queue after earlier ones.",
+      "Say something out loud. This is the ONLY way Shawn hears you; your plain text output is never spoken. Usually one short sentence, two at most: no markdown, lists, URLs, code, or symbols; say numbers the way a person would. Put anything long or visual in `show` and speak a few words about it. Call it early in a turn; later calls queue after earlier ones. If it returns 'Not spoken', Shawn talked over you: stop and say nothing more.",
     inputSchema: { type: "object", properties: { text: str("What to say, plain spoken English.") }, required: ["text"] },
+  },
+  {
+    name: "set_volume",
+    description:
+      "Change YOUR OWN voice volume (how loud Vera sounds). Use this whenever Shawn says you're too loud or too quiet, or asks you to speak up, turn yourself down, be quieter, or be louder. It never touches the computer's volume. Give `relative` for 'quieter'/'louder' (a_lot: true for 'way too loud', 'much louder'), or `level` 0 to 1 for an exact setting ('half volume' is 0.5). Call it before you speak, then acknowledge in two or three words.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        relative: { type: "string", enum: ["quieter", "louder"], description: "Step your volume down or up." },
+        a_lot: bool("A big step ('way too loud', 'much quieter')."),
+        level: { type: "number", description: "Exact volume, 0 to 1." },
+      },
+    },
   },
   {
     name: "show",
     description:
-      "Put a card on Vera's panel (a screen across the kitchen). Use for anything worth seeing rather than hearing: lists, tables, links, code, long answers, recipes. Markdown is fine here. Pair it with a one-line `speak`.",
+      "Open a small popup card on Shawn's screen, for something worth SEEING rather than hearing: a short list, a recipe's steps, a table, a link, a snippet of code. Keep it short (a title and a few lines of Markdown); don't show what you can say in a sentence. Speak a few words with it ('It's on screen.'). Returns the card id.",
     inputSchema: {
       type: "object",
-      properties: { title: str("Short card title."), markdown: str("Card body in Markdown.") },
+      properties: { title: str("Short card title."), markdown: str("Card body in Markdown, brief.") },
       required: ["title", "markdown"],
     },
+  },
+  {
+    name: "hide",
+    description:
+      "Close a popup card you showed: when Shawn says 'close that', 'got it', 'hide it', 'dismiss', or is clearly done with it. Without card_id, closes every open card. Closing is quiet: no need to speak unless he asked something else.",
+    inputSchema: { type: "object", properties: { card_id: str("Card id like c3. Omit to close all open cards.") } },
   },
   {
     name: "ask_claude",
@@ -51,7 +70,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "ask_codex",
     description:
-      "Hand a task to Codex (headless, full permissions, with computer-use plugins). Use for USING THE COMPUTER: operating desktop apps, clicking around, driving a browser to DO something (fill a form, change a setting), anything on screen. OpenAI models are best at computer use. NOT for looking information up online: use your own web search for that. Background by default.",
+      "Hand a task to Codex (headless, full permissions, with computer-use plugins). Use for USING THE COMPUTER: operating desktop apps, clicking around, driving a browser to DO something (fill a form, change a setting), anything on screen. OpenAI models are best at computer use. NOT for looking information up online: use your own web search for that. NEVER for your own voice volume (that's set_volume); the computer's volume only when Shawn explicitly asks about the computer's or an app's volume. Background by default.",
     inputSchema: { type: "object", properties: askProps, required: ["task"] },
   },
   {

@@ -1,58 +1,78 @@
-import { spawn } from "node:child_process"
-import { existsSync } from "node:fs"
-import { join } from "node:path"
+import { rmSync, writeFileSync } from "node:fs"
+import { paths } from "./config.ts"
+import { AppLink } from "./app.ts"
 import { Vera } from "./vera.ts"
 import { startServer } from "./server.ts"
 
-/** Open the panel as a chromeless Edge/Chrome app window. */
-function openPanel(url: string, browser?: string) {
-  const candidates = [
-    browser,
-    join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe"),
-    join(process.env.ProgramFiles ?? "C:\\Program Files", "Microsoft", "Edge", "Application", "msedge.exe"),
-    join(process.env.ProgramFiles ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
-    join(process.env.LOCALAPPDATA ?? "", "Google", "Chrome", "Application", "chrome.exe"),
-  ].filter((p): p is string => !!p && existsSync(p))
-  const exe = candidates[0]
-  if (!exe) {
-    console.log(`Open ${url} in a browser.`)
-    return
-  }
-  spawn(exe, [`--app=${url}`, "--window-size=1280,860"], { detached: true, stdio: "ignore" }).unref()
+/**
+ * vera-core.
+ *
+ *   --stdio   Headless sidecar of the Vera App (VERA.md, "App ⇄ Core
+ *             protocol"): app events on stdin, core commands on stdout, logs
+ *             on stderr and in ~/.vera/logs/. No Ears, Mouth, panel, or
+ *             window: the App owns audio and UI. The loopback HTTP server
+ *             stays for the brain's MCP tool calls and the debug hook
+ *             (POST /api/utterance); its port is in ~/.vera/core-runtime.json.
+ *   (none)    v1 standalone daemon: spawns Ears and Mouth itself, serves the
+ *             debug panel on http://127.0.0.1:7313 (never opens a window).
+ *
+ * VERA_PORT overrides the HTTP port (0 = any free port).
+ */
+const stdio = process.argv.includes("--stdio")
+
+if (stdio) {
+  // stdout carries the protocol only. Anything that logs goes to stderr.
+  const toErr = (...a: unknown[]) => process.stderr.write(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ") + "\n")
+  console.log = toErr
+  console.info = toErr
+  console.debug = toErr
 }
 
 async function main() {
-  const vera = new Vera()
-  let server: { close: () => void; url: string }
+  const link = stdio ? new AppLink(process.stdin, process.stdout) : undefined
+  const vera = new Vera({ mode: stdio ? "stdio" : "standalone", link })
+  const envPort = process.env.VERA_PORT !== undefined && process.env.VERA_PORT !== "" ? Number(process.env.VERA_PORT) : undefined
+  let server: Awaited<ReturnType<typeof startServer>>
   try {
-    server = await startServer(vera)
+    server = await startServer(vera, { panel: !stdio, port: envPort ?? vera.config.port, fallback: stdio })
   } catch (err: any) {
     if (err.code === "EADDRINUSE") {
-      console.error(`Port ${vera.config.port} is busy: is Vera already running?`)
-      if (process.argv.includes("--open")) openPanel(`http://127.0.0.1:${vera.config.port}`, vera.config.panel.browser)
+      vera.log(`Port ${vera.config.port} is busy: is Vera already running?`)
       process.exit(1)
     }
     throw err
   }
+  vera.port = server.port
+  if (stdio) writeFileSync(paths.runtime, JSON.stringify({ pid: process.pid, port: server.port, url: server.url, startedAt: Date.now() }, null, 2))
   await vera.start()
-  vera.log(`Vera on ${server.url} (brain ${vera.config.brain.harness}, mouth ${vera.mouthName}, ears ${vera.config.ears.command ? "on" : "none"})`)
-  if (process.argv.includes("--open") && vera.config.panel.open) openPanel(server.url, vera.config.panel.browser)
+  vera.log(
+    stdio
+      ? `Vera core (--stdio) up, debug hook ${server.url} (brain ${vera.config.brain.harness})`
+      : `Vera on ${server.url} (brain ${vera.config.brain.harness}, mouth ${vera.mouthName}, ears ${vera.config.ears.command ? "on" : "none"})`,
+  )
 
   let closing = false
-  const shutdown = async () => {
+  const shutdown = async (why: string) => {
     if (closing) return
     closing = true
-    vera.log("shutting down")
+    vera.log(`shutting down (${why})`)
+    const hard = setTimeout(() => process.exit(0), 5000)
+    hard.unref()
     server.close()
     await vera.close()
+    if (stdio) rmSync(paths.runtime, { force: true })
     process.exit(0)
   }
-  vera.on("shutdown", shutdown)
-  process.on("SIGINT", shutdown)
-  process.on("SIGTERM", shutdown)
+  vera.on("shutdown", () => shutdown("api"))
+  // The App closing our stdin (or dying) means it's time to go.
+  link?.on("close", () => shutdown("stdin closed"))
+  if (link?.closed) void shutdown("stdin closed")
+  process.on("SIGINT", () => shutdown("SIGINT"))
+  process.on("SIGTERM", () => shutdown("SIGTERM"))
+  process.on("unhandledRejection", (err) => vera.log(`unhandled rejection: ${(err as Error)?.stack ?? err}`))
 }
 
 main().catch((err) => {
-  console.error(err)
+  process.stderr.write(`${err?.stack ?? err}\n`)
   process.exit(1)
 })

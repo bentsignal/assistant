@@ -73,3 +73,24 @@ test("edits notify listeners (the brain restarts on change)", () => {
   prompt.revert()
   assert.equal(n, 2)
 })
+
+test("an unedited old stock prompt is upgraded (and revertible); appended rules carry over; custom prompts stay", () => {
+  const old = "Old stock prompt.\nBe chatty.\n"
+  const seed = "New stock prompt.\nBe brief.\n"
+  const a = setup(old.replace(/\n/g, "\r\n"))
+  assert.equal(a.prompt.upgradeSeed([old], seed), "upgraded")
+  assert.equal(a.prompt.read(), seed)
+  a.prompt.revert()
+  assert.equal(a.prompt.read().replace(/\r\n/g, "\n"), old)
+
+  const b = setup(old + "\nCall him chef.\n")
+  assert.equal(b.prompt.upgradeSeed([old], seed), "upgraded")
+  assert.equal(b.prompt.read(), seed + "\nCall him chef.\n")
+  assert.equal(b.prompt.upgradeSeed([old], seed), "custom")
+
+  const c = setup(seed)
+  assert.equal(c.prompt.upgradeSeed([old], seed), "current")
+  const d = setup("Old stock prompt.\nBe terse.\n")
+  assert.equal(d.prompt.upgradeSeed([old], seed), "custom")
+  assert.equal(d.prompt.read(), "Old stock prompt.\nBe terse.\n")
+})
