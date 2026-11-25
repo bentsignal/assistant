@@ -2,13 +2,13 @@ import { EventEmitter } from "node:events"
 import { randomBytes } from "node:crypto"
 import { appendFileSync } from "node:fs"
 import { join } from "node:path"
-import { CORE_DIR, loadConfig, paths, saveConfigPatch, type BrainHarness, type VeraConfig } from "./config.ts"
-import { gate, type GateResult } from "./gate.ts"
+import { CORE_DIR, loadConfig, paths, resolveEarsCommand, saveConfigPatch, type BrainHarness, type VeraConfig } from "./config.ts"
+import { findBargeIn, gate, type GateResult } from "./gate.ts"
 import { Inbox, oneLine, truncate } from "./inbox.ts"
 import { SystemPrompt } from "./prompt.ts"
 import { Jobs, type Job } from "./jobs.ts"
 import { T3, T3Watcher } from "./t3.ts"
-import { createMouth, type Mouth } from "./mouth.ts"
+import { createMouth, type ChimeKind, type Mouth } from "./mouth.ts"
 import { Ears, type EarsMessage } from "./ears.ts"
 import { createBrain, type Brain, type TurnResult } from "./brain/index.ts"
 
@@ -35,6 +35,10 @@ export interface TurnRecord {
   startedAt: number
   /** ms from the turn being sent to the brain until its first `speak` call. */
   firstSpeakMs?: number
+  /** When Shawn stopped speaking (Ears' final.end), for heard turns. */
+  heardEndAt?: number
+  /** ms from the end of Shawn's speech to Vera's first audio going to the player. */
+  endToAudioMs?: number
   durationMs?: number
   spoken: string[]
   output: string
@@ -46,6 +50,8 @@ export interface TurnRecord {
 export interface UtteranceInput {
   text: string
   start?: number
+  /** When the speech ended (epoch ms), for latency. */
+  end?: number
   direct?: boolean
   source?: "ears" | "panel" | "api"
 }
@@ -88,8 +94,20 @@ export class Vera extends EventEmitter {
   /** Recent lines to replay into a brain that starts a fresh conversation. */
   private recapNext = false
   private resumeTimer: NodeJS.Timeout | null = null
-  private speechStartedAt = 0
-  private speechEndedAt = 0
+  /** Why Ears are paused right now ("speaking", "chime"); resumed after a tail once empty. */
+  private earsHolds = new Set<string>()
+  /** Start of the current or last deaf stretch, and when it ended (0 while deaf). */
+  private deafFrom = 0
+  private deafUntil = 0
+  /** Ears announced speech_start and the final or cancel hasn't come yet. */
+  private earsInSpeech = false
+  private deferredChimes: ChimeKind[] = []
+  /** Last time Vera spoke, woke, or took a turn (warm wake words). */
+  private lastActiveAt = 0
+  /** Turn waiting for its first audio, to measure end-of-speech -> audio. */
+  private awaitingAudio: TurnRecord | null = null
+  /** What Vera is saying in the current speaking stretch (barge-in echo check). */
+  private speakingText = ""
   private syncJobs = new Set<string>()
   private turnWaiters = new Map<number, (t: TurnRecord) => void>()
   private logFile: string
@@ -139,31 +157,50 @@ export class Vera extends EventEmitter {
     mouth.on("start", () => this.onSpeechStart())
     mouth.on("end", () => this.onSpeechEnd())
 
-    if (this.config.ears.command?.length) this.startEars()
+    const ears = resolveEarsCommand(this.config.ears)
+    this.log(ears.note)
+    if (ears.argv) this.startEars(ears.argv)
     this.watcher.start(this.config.t3.pollSeconds * 1000)
     // Warm the brain so the first turn doesn't pay for process start.
     this.ensureBrain().catch((err) => this.log(`brain failed to start: ${err.message}`))
   }
 
-  private startEars() {
-    const ears = new Ears(this.config.ears.command!, this.config.ears.cwd)
+  private startEars(argv: string[]) {
+    const ears = new Ears(argv, this.config.ears.cwd)
     this.ears = ears
     this.earsState = "starting"
     ears.on("message", (m: EarsMessage) => {
       switch (m.type) {
         case "ready":
           this.earsState = "ready"
-          this.log(`ears ready: ${m.engine ?? "?"} ${m.model ?? ""}`)
+          this.log(`ears ready: ${m.engine ?? "?"} ${m.model ?? ""}${m.device ? ` on "${m.device}"` : ""}${m.backend ? ` (${m.backend})` : ""}`)
           break
         case "speech_start":
-          this.partial = "…"
+          this.earsInSpeech = true
+          if (!this.isDeaf(m.t)) this.partial = "…"
           break
         case "partial":
-          this.partial = m.text
+          if (this.bargeInHeard(m.text)) break
+          if (!this.isDeaf(m.t)) this.partial = m.text
           break
         case "final":
+          this.earsInSpeech = false
           this.partial = ""
-          void this.utterance({ text: m.text, start: m.start, source: "ears" })
+          if (this.bargeInHeard(m.text)) {
+            this.flushChimes()
+            break
+          }
+          this.log(`heard: "${m.text}"${m.latency_ms ? ` (+${m.latency_ms} ms)` : ""}`)
+          void this.utterance({ text: m.text, start: m.start, end: m.end, source: "ears" })
+          this.flushChimes()
+          break
+        case "speech_cancel":
+          this.earsInSpeech = false
+          this.partial = ""
+          this.flushChimes()
+          break
+        case "paused":
+        case "resumed":
           break
         case "error":
           this.earsState = "error"
@@ -228,13 +265,8 @@ export class Vera extends EventEmitter {
   /** Feed one utterance (heard, typed, or injected). */
   async utterance(input: UtteranceInput): Promise<GateResult & { turnId?: number }> {
     const now = Date.now()
-    // Belt and braces for half-duplex: drop speech that began while Vera was talking.
-    const echo =
-      input.source === "ears" &&
-      !!input.start &&
-      input.start >= this.speechStartedAt &&
-      (this.mouth?.speaking || input.start <= this.speechEndedAt + this.config.ears.tailMs)
-    if (echo) {
+    // Belt and braces for half-duplex: drop speech that began while Vera was talking or chiming.
+    if (input.source === "ears" && input.start && this.isDeaf(input.start, input.end)) {
       this.log(`dropped (heard while speaking): ${input.text}`)
       return { action: "ignore", reason: "heard while speaking" }
     }
@@ -243,6 +275,8 @@ export class Vera extends EventEmitter {
     const g = gate(input, { followUpUntil }, now, {
       extra: this.config.wake.words,
       maxLeadingWords: this.config.wake.maxLeadingWords,
+      soft: this.config.wake.soft,
+      recentlyActive: now - this.lastActiveAt < this.config.wake.warmSeconds * 1000,
     })
     this.lastHeard = input.text
     this.emit("heard", { text: input.text, gate: g })
@@ -252,8 +286,9 @@ export class Vera extends EventEmitter {
         this.changed()
         return g
       case "wake":
+        this.lastActiveAt = now
         this.openFollowUp()
-        void this.mouth.chime("listening")
+        void this.chime("listening")
         this.changed()
         return g
       case "stop":
@@ -268,7 +303,7 @@ export class Vera extends EventEmitter {
           this.changed()
           return g
         }
-        const rec = this.beginTurn(g.text, g.via)
+        const rec = this.beginTurn(g.text, g.via, input.end)
         return { ...g, turnId: rec.id }
       }
     }
@@ -285,16 +320,18 @@ export class Vera extends EventEmitter {
     return new Promise((resolve) => this.turnWaiters.set(id, resolve))
   }
 
-  private beginTurn(text: string, via: string): TurnRecord {
+  private beginTurn(text: string, via: string, heardEndAt?: number): TurnRecord {
     const rec: TurnRecord = {
       id: ++this.turnSeq,
       text,
       via,
       brain: "",
       startedAt: Date.now(),
+      heardEndAt,
       spoken: [],
       output: "",
     }
+    this.lastActiveAt = Date.now()
     this.current = rec
     this.followUpUntil = 0
     this.turns.push(rec)
@@ -325,7 +362,7 @@ export class Vera extends EventEmitter {
       `turn ${rec.id} done in ${rec.durationMs} ms (first speak ${rec.firstSpeakMs ?? "-"} ms)${result.error ? " error: " + result.error : ""}`,
     )
     if (!result.ok && !result.interrupted) {
-      void this.mouth.chime("error")
+      void this.chime("error")
       this.addCard("Brain error", "```\n" + (result.error ?? "unknown") + "\n```")
     }
     this.current = null
@@ -370,7 +407,7 @@ export class Vera extends EventEmitter {
   /** Talk button / bare wake word: next utterance needs no wake word. */
   openFollowUp(seconds = this.config.wake.followUpSeconds) {
     this.followUpUntil = Date.now() + seconds * 1000
-    this.ears?.resume()
+    if (!this.earsHolds.size && !this.resumeTimer) this.ears?.resume()
     this.changed()
     setTimeout(() => this.changed(), seconds * 1000 + 50).unref()
   }
@@ -380,9 +417,13 @@ export class Vera extends EventEmitter {
   say(text: string) {
     const rec = this.current
     if (rec) {
-      if (rec.firstSpeakMs === undefined) rec.firstSpeakMs = Date.now() - rec.startedAt
+      if (rec.firstSpeakMs === undefined) {
+        rec.firstSpeakMs = Date.now() - rec.startedAt
+        if (rec.heardEndAt) this.awaitingAudio = rec
+      }
       rec.spoken.push(text)
     }
+    this.speakingText += " " + text
     this.lines.push({ who: "vera", text, at: Date.now() })
     this.trimLines()
     this.emit("said", text)
@@ -391,22 +432,100 @@ export class Vera extends EventEmitter {
   }
 
   private onSpeechStart() {
-    this.speechStartedAt = Date.now()
-    if (this.resumeTimer) clearTimeout(this.resumeTimer)
-    this.resumeTimer = null
-    this.ears?.pause()
+    const rec = this.awaitingAudio
+    if (rec?.heardEndAt) {
+      rec.endToAudioMs = Date.now() - rec.heardEndAt
+      this.log(`turn ${rec.id}: end of speech -> first audio ${rec.endToAudioMs} ms`)
+    }
+    this.awaitingAudio = null
+    // Barge-in keeps Ears listening (only for "Vera, stop"); otherwise they're paused.
+    this.holdEars("speaking", !this.config.ears.bargeIn)
     this.changed()
   }
 
   private onSpeechEnd() {
-    this.speechEndedAt = Date.now()
+    this.lastActiveAt = Date.now()
+    this.releaseEars("speaking", this.config.ears.tailMs, () => {
+      this.speakingText = ""
+      this.openFollowUp()
+    })
+    this.changed()
+  }
+
+  /**
+   * Half-duplex. Each reason pauses Ears (or with `pause` false, only marks
+   * the time as deaf so finals from it are dropped); the last release resumes
+   * them after `tailMs`, then runs `then`.
+   */
+  private holdEars(reason: string, pause = true) {
+    if (!this.earsHolds.size && !this.resumeTimer) this.deafFrom = Date.now()
+    this.deafUntil = 0
+    this.earsHolds.add(reason)
+    if (this.resumeTimer) clearTimeout(this.resumeTimer)
+    this.resumeTimer = null
+    if (pause) this.ears?.pause()
+  }
+
+  private releaseEars(reason: string, tailMs: number, then?: () => void) {
+    this.earsHolds.delete(reason)
+    if (this.earsHolds.size) return
     if (this.resumeTimer) clearTimeout(this.resumeTimer)
     this.resumeTimer = setTimeout(() => {
-      if (this.mouth.speaking) return
+      this.resumeTimer = null
+      if (this.earsHolds.size) return
+      this.deafUntil = Date.now()
+      if (this.ears && !this.ears.isPaused && this.config.ears.bargeIn) {
+        // Listened through Vera's speech: drop whatever echo utterance is open so the next one starts clean.
+        this.ears.pause()
+      }
       this.ears?.resume()
-      this.openFollowUp()
-    }, this.config.ears.tailMs)
-    this.changed()
+      then?.()
+      this.changed()
+    }, tailMs)
+  }
+
+  /**
+   * Speech from `t` (to `end`) overlaps a deaf stretch: Vera talking or
+   * chiming, plus the tail. With barge-in, Ears keep listening, so a
+   * transcript that began just before Vera started is her echo too.
+   */
+  private isDeaf(t: number, end = t): boolean {
+    if (!this.deafFrom || end < this.deafFrom) return false
+    return this.earsHolds.size > 0 || !!this.resumeTimer || t <= this.deafUntil
+  }
+
+  /** While Vera talks with barge-in on: did Shawn say "Vera, stop"? Stops her if so. */
+  private bargeInHeard(text: string): boolean {
+    if (!this.config.ears.bargeIn || !this.earsHolds.has("speaking")) return false
+    const hit = findBargeIn(text, this.speakingText, this.config.wake.words)
+    if (!hit) return false
+    this.stop(`barge-in, heard "${text}"`)
+    return true
+  }
+
+  /**
+   * Play a chime with Ears paused around it, so it isn't heard as speech. An
+   * inbox ping while Shawn is mid-sentence waits until he's done (pausing
+   * would throw his sentence away).
+   */
+  async chime(kind: ChimeKind): Promise<void> {
+    if (kind === "notify" && this.earsInSpeech && !this.isDeaf(Date.now())) {
+      if (!this.deferredChimes.includes(kind)) this.deferredChimes.push(kind)
+      this.log("chime notify waits until Shawn finishes speaking")
+      return
+    }
+    this.holdEars("chime")
+    try {
+      await this.mouth.chime(kind)
+    } catch (err) {
+      this.log(`chime failed: ${(err as Error).message}`)
+    } finally {
+      this.releaseEars("chime", this.config.ears.chimeTailMs)
+    }
+  }
+
+  private flushChimes() {
+    for (const kind of this.deferredChimes.splice(0)) void this.chime(kind)
   }
 
   // ---- background work ------------------------------------------------------
@@ -414,7 +533,7 @@ export class Vera extends EventEmitter {
   notify(item: { kind: "job" | "t3" | "system"; title: string; summary: string; ref?: string }) {
     this.inbox.add(item)
     this.log(`inbox: ${item.title}`)
-    void this.mouth?.chime("notify")
+    if (this.mouth) void this.chime("notify")
   }
 
   markJobSync(id: string) {
@@ -487,7 +606,9 @@ export class Vera extends EventEmitter {
       inbox: [...this.inbox.items].reverse().slice(0, 20),
       watches: [...this.watcher.watches.values()],
       lines: this.lines.slice(-12),
-      turns: this.turns.slice(-8).map((t) => ({ id: t.id, text: t.text, brain: t.brain, firstSpeakMs: t.firstSpeakMs, durationMs: t.durationMs, ok: t.ok })),
+      turns: this.turns
+        .slice(-8)
+        .map((t) => ({ id: t.id, text: t.text, brain: t.brain, firstSpeakMs: t.firstSpeakMs, endToAudioMs: t.endToAudioMs, durationMs: t.durationMs, ok: t.ok })),
     }
   }
 

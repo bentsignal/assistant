@@ -66,3 +66,48 @@ test("gate: stop phrases", () => {
   assert.ok(isStopPhrase("Stop please"))
   assert.ok(!isStopPhrase("stop the timer"))
 })
+
+test("soft wake words: misheard Vera counts only as a leading vocative", () => {
+  for (const t of ["Variable, what time is it?", "Mirror, set a timer for ten minutes.", "Sarah, what's new?", "Okay Sarah, what's new?"]) {
+    const g = gate({ text: t }, closed, now)
+    assert.equal(g.action, "turn", t)
+  }
+  assert.deepEqual(gate({ text: "Variable, what time is it?" }, closed, now), { action: "turn", text: "what time is it?", via: "wake" })
+  assert.equal(gate({ text: "Sarah?" }, closed, now).action, "wake")
+  for (const t of ["Variable names should be short.", "I told Sarah about it.", "Mirror the window on the left", "the mirror is foggy"]) {
+    assert.equal(gate({ text: t }, closed, now).action, "ignore", t)
+  }
+  assert.equal(gate({ text: "Sarah, what's new?" }, closed, now, { soft: false }).action, "ignore")
+})
+
+test("warm wake words: greetings misheard for Hey Vera need a recent interaction", () => {
+  for (const t of ["Hey there, what time is it?", "Okay there, what's new?", "Hey girl, set a timer."]) {
+    assert.equal(gate({ text: t }, closed, now).action, "ignore", t)
+    assert.equal(gate({ text: t }, closed, now, { recentlyActive: true }).action, "turn", t)
+  }
+  assert.deepEqual(gate({ text: "Hey there, what time is it?" }, closed, now, { recentlyActive: true }), {
+    action: "turn",
+    text: "what time is it?",
+    via: "wake",
+  })
+  // Not as a vocative: still ignored.
+  assert.equal(gate({ text: "hey there is a problem" }, closed, now, { recentlyActive: true }).action, "ignore")
+})
+
+test("hangers-on after the wake word are dropped", () => {
+  assert.deepEqual(gate({ text: "Vera of what time is it?" }, closed, now), { action: "turn", text: "what time is it?", via: "wake" })
+  assert.deepEqual(gate({ text: "Vera, uh, set a timer" }, closed, now), { action: "turn", text: "set a timer", via: "wake" })
+})
+
+test("barge-in: wake word + stop that Vera isn't saying", async () => {
+  const { findBargeIn } = await import("../src/gate.ts")
+  assert.equal(findBargeIn("Vera, stop.", "It's eleven forty two."), "vera stop")
+  assert.equal(findBargeIn("eleven forty Vera stop two", "It's eleven forty two."), "vera stop")
+  assert.equal(findBargeIn("Hey Vera, be quiet", "The pasta needs ten more minutes."), "vera be quiet")
+  assert.equal(findBargeIn("Vera okay stop", "Sure."), "vera stop")
+  // Her own words don't stop her.
+  assert.equal(findBargeIn("Tell Vera to stop the timer", "I'll tell Vera to stop the timer."), null)
+  assert.equal(findBargeIn("it's eleven forty two", "It's eleven forty two."), null)
+  assert.equal(findBargeIn("stop", "Okay."), null, "needs the wake word")
+  assert.equal(findBargeIn("Sarah, stop", "Okay."), null, "soft wake words don't barge in")
+})

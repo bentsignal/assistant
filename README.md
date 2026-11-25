@@ -1,3 +1,71 @@
+# Vera: try it
+
+This fork is **Vera**, a hands-free voice front end for coding agents (design:
+[`VERA.md`](VERA.md)). Hex's own README follows below.
+
+**Run it** (Windows, from this repo):
+
+```sh
+cd vera
+pnpm start
+```
+
+That starts the daemon, opens the panel (http://127.0.0.1:7313) as an Edge
+app window, and listens on the default microphone. One-time setup is
+already done on this machine. On a fresh one:
+
+```sh
+sh scripts/vera-ears-build.sh            # Git Bash, ~4 min: builds target/release/hex.exe (Ears)
+cd vera && pnpm install
+pnpm --filter @vera/mouth run setup      # Vera's voice (~350 MB) to ~/.vera/models; needs ffplay (scoop install ffmpeg)
+claude auth login                        # if the brain says it isn't signed in
+```
+
+Ears needs the installed Hex's speech models (`%LOCALAPPDATA%\hex\models`).
+If `target/release/hex.exe` is missing, `pnpm start` says how to build it and
+runs with the panel's text box only.
+
+**Things to say**
+
+- "Vera, what time is it?" then, within 8 s of her answer and without "Vera":
+  "And what day is it?"
+- "Hey Vera, give me a fun fact about tomatoes." then "Vera, stop." while
+  she talks (works with a headset; over speakers use the panel's Stop or Esc)
+- "Vera." alone: a chime, then say the request without the wake word
+- "Vera, ask Claude to ..." / "ask Codex to ..." for background work: a chime
+  when it's done, then "Vera, what's new?"
+- "Vera, what are my T3 threads doing?", "Vera, start a T3 thread in hex
+  to ..."
+- "Vera, never mind" / "Vera, stop" ends a turn
+
+**Switch brains:** say "Vera, switch to Codex" (or "... to Claude"), or set
+`brain.harness` to `"codex"` or `"claude-code"` in `~/.vera/config.json`.
+Default: Claude Code, Sonnet, low effort.
+
+**Voice samples:** [`vera/mouth/samples/`](vera/mouth/samples/) (`preset-vera.mp3`
+is the voice she uses). Other voices and presets: [`vera/mouth/README.md`](vera/mouth/README.md).
+
+**Measured:** end of your speech to Vera's first sound is about 2 s for a
+short answer (0.7 s waiting to be sure you stopped, ~1 s brain, ~0.3 s voice),
+about 3 s for a long one. Test: `node vera/core/scripts/e2e/run.mjs` (see
+[`vera/core/README.md`](vera/core/README.md)).
+
+**Known limitations**
+
+- "Vera, stop" while she talks only works when her voice doesn't reach the
+  microphone (a headset). Over speakers, Ears is deaf to you until she
+  finishes, plus 0.3 s.
+- A Claude Code sign-in expires around Dec 1 to 4; run `claude auth login`.
+- The follow-up window is 8 s after she stops; after that you need "Vera"
+  again. Misheard wake words like "Variable," / "Sarah," work only at the
+  start of a sentence; "Hey there," only within 2 minutes of her last reply.
+- Ears and the installed Hex each hold a copy of the speech model on the GPU
+  (about 0.7 GB each). Don't rebuild Ears while Vera is running (the exe is
+  locked).
+- Windows only for now.
+
+---
+
 # Hex
 
 Hex is local voice dictation for Mac, Windows and Linux. Hold a key, speak, and

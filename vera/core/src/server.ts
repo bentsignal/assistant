@@ -91,12 +91,16 @@ export function startServer(vera: Vera): Promise<{ close: () => void; url: strin
           if (body.wait && r.turnId) return json(res, 200, { gate: r, turn: await vera.waitTurn(r.turnId) })
           return json(res, 200, { gate: r })
         }
+        case "/api/shutdown": // quit the daemon cleanly (stops Ears and the brain too)
+          json(res, 200, { ok: true })
+          setTimeout(() => vera.emit("shutdown"), 50)
+          return
         case "/api/stop":
           vera.stop("panel")
           return json(res, 200, { ok: true })
         case "/api/talk":
           vera.openFollowUp()
-          void vera.mouth.chime("listening")
+          void vera.chime("listening")
           return json(res, 200, { ok: true })
         case "/api/inbox/read":
           return json(res, 200, { marked: vera.inbox.markRead(Array.isArray(body.ids) ? body.ids : undefined) })
@@ -105,8 +109,11 @@ export function startServer(vera: Vera): Promise<{ close: () => void; url: strin
         case "/api/say": // speak without the brain (Mouth smoke test)
           vera.say(String(body.text ?? ""))
           return json(res, 200, { ok: true })
+        case "/api/notify": // add an inbox item and chime, as a finished job would (test hook)
+          vera.notify({ kind: "system", title: String(body.title ?? "Test notification"), summary: String(body.summary ?? "") })
+          return json(res, 200, { ok: true })
         case "/api/chime":
-          await vera.mouth.chime(body.kind ?? "notify")
+          await vera.chime(body.kind ?? "notify")
           return json(res, 200, { ok: true })
         default:
           return json(res, 404, { error: "not found" })

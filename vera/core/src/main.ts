@@ -47,6 +47,7 @@ async function main() {
     await vera.close()
     process.exit(0)
   }
+  vera.on("shutdown", shutdown)
   process.on("SIGINT", shutdown)
   process.on("SIGTERM", shutdown)
 }

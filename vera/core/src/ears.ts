@@ -4,10 +4,14 @@ import { onLines } from "./proc.ts"
 
 /** Ears JSON-lines protocol (VERA.md). */
 export type EarsMessage =
-  | { type: "ready"; engine?: string; model?: string }
+  | { type: "ready"; engine?: string; model?: string; device?: string; backend?: string }
   | { type: "speech_start"; t: number }
   | { type: "partial"; text: string; t: number }
-  | { type: "final"; text: string; start: number; end: number }
+  | { type: "final"; text: string; start: number; end: number; latency_ms?: number }
+  // Extras from `hex ears` (docs/vera-ears.md). Anything else is ignored.
+  | { type: "speech_cancel"; t: number; reason?: string }
+  | { type: "paused"; t: number }
+  | { type: "resumed"; t: number }
   | { type: "error"; message: string }
 
 /**
@@ -21,7 +25,7 @@ export class Ears extends EventEmitter {
   private closing = false
   private backoff = 1000
   ready = false
-  info: { engine?: string; model?: string } = {}
+  info: { engine?: string; model?: string; device?: string; backend?: string } = {}
 
   constructor(
     private command: string[],
@@ -43,10 +47,11 @@ export class Ears extends EventEmitter {
         console.error(`[ears] not JSON: ${line.slice(0, 200)}`)
         return
       }
+      if (!msg || typeof msg !== "object" || typeof (msg as any).type !== "string") return
       if (msg.type === "ready") {
         this.ready = true
         this.backoff = 1000
-        this.info = { engine: msg.engine, model: msg.model }
+        this.info = { engine: msg.engine, model: msg.model, device: msg.device, backend: msg.backend }
         if (this.paused) this.write({ cmd: "pause" })
       }
       this.emit("message", msg)

@@ -32,7 +32,11 @@
       `brain ${s.brain}`,
       `mouth ${s.mouth}`,
       `ears ${s.ears}`,
-      lat ? `last reply in ${(lat.firstSpeakMs / 1000).toFixed(1)} s` : "",
+      lat
+        ? lat.endToAudioMs != null
+          ? `last reply ${(lat.endToAudioMs / 1000).toFixed(1)} s after you stopped (brain ${(lat.firstSpeakMs / 1000).toFixed(1)} s)`
+          : `last reply in ${(lat.firstSpeakMs / 1000).toFixed(1)} s`
+        : "",
       s.queue.length ? `${s.queue.length} queued` : "",
     ]
       .filter(Boolean)

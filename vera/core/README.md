@@ -39,8 +39,8 @@ Only the keys you set override the defaults in `src/config.ts`.
     "claude-code": { "model": "sonnet", "effort": "low" },
     "codex": { "model": "gpt-6.2-sol", "effort": "low" }
   },
-  "wake": { "words": [], "followUpSeconds": 8, "maxLeadingWords": 3 },
-  "ears": { "command": null, "tailMs": 400 },
+  "wake": { "words": [], "soft": true, "warmSeconds": 120, "followUpSeconds": 8, "maxLeadingWords": 3 },
+  "ears": { "command": "auto", "args": [], "tailMs": 300, "chimeTailMs": 150, "bargeIn": true },
   "mouth": { "module": "auto", "options": {} },
   "jobs": { "defaultCwd": "D:\\dev", "waitTimeoutSeconds": 90, "claude": {}, "codex": {}, "grok": {} },
   "t3": { "pollSeconds": 10 },
@@ -48,10 +48,16 @@ Only the keys you set override the defaults in `src/config.ts`.
 }
 ```
 
-- `ears.command`: argv of any process speaking the Ears JSON-lines protocol,
-  for example `["D:\\dev\\vera-voice\\target\\release\\hex.exe", "ears"]`.
-  `null` means no microphone (panel text box and API only).
-  `scripts/fake-ears.mjs` is a scripted stand-in for testing.
+- `ears.command`: `"auto"` (default) runs this repo's
+  `target/release/hex.exe ears` (else `target/ears-dev/hex.exe`) plus
+  `ears.args` (e.g. `["--device", "AT2020"]`), and prints the build command
+  if neither exists. An argv runs any process speaking the Ears JSON-lines
+  protocol (`scripts/fake-ears.mjs` is a scripted stand-in). `null` means no
+  microphone (panel text box and API only).
+- `ears.bargeIn`: keep listening while Vera talks, only for "Vera, stop"
+  (see Decisions). `false` pauses Ears instead.
+- `wake.soft`: accept misheard "Vera" ("Variable,", "Sarah,"); `warmSeconds`:
+  how long after Vera spoke "Hey there," still wakes her.
 - `mouth.module`: `"auto"` loads `@vera/mouth` (as a dependency, or the
   sibling `vera/mouth` package) and falls back to Windows SAPI; `"sapi"`
   (options: `volume`, `rate`, `voice`); `"stub"` logs only.
@@ -72,6 +78,33 @@ server all local; 2026-11-24, Windows 11. `pnpm bench` reproduces it.
 
 Turns that call a tool first (search, T3, jobs) take about 2 to 3 s to the
 first word; web searches 5 to 10 s.
+
+## End-to-end test (real audio, no human)
+
+```sh
+powershell -File scripts/e2e/make-phrases.ps1 -Out <dir>                # SAPI phrases as "Shawn"
+pnpm --filter @vera/mouth say "<a long sentence>" --out <dir>/echo.wav  # Vera's voice as echo
+node scripts/e2e/run.mjs <dir> [--barge-in] [--no-echo] [--loud]
+```
+
+It mixes the phrases into one scenario WAV, runs Core in a throwaway
+`VERA_HOME` on port 7399 with the scenario as the microphone of the real
+`hex ears` (`HEX_AUDIO_FIXTURE`), the real brain, and `@vera/mouth` playing
+silently (`SDL_AUDIODRIVER=dummy` keeps ffplay's real-time pacing), and
+checks: a remark without the wake word is ignored, "Vera, what time is it?"
+is answered, the follow-up without the wake word is answered, a late remark
+after the window is ignored, "Variable, ..." wakes, inbox notifications
+arrive (one deferred while speech is in progress), and "Vera, stop" during a
+long answer (stops her with `--barge-in --no-echo`; heard as nothing over
+echo or with barge-in off).
+
+Measured 2026-11-25 (Claude Code Sonnet 5.5 low, RTX 5070 Ti): **end of
+speech to Vera's first audio 1.8 to 2.8 s for short answers, about 2.1 s
+typical; about 3 s for a long one.** That is Ears' 700 ms end-of-speech
+pause (transcription adds 0 ms: it ran speculatively during the pause), the
+brain's 0.9 to 1.7 s to its `speak` call, and Mouth's 0.2 to 0.3 s to the
+first audio. `"args": ["--pause-ms", "550"]` would save 150 ms at the risk of
+cutting into mid-sentence pauses.
 
 ## How it fits together
 
@@ -104,10 +137,34 @@ first word; web searches 5 to 10 s.
   stays open `followUpSeconds`, measured against the utterance's `start` time.
   While Vera is speaking the window counts as open too (barge-in when
   half-duplex is off). A bare "Vera" chimes and opens the window.
-- **Half-duplex:** Ears get `pause` on Mouth `start` and `resume` after `end` +
-  `tailMs`. Ears segments that start while Vera talks (or within the tail) are
-  dropped as echo. Consequence: "Vera, stop" can't be heard while she's
-  talking; use the panel's Stop (or Esc) until Ears can barge in.
+- **Half-duplex:** with `ears.bargeIn: false`, Ears get `pause` on Mouth
+  `start` and `resume` after `end` + `tailMs` (300 ms; Mouth's `end` already
+  trails the sound by 150 to 200 ms). Chimes always pause them
+  (`chimeTailMs` 150 ms after the chime ends), except an inbox chime while
+  Shawn is mid-utterance, which waits for his final or `speech_cancel`
+  (pausing would drop his sentence). Any transcript overlapping a deaf
+  stretch is dropped as echo. Ears' extra lines (`speech_cancel`, `paused`,
+  `resumed`, `latency_ms`) are handled; unknown line types are ignored.
+- **Barge-in** (`ears.bargeIn`, default on): while Vera talks, Ears keep
+  running and every partial and final is checked for the strict wake word
+  followed by a stop phrase ("Vera, stop", "Vera, be quiet", "Vera, enough")
+  that isn't in what she's saying (`findBargeIn` in `src/gate.ts`). A hit
+  stops speech and the turn; everything else from that stretch is dropped,
+  and Ears are reset when she finishes so her echo doesn't run into the next
+  utterance. Tested with WAV fixtures: reliable with no echo (a headset);
+  with her own voice mixed in at about -12 dB (a loudspeaker), Parakeet
+  drops the overlapping "Vera, stop" entirely, so there barge-in never fires
+  (and never false-fires: the echo is dropped). Real fix: echo cancellation
+  with Mouth's output as the reference.
+- **Wake word tuning** (from a noisy-kitchen simulation where "Vera" came
+  out as "Hey there", "Okay there", "Hey girl", "Variable", "Vera of",
+  "Mirror", "Sarah"): "Variable", "Mirror", "Sarah"/"Sara" count only as the
+  first word followed by a comma, question mark or nothing ("Variable, what
+  time is it?" wakes; "variable names are long" doesn't). "Hey there,",
+  "Okay there,", "Hey girl," additionally need Vera to have spoken or woken
+  within `warmSeconds` (120 s), so a TV greeting an hour later never wakes
+  her. "Vera of ..." and "Vera, uh, ..." drop the hanger-on. Turn the soft
+  matches off with `wake.soft: false`.
 - **Inbox digest** rides on the front of the next user turn, once, with an
   instruction not to bring it up unless asked. Jobs the brain waited for
   (`wait:true`) don't create inbox items.

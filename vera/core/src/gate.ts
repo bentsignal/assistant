@@ -10,6 +10,17 @@
  * Leading wake words and fillers ("hey", "okay") are stripped from the text the
  * brain sees. A bare "Vera" opens the follow-up window without a turn. Stop
  * phrases ("Vera, stop", "never mind") cancel instead of starting a turn.
+ *
+ * Soft wake words: Parakeet sometimes hears "Vera" as a real word or name
+ * (measured in a noisy kitchen simulation: "Variable", "Mirror", "Sarah",
+ * "Hey there", "Okay there", "Hey girl", "Vera of"). Those count only as a
+ * leading vocative: the first word (after fillers), followed by a comma, a
+ * question mark, or nothing at all. "Variable, what time is it?" wakes;
+ * "variable names are long" and "I told Sarah" don't. The ones that are
+ * ordinary greetings ("hey there", "okay there", "hey girl") additionally
+ * need a recent Vera interaction (`recentlyActive`, Core passes true within
+ * two minutes of Vera last speaking or waking), so a TV saying "Hey there,
+ * folks" an hour later never wakes her.
  */
 
 const FILLERS = new Set(["hey", "hi", "ok", "okay", "oh", "um", "uh", "so", "yo", "alright", "right", "and"])
@@ -38,6 +49,18 @@ const STOP_PHRASES = [
   "no thanks",
   "no thank you",
 ]
+
+/** Misheard "Vera" that is a real word or name: leading vocative only. */
+const SOFT_WAKE = new Set(["variable", "mirror", "sarah", "sara"])
+/** Misheard "Hey Vera" that is also an ordinary greeting: leading vocative and only near a recent interaction. */
+const WARM_WAKE: [string, string][] = [
+  ["hey", "there"],
+  ["okay", "there"],
+  ["ok", "there"],
+  ["hey", "girl"],
+]
+/** Words Parakeet hangs on the wake word ("Vera of", "Vera uh") that the brain shouldn't see. */
+const AFTER_WAKE_FILLERS = new Set(["of", "uh", "um"])
 
 export function normalizeWord(w: string): string {
   return w
@@ -74,10 +97,27 @@ export interface WakeMatch {
   found: boolean
   /** Text with leading/trailing wake word and fillers removed. */
   text: string
+  /** Matched only through a soft wake word (a misheard "Vera"). */
+  soft?: boolean
+}
+
+export interface WakeOptions {
+  extra?: string[]
+  maxLeadingWords?: number
+  /** Accept soft wake words ("Variable, ..."). Default true. */
+  soft?: boolean
+  /** Vera spoke or woke recently: also accept greetings misheard for "Hey Vera". */
+  recentlyActive?: boolean
+}
+
+/** A word ends a vocative: "Sarah," "Sarah?" "Sarah." or the utterance ends. */
+function vocativeEnd(words: string[], i: number): boolean {
+  if (i === words.length - 1) return true
+  return /[,?.!:;]$/.test(words[i])
 }
 
 /** Find and strip the wake word. */
-export function stripWakeWord(text: string, opts: { extra?: string[]; maxLeadingWords?: number } = {}): WakeMatch {
+export function stripWakeWord(text: string, opts: WakeOptions = {}): WakeMatch {
   const extra = (opts.extra ?? []).map((w) => w.toLowerCase())
   const maxLeading = opts.maxLeadingWords ?? 3
   const words = text.trim().split(/\s+/).filter(Boolean)
@@ -88,8 +128,23 @@ export function stripWakeWord(text: string, opts: { extra?: string[]; maxLeading
     if (isWakeWord(words[i], extra)) {
       const before = words.slice(0, i).map(normalizeWord)
       if (before.every((w) => FILLERS.has(w))) {
-        const rest = words.slice(i + 1).join(" ")
-        return { found: true, text: cleanEdges(rest) }
+        return { found: true, text: afterWake(words, i + 1) }
+      }
+    }
+  }
+  if (opts.soft !== false) {
+    // Soft: first non-filler word, as a vocative.
+    let i = 0
+    while (i < words.length - 1 && i < maxLeading && FILLERS.has(normalizeWord(words[i]))) i++
+    if (SOFT_WAKE.has(normalizeWord(words[i])) && vocativeEnd(words, i)) {
+      return { found: true, soft: true, text: afterWake(words, i + 1) }
+    }
+    // Warm: "Hey there, ..." only right after Vera was active.
+    if (opts.recentlyActive && words.length >= 2) {
+      const a = normalizeWord(words[0])
+      const b = normalizeWord(words[1])
+      if (WARM_WAKE.some(([x, y]) => x === a && y === b) && vocativeEnd(words, 1)) {
+        return { found: true, soft: true, text: afterWake(words, 2) }
       }
     }
   }
@@ -101,6 +156,13 @@ export function stripWakeWord(text: string, opts: { extra?: string[]; maxLeading
   // Anywhere else: keep the sentence as said.
   if (words.some((w) => isWakeWord(w, extra))) return { found: true, text: text.trim() }
   return { found: false, text: text.trim() }
+}
+
+function afterWake(words: string[], from: number): string {
+  const rest = words.slice(from)
+  // "Vera of what time is it" / "Vera, uh, ..." -> drop the hanger-on.
+  if (rest.length > 1 && AFTER_WAKE_FILLERS.has(normalizeWord(rest[0]))) rest.shift()
+  return cleanEdges(rest.join(" "))
 }
 
 function cleanEdges(s: string): string {
@@ -129,7 +191,7 @@ export function gate(
   input: GateInput,
   state: GateState,
   now: number,
-  opts: { extra?: string[]; maxLeadingWords?: number } = {},
+  opts: WakeOptions = {},
 ): GateResult {
   const raw = (input.text ?? "").trim()
   if (!raw) return { action: "ignore", reason: "empty" }
@@ -143,4 +205,30 @@ export function gate(
   if (!text) return { action: "wake", text: "" }
   if (isStopPhrase(text)) return { action: "stop", text }
   return { action: "turn", text, via }
+}
+
+/** What counts as "stop" right after the wake word when barging in. */
+const BARGE_STOPS = ["stop", "be quiet", "quiet", "shush", "hush", "shut up", "enough", "cancel", "never mind", "nevermind", "pause", "wait"]
+
+/**
+ * Barge-in: does a transcript heard while Vera is talking hold the wake word
+ * followed by a stop ("Vera, stop", "Vera be quiet") that isn't in what Vera
+ * herself is saying (her own voice reaching the microphone)? Only the strict
+ * wake word counts, never the soft ones. Returns the matched phrase or null.
+ */
+export function findBargeIn(heard: string, spoken: string, extra: string[] = []): string | null {
+  const words = normalizePhrase(heard).split(" ").filter(Boolean)
+  const said = ` ${normalizePhrase(spoken)} `
+  for (let i = 0; i < words.length; i++) {
+    if (!isWakeWord(words[i], extra)) continue
+    let j = i + 1
+    while (j < words.length && j <= i + 2 && FILLERS.has(words[j])) j++
+    const rest = words.slice(j, j + 2).join(" ")
+    const stop = BARGE_STOPS.find((p) => rest === p || rest.startsWith(p + " "))
+    if (!stop) continue
+    const phrase = `${words[i]} ${stop}`
+    if (said.includes(` ${phrase} `) || said.includes(` ${stop} `)) continue
+    return phrase
+  }
+  return null
 }

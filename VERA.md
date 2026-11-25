@@ -41,9 +41,21 @@ Rules that shape the experience:
 - **Wake word.** An utterance reaches the brain if it starts with or contains
   "Vera" (fuzzy: vera, vara, vira, bera, and so on), or arrives inside the
   follow-up window (default 8 s after Vera stops speaking). The panel also has
-  a text box and a talk button.
-- **Half-duplex.** Ears are paused while Mouth is speaking, plus a short tail,
-  so Vera doesn't hear itself.
+  a text box and a talk button. Common mishearings that are real words
+  ("Variable,", "Mirror,", "Sarah,") count only as a leading vocative, and
+  greetings ("Hey there,", "Okay there,", "Hey girl,") only within two
+  minutes of Vera last speaking (see `vera/core/src/gate.ts`).
+- **Half-duplex.** Ears are paused while Mouth is speaking or chiming, plus a
+  short tail (300 ms after speech, 150 ms after a chime), so Vera doesn't hear
+  itself. An inbox chime that comes while Shawn is mid-sentence waits until
+  he's done, since pausing would drop his sentence.
+- **Barge-in** (`ears.bargeIn`, on by default): instead of pausing Ears while
+  Vera talks, Core keeps listening but acts only on the strict wake word
+  followed by a stop ("Vera, stop", "Vera, be quiet") that isn't in what Vera
+  is saying; every other transcript from that stretch is dropped as echo.
+  Works with a headset. Over a loudspeaker Parakeet loses "Vera, stop" under
+  Vera's own voice, so there it is safe but ineffective: use the panel's Stop
+  until there is echo cancellation.
 - **Thin brain.** The brain doesn't edit files or run shell commands itself. It
   delegates.
 

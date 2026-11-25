@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url"
 export const CORE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 /** Root of the vera/ pnpm workspace. */
 export const WORKSPACE_DIR = resolve(CORE_DIR, "..")
+/** Root of the vera-voice repo (the Hex fork that builds Ears). */
+export const REPO_DIR = resolve(WORKSPACE_DIR, "..")
 
 /** ~/.vera, or $VERA_HOME (tests and benches point this elsewhere). */
 export function veraHome(): string {
@@ -66,17 +68,34 @@ export interface VeraConfig {
   wake: {
     /** Extra exact words (lowercase) that count as the wake word, beside the built-in fuzzy match. */
     words: string[]
+    /** Accept misheard "Vera" ("Variable,", "Sarah,", and near a recent interaction "Hey there,") as a leading vocative. */
+    soft: boolean
+    /** Seconds after Vera last spoke or woke during which "Hey there," and friends also wake her. */
+    warmSeconds: number
     /** Seconds after Vera stops speaking during which no wake word is needed. */
     followUpSeconds: number
     /** How many leading words may come before the wake word ("hey", "okay"). */
     maxLeadingWords: number
   }
   ears: {
-    /** argv of the Ears process, or null for none (text box and API only). */
-    command: string[] | null
+    /**
+     * argv of the Ears process; "auto" (default) runs this repo's
+     * target/release/hex.exe (else target/ears-dev/hex.exe) with `ears`;
+     * null for none (text box and API only).
+     */
+    command: "auto" | string[] | null
+    /** Extra flags for the auto command, e.g. ["--device", "Headset"]. */
+    args: string[]
     cwd?: string
     /** Milliseconds Ears stay paused after Mouth stops, so Vera doesn't hear its own tail. */
     tailMs: number
+    /** Milliseconds Ears stay paused after a chime. */
+    chimeTailMs: number
+    /**
+     * Keep listening while Vera speaks, but only for "Vera, stop" (and other
+     * stop phrases after the wake word) that Vera isn't saying herself.
+     */
+    bargeIn: boolean
   }
   mouth: {
     /** "auto" tries @vera/mouth then falls back to "sapi"; "stub" only logs; "sapi" speaks with Windows SAPI. */
@@ -113,8 +132,8 @@ export const DEFAULT_CONFIG: VeraConfig = {
     grok: {},
     gemini: {},
   },
-  wake: { words: [], followUpSeconds: 8, maxLeadingWords: 3 },
-  ears: { command: null, tailMs: 400 },
+  wake: { words: [], soft: true, warmSeconds: 120, followUpSeconds: 8, maxLeadingWords: 3 },
+  ears: { command: "auto", args: [], tailMs: 300, chimeTailMs: 150, bargeIn: true },
   mouth: { module: "auto" },
   jobs: {
     defaultCwd: "D:\\dev",
@@ -172,4 +191,29 @@ export function saveConfigPatch(patch: unknown): VeraConfig {
   mkdirSync(dirname(paths.config), { recursive: true })
   writeFileSync(paths.config, JSON.stringify(next, null, 2) + "\n")
   return merge(DEFAULT_CONFIG, next)
+}
+
+/** Ears executables auto mode looks for, best first. */
+export function earsCandidates(): string[] {
+  const exe = process.platform === "win32" ? "hex.exe" : "hex"
+  return [join(REPO_DIR, "target", "release", exe), join(REPO_DIR, "target", "ears-dev", exe)]
+}
+
+/** Resolve config.ears into an argv, or null with the reason. */
+export function resolveEarsCommand(ears: VeraConfig["ears"]): { argv: string[] | null; note: string } {
+  if (ears.command === null || (Array.isArray(ears.command) && ears.command.length === 0)) {
+    return { argv: null, note: "ears off (ears.command is null): panel and API only" }
+  }
+  if (Array.isArray(ears.command)) return { argv: ears.command, note: `ears: ${ears.command.join(" ")}` }
+  const found = earsCandidates().find((p) => existsSync(p))
+  if (!found) {
+    return {
+      argv: null,
+      note:
+        `ears off: no ${earsCandidates()[0]} yet. Build it once from Git Bash in the repo root:\n` +
+        `    sh scripts/vera-ears-build.sh\n` +
+        `  (about 4 minutes; then restart Vera). Until then use the panel's text box.`,
+    }
+  }
+  return { argv: [found, "ears", ...(ears.args ?? [])], note: `ears: ${found} ears ${(ears.args ?? []).join(" ")}`.trim() }
 }
