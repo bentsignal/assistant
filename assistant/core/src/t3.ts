@@ -235,7 +235,7 @@ export class T3 {
         updatedAt: t.updatedAt,
         latestRunId: t.latestRunId ?? null,
         latestRunCompletedAt: t.latestRunCompletedAt ?? null,
-        waiting: t.status === "waiting" || !!t.pendingRuntimeRequest,
+        waiting: needsInput(t),
         lastError: t.lastError ?? null,
       }),
     )
@@ -653,7 +653,8 @@ export function rowFromRead(read: any): ReadRow {
   const t = read?.thread ?? {}
   const runs = [...(read?.recentRuns ?? [])].sort((a: any, b: any) => (b.ordinal ?? 0) - (a.ordinal ?? 0))
   const latest = runs[0]
-  const status = t.status ?? "idle"
+  // Waiting only on its own background work is still working, not idle.
+  const status = t.status === "waiting" && !needsInput(t) ? "running" : (t.status ?? "idle")
   const reply = [...(read?.items ?? [])]
     .sort((a: any, b: any) => (b.position ?? 0) - (a.position ?? 0))
     .find((i: any) => /assistant/.test(String(i.type ?? i.role ?? "")) && i.text)
@@ -666,10 +667,21 @@ export function rowFromRead(read: any): ReadRow {
     latestRunId: t.latestRunId ?? latest?.runId ?? null,
     latestRunCompletedAt: latest?.completedAt ?? null,
     latestRunStatus: latest?.status ?? null,
-    waiting: status === "waiting" || Number(t.pendingRequestCount ?? 0) > 0,
+    waiting: needsInput(t),
     lastError: t.lastError ?? latest?.error ?? null,
     message: reply?.text ?? "",
   }
+}
+
+/**
+ * Whether a thread is waiting on a person. T3's "waiting" status also covers
+ * a turn that's only waiting on its own background work (a build, a timer,
+ * a child): that isn't asking anything, so it doesn't count.
+ */
+export function needsInput(t: any): boolean {
+  if (Number(t?.pendingRequestCount ?? 0) > 0 || t?.pendingRuntimeRequest) return true
+  if ((t?.status ?? "") !== "waiting") return false
+  return !(Array.isArray(t?.pendingBackgroundTasks) && t.pendingBackgroundTasks.length > 0)
 }
 
 /** Whether a T3 failure means the thread no longer exists (rather than the machine being out of reach). */
@@ -691,6 +703,8 @@ export interface Watch {
   expectRun?: boolean
   /** Why it couldn't be read last time; she was told once, and it's cleared when it reads again. */
   pollError?: string
+  /** The last notice sent (kind and message), so the same one never chimes twice. */
+  lastNotice?: string
 }
 
 export type WatchEvent = {
@@ -769,7 +783,9 @@ export class T3Watcher {
   private async readRow(threadId: string, environmentId?: string, rows?: Map<string, T3ThreadRow>): Promise<ReadRow> {
     if (!environmentId) {
       const row = (rows ?? new Map((await this.t3.threads()).map((t) => [t.id, t]))).get(threadId)
-      if (row) return { ...row, latestRunStatus: null, message: "" }
+      // The shell list can't tell waiting on him from waiting on its own
+      // background work, nor give the latest reply: a waiting one is read in full.
+      if (row && !row.waiting) return { ...row, latestRunStatus: null, message: "" }
     }
     // A linked machine's thread, or a local one the shell leaves out (a subagent, say).
     const row = rowFromRead(await this.t3.remoteRead(environmentId, threadId, 3, 2000))
@@ -906,13 +922,21 @@ export class T3Watcher {
     w.lastCompletedAt = row.latestRunCompletedAt
     w.expectRun = false
     let message = row.message || row.lastError || ""
-    if (!row.message && !w.environmentId) {
+    if (!row.message) {
+      // Its newest reply (t3_thread_read lists newest first), never an old one.
       try {
-        const shown = await this.t3.show(w.threadId, 2)
-        const last = [...(shown.messages ?? [])].reverse().find((m: any) => m.role === "assistant")
-        if (last?.text) message = last.text
+        message = rowFromRead(await this.t3.remoteRead(w.environmentId, w.threadId, 3, 2000)).message || message
       } catch {}
     }
+    // The same notice (same kind, same last message) is never sent twice: a
+    // thread that flips status without saying anything new stays quiet.
+    const notice = `${kind}
+${message}`
+    if (notice === w.lastNotice) {
+      this.log(`[t3] watched thread "${w.title}" ${kind} again with nothing new; not notifying`)
+      return
+    }
+    w.lastNotice = notice
     this.onEvent({ kind, watch: w, status: row.status, message })
   }
 

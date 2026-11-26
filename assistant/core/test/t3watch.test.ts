@@ -114,6 +114,38 @@ test("waiting for input notifies once", async () => {
   assert.deepEqual(events.map((e) => e.kind), ["waiting"])
 })
 
+test("waiting only on its own background work isn't asking him anything, and the same notice never repeats", async () => {
+  const src = fakeT3()
+  const bg = (status: string, reply: string) => {
+    const r: any = read("orch", status, "2026-11-26T02:00:00Z", { reply })
+    r.thread.pendingBackgroundTasks = status === "waiting" ? [{ taskId: "b1", kind: "command" }] : []
+    return r
+  }
+  // A local thread the shell lists as waiting, though it's only awaiting its own background command.
+  src.local.set("orch", { id: "orch", projectId: "p", title: "Orchestrator", status: "running", updatedAt: "", latestRunId: "r2", latestRunCompletedAt: null, waiting: false, lastError: null })
+  src.remote.set("local/orch", bg("running", "Working on it."))
+  const { w, events } = watcher(src)
+  await w.add("orch", { fresh: true })
+  for (let i = 0; i < 3; i++) {
+    src.local.set("orch", { ...src.local.get("orch")!, status: "waiting", waiting: true })
+    src.remote.set("local/orch", bg("waiting", "Still building."))
+    await w.poll()
+    src.local.set("orch", { ...src.local.get("orch")!, status: "running", waiting: false })
+    await w.poll()
+  }
+  assert.deepEqual(events.map((e) => e.kind), [])
+  // It finishes: one notice with its newest reply; a re-read with nothing new stays quiet.
+  src.local.set("orch", { ...src.local.get("orch")!, status: "idle", waiting: false, latestRunCompletedAt: "2026-11-26T03:00:00Z" })
+  src.remote.set("local/orch", bg("idle", "All done."))
+  await w.poll()
+  assert.deepEqual(events.map((e) => [e.kind, e.message]), [["finished", "All done."]])
+  src.local.set("orch", { ...src.local.get("orch")!, status: "running" })
+  await w.poll()
+  src.local.set("orch", { ...src.local.get("orch")!, status: "idle", latestRunCompletedAt: "2026-11-26T03:05:00Z" })
+  await w.poll()
+  assert.equal(events.length, 1)
+})
+
 test("an unreachable machine is logged, told once, kept, and its finish still notifies when it's back", async () => {
   const src = fakeT3()
   src.remote.set(`${AIR}/t4`, read("t4", "running", null))
