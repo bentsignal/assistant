@@ -52,6 +52,9 @@
 //! headset returns nothing. Under `HEADSET_RETURN_DB` every suspicion is
 //! silent: no duck, and only speech the detector hears stops her. Her echo
 //! appearing (the headset taken off) ends that within a fraction of a second.
+//! A noise-gated microphone's digital silence is left out of the levels:
+//! silence while she is loud proves a headset on its own
+//! (`DIGITAL_SILENCE_DB`).
 
 use std::collections::VecDeque;
 
@@ -167,6 +170,13 @@ const RETURN_WINDOW: u64 = 1_500;
 const RETURN_MIN_LOUD: usize = 125;
 const RETURN_MIN_QUIET: usize = 100;
 const RETURN_RECENT: usize = 50;
+/// A microphone block under this is digital silence: a noise-gated
+/// microphone (Shawn's CORSAIR headset) with its gate closed. It says
+/// nothing about the room's level, so the measurement leaves it out; but no
+/// echo of Vera can reach a microphone that reads silence while she is
+/// loud, so `GATED_MIN` such blocks in the window make it a headset.
+const DIGITAL_SILENCE_DB: f32 = -90.0;
+const GATED_MIN: usize = 25;
 /// Vera counts as loud within this much of her recent peak, and above this
 /// absolute level.
 const LOUD_WITHIN_DB: f32 = 10.0;
@@ -915,6 +925,9 @@ struct EchoReturn {
     /// (block, microphone dB) while she was loud, and while she was silent.
     loud: VecDeque<(u64, f32)>,
     quiet: VecDeque<(u64, f32)>,
+    /// Blocks of digital silence while she was loud, and while she wasn't.
+    loud_silent: VecDeque<u64>,
+    quiet_silent: VecDeque<u64>,
     recent: VecDeque<f32>,
     /// The microphone's low level in silence, as last measured.
     quiet_db: Option<f32>,
@@ -928,6 +941,8 @@ impl Default for EchoReturn {
         Self {
             loud: VecDeque::new(),
             quiet: VecDeque::new(),
+            loud_silent: VecDeque::new(),
+            quiet_silent: VecDeque::new(),
             recent: VecDeque::new(),
             quiet_db: None,
             peak_db: -120.0,
@@ -954,32 +969,73 @@ impl EchoReturn {
                 ring.pop_front();
             }
         }
-        if stirred {
-            return;
+        for ring in [&mut self.loud_silent, &mut self.quiet_silent] {
+            while ring.front().is_some_and(|at| *at < oldest) {
+                ring.pop_front();
+            }
         }
-        let microphone_db = microphone_db.max(FLOOR_LOWEST_DB);
-        if reference_db > LOUD_ABOVE_DB && reference_db > self.peak_db - LOUD_WITHIN_DB {
-            self.loud.push_back((index, microphone_db));
-            push_capped(&mut self.recent, microphone_db, RETURN_RECENT);
-        } else if reference_db < FLOOR_LOWEST_DB || reference_db < self.peak_db - QUIET_UNDER_DB {
-            self.quiet.push_back((index, microphone_db));
+        let loud = reference_db > LOUD_ABOVE_DB && reference_db > self.peak_db - LOUD_WITHIN_DB;
+        let quiet = !loud
+            && (reference_db < FLOOR_LOWEST_DB || reference_db < self.peak_db - QUIET_UNDER_DB);
+        let clamped_db = microphone_db.max(FLOOR_LOWEST_DB);
+        if microphone_db < DIGITAL_SILENCE_DB {
+            // A closed gate. Never the user, so it counts even while
+            // something stirs (a suspicion of a breath it then cut off).
+            if loud {
+                self.loud_silent.push_back(index);
+                push_capped(&mut self.recent, clamped_db, RETURN_RECENT);
+            } else if quiet {
+                self.quiet_silent.push_back(index);
+            }
+        } else if !stirred {
+            if loud {
+                self.loud.push_back((index, clamped_db));
+                push_capped(&mut self.recent, clamped_db, RETURN_RECENT);
+            } else if quiet {
+                self.quiet.push_back((index, clamped_db));
+            }
         }
         if !index.is_multiple_of(FLOOR_EVERY) {
             return;
         }
-        if self.quiet.len() >= RETURN_MIN_QUIET {
-            self.quiet_db = Some(percentile(self.quiet.iter().map(|(_, db)| *db), 20));
-        }
+        // A gated microphone's level is bimodal (silence, or its own hiss
+        // while open): compare her loud stretches against its open level,
+        // never against its silence, or every open gate reads as her echo.
+        let gated_microphone = self.quiet_silent.len() + self.loud_silent.len() >= GATED_MIN;
+        let quiet_ready = if gated_microphone {
+            self.quiet_db = Some(if self.quiet.len() >= GATED_MIN {
+                percentile(self.quiet.iter().map(|(_, db)| *db), 20)
+            } else {
+                FLOOR_LOWEST_DB
+            });
+            self.quiet.len() + self.quiet_silent.len() >= RETURN_MIN_QUIET
+        } else {
+            if self.quiet.len() >= RETURN_MIN_QUIET {
+                self.quiet_db = Some(percentile(self.quiet.iter().map(|(_, db)| *db), 20));
+            }
+            self.quiet.len() >= RETURN_MIN_QUIET
+        };
+        // Silence while she is loud: nothing of her reaches it.
+        let gated = self.loud_silent.len() >= GATED_MIN;
         let Some(quiet) = self.quiet_db else {
+            if gated && !self.headset {
+                tracing::info!(
+                    gated,
+                    headset = true,
+                    "assistant audio: echo return measured"
+                );
+                self.headset = true;
+            }
             return;
         };
         // Her echo turning up (the headset taken off) ends a headset at once.
         let recent = (self.recent.len() >= RETURN_RECENT / 2)
             .then(|| percentile(self.recent.iter().copied(), 50) - quiet);
-        let measured = (self.loud.len() >= RETURN_MIN_LOUD && self.quiet.len() >= RETURN_MIN_QUIET)
+        let measured = (self.loud.len() >= RETURN_MIN_LOUD && quiet_ready)
             .then(|| percentile(self.loud.iter().map(|(_, db)| *db), 20) - quiet);
         let echo_now = recent.is_some_and(|recent| recent > RECENT_ECHO_DB);
         let headset = match measured {
+            _ if gated => true,
             _ if echo_now => false,
             Some(measured) if self.headset => measured <= SPEAKERS_RETURN_DB,
             Some(measured) => measured < HEADSET_RETURN_DB,
@@ -988,6 +1044,7 @@ impl EchoReturn {
         if headset != self.headset || (self.db.is_none() && measured.is_some()) {
             tracing::info!(
                 echo_return_db = format!("{:.1}", measured.or(recent).unwrap_or_default()),
+                gated,
                 headset,
                 "assistant audio: echo return measured"
             );
@@ -1368,6 +1425,48 @@ mod tests {
         assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
         assert!(!room.confirmed(), "{kinds:?}");
         assert!(kinds.contains(&Action::Suspect), "{kinds:?}");
+    }
+
+    #[test]
+    fn a_gate_that_opens_on_small_sounds_never_reads_as_echo() {
+        // Shawn's CORSAIR on 2026-11-26: small sounds keep opening its gate,
+        // which then passes its own hiss (-82 dBFS) for 400 ms before going
+        // back to digital silence. Its level jumps between the two at random
+        // against Vera's sentences, which read as her echo coming and going:
+        // `headset` flapped and 11 ducks got through in four minutes.
+        let mut room = Room::headset();
+        room.speech = Some(false);
+        room.noise_level = 0.0;
+        for _ in 0..500 {
+            room.block(0.0, 0.0);
+        }
+        let hiss = 1.4e-4;
+        let mut reply = |room: &mut Room, seconds: usize| {
+            let mut open_for = 0usize;
+            let mut next_sound = 40usize;
+            for block in 0..seconds * 250 {
+                let sound = block >= next_sound && block < next_sound + 20;
+                if block == next_sound + 20 {
+                    // The next one 0.3–1.1 s later.
+                    next_sound = block + 75 + ((room.noise() + 1.0) * 100.0) as usize;
+                }
+                if sound {
+                    open_for = 100;
+                }
+                room.noise_level = if open_for > 0 { hiss } else { 0.0 };
+                open_for = open_for.saturating_sub(1);
+                let user = if sound { 0.002 } else { 0.0 };
+                let vera = if block % 550 < 400 { 0.1 } else { 0.0 };
+                room.block(vera, user);
+            }
+        };
+        reply(&mut room, 12);
+        let onset = room.detector.position();
+        reply(&mut room, 60);
+        let kinds = room.after(onset);
+        assert!(room.detector.headset());
+        assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
+        assert!(!room.confirmed(), "{kinds:?}");
     }
 
     #[test]

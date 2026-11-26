@@ -208,6 +208,19 @@ up in her last 200 ms of loud playback (10 dB over the silent level: the
 headset taken off) ends that at once. The duplex log line reports
 `echo_return_db` and `headset`.
 
+**A gated microphone.** His headset's microphone gates itself: digital
+silence (under −90 dBFS) between sounds, its own hiss (about −80) for a
+moment after one. That level is bimodal, so the percentiles above landed on
+silence or on hiss at random and read as echo coming and going: on
+2026-11-26 `headset` flipped 26 times in four minutes (`echo_return_db`
+from −9.7 to 27.6) and 11 ducks got through during Tony's replies. Digital
+silence is now left out of both levels and counted on its own: 100 ms of it
+while she was loud, in the last 6 s, means none of her reaches the
+microphone, so it's a headset whatever else the measurement says; and a
+gated microphone's quiet level is its open level (hiss), never its
+silence. Her echo holding the gate open through her loud playback (the
+headset taken off) ages that out, and the measurement takes over again.
+
 A first word followed by a pause ("Wait, … start a new thread") keeps Vera
 ducked for up to 800 ms until the next word confirms (with speakers; in a
 headset the first word stops her). Nothing is confirmed
@@ -242,6 +255,12 @@ louder than the user at the mic:
 | kitchen | RT60 0.6 s, DRR −2 dB, fan at −50 dBFS, echo +8 dB, user at −38 dBFS |
 | bluetooth | desk + 190 ms unreported output latency, 120 ppm drift |
 | headset | no echo (−40 dB) |
+| gated | no echo; a noise-gated mic (digital silence under −72 dBFS, open 400 ms after a sound, −82 dBFS hiss) and small non-speech sounds several times a second |
+
+The gated room (added 2026-11-26) reproduces his headset: before the fix,
+`headset` flipped 10 times and one rustle ducked her in the barge plan;
+after, no flips, no ducks in any plan, and 12 of 12 barge-ins still stop
+her (`--room gated --no-stt`).
 
 Results (2026-11-25, `hex assistant-audio sim --voices <dir>`):
 

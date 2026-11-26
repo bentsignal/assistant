@@ -102,6 +102,9 @@ const U = {
   andB: "in Madrid?",
   flaky: "Vera, look into the flaky build.",
   flakyMore: "And the tests too.",
+  // Said 1 s after she has started thinking about the first part.
+  deploy: "Vera, check on the deploy.",
+  deployMore: "And roll back the staging server if it failed.",
 }
 
 const LONG = {
@@ -125,6 +128,8 @@ const SCRIPT = [
   rule("lisbon.*madrid", [speak("Both are sunny.")]),
   rule("flaky build.*tests", [speak("The build and the tests.")]),
   rule("flaky build", [{ sleep: 4000 }, speak("Looking at the build.")]),
+  rule("deploy.*staging", [speak("Checking the deploy and the staging server.")]),
+  rule("on the deploy", [{ sleep: 4000 }, speak("Checking the deploy.")]),
   rule("still there", [speak("Still here.")]),
   rule("are you there", [speak("I'm here.")]),
   rule("time now", [speak("It's half past twelve.")]),
@@ -453,6 +458,40 @@ class Run {
     return { ducks: field("ducks"), restores: field("restores"), suspicions: field("suspicions"), dismissed: field("dismissed"), bargeIns: field("barge_ins") }
   }
 
+  /** The messages the scripted brain was given after `after` (its own log). */
+  brainMessages(after = 0) {
+    const path = join(this.home, "brain", "script-brain.log.jsonl")
+    const text = existsSync(path) ? readFileSync(path, "utf8") : ""
+    return text
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l))
+      .filter((m) => m.at >= after)
+  }
+
+  /** Words of `name`'s line missing from `text` (case and punctuation ignored). */
+  missingWords(name, text) {
+    const digits = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+    const words = (s) =>
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9' ]+/g, " ")
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((w) => digits[Number(w)] ?? w)
+    const have = new Set(words(text))
+    return words(U[name]).filter((w) => w !== "vera" && !have.has(w))
+  }
+
+  /** Every word he said in `name` reached the brain, in one message after `after`. */
+  checkReachedBrain(name, after, what) {
+    const messages = this.brainMessages(after)
+    const whole = messages.filter((m) => this.missingWords(name, m.text).length === 0)
+    const last = messages[messages.length - 1]?.text ?? "(none)"
+    this.check(whole.length >= 1, `${what}: every word of "${U[name]}" reached the brain (last message: ${JSON.stringify(last.slice(-200))}, missing ${this.missingWords(name, last).join(" ") || "-"})`)
+    return { messages, whole }
+  }
+
   /** Dips in Vera's level (the simulated speakers' `dip` events) with no barge-in right after. */
   falseDips(after = 0, before = Infinity) {
     const barges = this.trace.find(isTo("barge_in"))
@@ -560,6 +599,7 @@ class Run {
       await this.heard(two)
       this.addressed++
       await this.reply(two, "Four.")
+      this.checkReachedBrain("two", two.at, "after the barge-in")
       this.check(this.trace.find(isFrom("speak", (m) => m.text === "And that is where the story ends."), story.at).length === 0, "the rest of the story was dropped")
       await this.hidden()
       // "Stop." over a reply: she stops and says nothing.
@@ -812,6 +852,32 @@ class Run {
       await this.hidden()
     })
 
+    await step("he goes on 1 s after she starts thinking: every word reaches the brain in one turn, one answer", async () => {
+      const first = await this.say("deploy")
+      await this.heard(first)
+      this.addressed++
+      const thinking = await this.trace.waitFor((e) => e.kind === "hud" && e.look === "thinking", {
+        after: first.finalAt,
+        within: 3000,
+        what: "her thinking about the first part",
+      })
+      await sleep(Math.max(0, thinking.t + 1000 - now()))
+      const rest = await this.say("deployMore")
+      await this.heard(rest)
+      this.steps.push({ said: rest, replies: ["Checking the deploy and the staging server."] })
+      await this.reply(rest, "Checking the deploy and the staging server.")
+      await sleep(4500) // past when the first part's answer would have come
+      const { messages, whole } = this.checkReachedBrain("deployMore", first.at, "the second part")
+      this.check(
+        whole.some((m) => this.missingWords("deploy", m.text).length === 0),
+        `both parts in one brain message (${messages.map((m) => JSON.stringify(m.text.slice(-120))).join(" | ")})`,
+      )
+      this.check(messages.filter((m) => /staging/i.test(m.text)).length === 1, `the second part went to the brain once (${messages.length} messages)`)
+      const answers = this.trace.find(isFrom("speak"), first.at)
+      this.check(answers.length === 1, `she answered once (${answers.map((e) => `"${e.msg.text}"`).join(", ")})`)
+      await this.hidden()
+    })
+
     await step("in a headset: room noise, breathing and clicks over a reply: no dips", async () => {
       // Shawn's headset: none of Vera reaches the microphone, which sends
       // near digital silence between sounds. A warm-up line first, so the
@@ -898,6 +964,7 @@ class Run {
       await this.heard(chile)
       this.addressed++
       await this.reply(chile, "Santiago.")
+      this.checkReachedBrain("chile", chile.at, "after the barge-in")
       this.check(this.trace.find(isFrom("speak", (m) => m.text === "Mind the roots."), forest.at).length === 0, "the rest of the forest was dropped")
       await this.hidden()
     })

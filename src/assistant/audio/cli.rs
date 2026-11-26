@@ -29,7 +29,7 @@ enum AssistantAudioCommand {
         /// Voices folder with voices.json (scripts/assistant-audio/make-voices.ps1).
         #[arg(long)]
         voices: PathBuf,
-        /// Rooms to run (desk, laptop, kitchen, bluetooth, headset); all by default.
+        /// Rooms to run (desk, laptop, kitchen, bluetooth, headset, gated); all by default.
         #[arg(long, value_delimiter = ',')]
         room: Vec<String>,
         /// Plans to run: echo, barge, after, clean.

@@ -40,6 +40,13 @@ pub(crate) struct RoomSpec {
     pub noise_dbfs: f32,
     /// Fan-like noise (low-passed), dBFS; `None` for none.
     pub fan_dbfs: Option<f32>,
+    /// A noise-gated microphone (Shawn's CORSAIR headset): exact zeros
+    /// while what it hears stays under this level (dBFS over 10 ms), open
+    /// for `GATE_HOLD_MS` after it last went over.
+    pub gate_dbfs: Option<f32>,
+    /// Small sounds near the microphone (breath, a chair, a click), dBFS,
+    /// a few a second: enough to open a gate, not speech.
+    pub rustle_dbfs: Option<f32>,
 }
 
 impl RoomSpec {
@@ -59,6 +66,8 @@ impl RoomSpec {
             drift_ppm: 60.0,
             noise_dbfs: -66.0,
             fan_dbfs: None,
+            gate_dbfs: None,
+            rustle_dbfs: None,
         };
         vec![
             desk.clone(),
@@ -102,6 +111,21 @@ impl RoomSpec {
                 echo_over_user_db: -40.0,
                 user_dbfs: -26.0,
                 drive: 0.0,
+                ..desk.clone()
+            },
+            // A wireless gaming headset whose microphone gates itself:
+            // digital silence between sounds, its own hiss (-82 dBFS) while
+            // open, nothing of Vera at all.
+            Self {
+                name: "gated",
+                rt60: 0.25,
+                drr_db: 6.0,
+                echo_over_user_db: -90.0,
+                user_dbfs: -26.0,
+                drive: 0.0,
+                noise_dbfs: -82.0,
+                gate_dbfs: Some(-72.0),
+                rustle_dbfs: Some(-58.0),
                 ..desk
             },
         ]
@@ -265,6 +289,69 @@ impl LowCut {
         self.state = [x, x1, y, y1];
         y
     }
+}
+
+/// How long a gated microphone stays open after its level last went over.
+pub(crate) const GATE_HOLD_MS: usize = 400;
+
+/// A microphone's noise gate, on 10 ms windows: closed, it delivers exact
+/// zeros.
+pub(crate) struct NoiseGate {
+    threshold: f32,
+    window: Vec<f32>,
+    open_for: usize,
+}
+
+impl NoiseGate {
+    pub(crate) fn new(threshold_dbfs: f32) -> Self {
+        Self {
+            threshold: 10f32.powf(threshold_dbfs / 10.0),
+            window: Vec::new(),
+            open_for: 0,
+        }
+    }
+
+    pub(crate) fn process(&mut self, samples: &mut [f32]) {
+        let window = RATE as usize / 100;
+        let hold = GATE_HOLD_MS * RATE as usize / 1_000;
+        for sample in samples {
+            self.window.push(*sample);
+            if self.window.len() == window {
+                let energy = self.window.iter().map(|s| s * s).sum::<f32>() / window as f32;
+                if energy > self.threshold {
+                    self.open_for = hold;
+                }
+                self.window.clear();
+            }
+            if self.open_for == 0 {
+                *sample = 0.0;
+            } else {
+                self.open_for -= 1;
+            }
+        }
+    }
+}
+
+/// Rustles: 60–120 ms bursts of low-passed noise at about `dbfs`, one
+/// every 0.3–1.1 s (deterministic), so a gate is open most of the time.
+pub(crate) fn rustles(samples: usize, dbfs: f32, seed: u32) -> Vec<f32> {
+    let rate = RATE as usize;
+    let mut out = vec![0.0f32; samples];
+    let mut noise = Noise(seed);
+    let burst = fan(rate / 4, dbfs, seed ^ 0x5bd1);
+    let mut at = rate;
+    while at < samples {
+        let length = rate * (60 + ((noise.uniform() + 1.0) * 30.0) as usize) / 1_000;
+        let ramp = (rate / 200) as f32;
+        for (offset, sample) in burst.iter().take(length).enumerate() {
+            let fade = (offset.min(length - offset) as f32 / ramp).min(1.0);
+            if let Some(into) = out.get_mut(at + offset) {
+                *into += sample * fade;
+            }
+        }
+        at += rate * 3 / 10 + ((noise.uniform() + 1.0) * 0.4 * rate as f32) as usize;
+    }
+    out
 }
 
 /// Fan noise: white noise through two one-pole low-passes (~400 Hz).

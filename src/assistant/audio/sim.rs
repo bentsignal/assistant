@@ -29,7 +29,7 @@ use color_eyre::eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 
 pub(crate) use room::RoomSpec;
-use room::{Convolver, LowCut, Noise, fan, impulse_response, interpolate};
+use room::{Convolver, LowCut, Noise, NoiseGate, fan, impulse_response, interpolate, rustles};
 
 use super::align::RATE;
 use super::barge::Action;
@@ -320,6 +320,12 @@ pub(crate) fn run(
             *into += sample;
         }
     }
+    if let Some(rustle_dbfs) = room.rustle_dbfs {
+        for (into, sample) in field.iter_mut().zip(rustles(total16 + 4, rustle_dbfs, 13)) {
+            *into += sample;
+        }
+    }
+    let mut gate = room.gate_dbfs.map(NoiseGate::new);
     let mut truths = Vec::new();
     for (at, cue) in &cues {
         if let Cue::User(phrase) = cue {
@@ -474,9 +480,12 @@ pub(crate) fn run(
         let until =
             ((heard_until_ns - T0_NS as f64) / 1e9 * RATE as f64 * mic_rate).max(0.0) as u64;
         if until > mic_next {
-            let chunk: Vec<f32> = (mic_next..until)
+            let mut chunk: Vec<f32> = (mic_next..until)
                 .map(|j| interpolate(&field, j as f64 / mic_rate))
                 .collect();
+            if let Some(gate) = &mut gate {
+                gate.process(&mut chunk);
+            }
             mic_next = until;
             let through_ns = T0_NS as f64
                 + until as f64 / mic_rate / RATE as f64 * 1e9
