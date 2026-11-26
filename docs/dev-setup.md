@@ -68,7 +68,7 @@ powershell -ExecutionPolicy Bypass -File assistant/voice/scripts/setup.ps1   # v
 ```sh
 cd assistant && pnpm -r test                                    # Core: 65 tests, ~70 s
 cargo test --locked --profile ears-dev --bin assistant assistant   # the app: ~90 tests
-~/.assistant/voice/venv/Scripts/python.exe -m unittest discover -s assistant/voice/tests   # voice: 21 tests
+~/.assistant/voice/venv/Scripts/python.exe -m unittest discover -s assistant/voice/tests   # voice: 21 tests (CI: numpy, scipy, pyloudnorm, librosa only)
 node scripts/assistant-update-test.mjs                          # install, update, rollback (below)
 ```
 

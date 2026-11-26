@@ -93,7 +93,7 @@ jobs:
 
       - name: Voice tests (model-free)
         working-directory: assistant/voice
-        run: uv run --no-project --python 3.12 --with numpy==2.5.5 --with scipy==1.18.1 python -m unittest discover -s tests
+        run: uv run --no-project --python 3.12 --with numpy==2.5.5 --with scipy==1.18.1 --with pyloudnorm==0.2.0 --with librosa==1.0.1 python -m unittest discover -s tests
 
       - name: Rust tests
         run: cargo test --release --locked --bin assistant assistant
