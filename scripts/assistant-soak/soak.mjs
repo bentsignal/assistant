@@ -110,10 +110,10 @@ const U = {
   lights: "Hey Vera, turn off the living room lights.",
   lightsMore: "And dim the kitchen ones too.",
   // He has the floor (2026-11-26 14:04:58): she must start nothing while he talks.
-  harbor: "Vera, tell me about the harbor.",
+  harbor: "Hey Vera, tell me about the harbor.",
   mountains: "Wait, wait, I'd rather hear about the mountains instead, the tall ones up north that keep their snow all year round.",
-  pantry: "Vera, check the pantry.",
-  pantryMore: "Vera, while you're at it, look at the fridge, the freezer, and the shelves by the back door too.",
+  pantry: "Hey Vera, check the pantry.",
+  pantryMore: "Hey Vera, while you're at it, look at the fridge, the freezer, and the shelves by the back door too.",
   // Listening off by voice.
   sleepNow: "Hey Vera, stop listening for a while.",
   awake: "Hey Vera, are you listening again?",
@@ -502,7 +502,8 @@ class Run {
         .filter(Boolean)
         .map((w) => digits[Number(w)] ?? w)
     const have = new Set(words(text))
-    return words(U[name]).filter((w) => w !== "vera" && !have.has(w))
+    // The wake phrase ("hey Vera") is stripped before the brain sees the words.
+    return words(U[name]).filter((w) => w !== "vera" && w !== "hey" && !have.has(w))
   }
 
   /** Every word he said in `name` reached the brain, in one message after `after`. */
