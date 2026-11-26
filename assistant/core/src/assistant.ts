@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto"
-import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import { BUNDLED, CORE_DIR, DEFAULT_NAME, loadConfig, paths, personasOf, saveConfigPatch, validName, type BrainHarness, type AssistantConfig, type Persona } from "./config.ts"
-import { gate, stripWakeWord, type GateResult } from "./gate.ts"
+import { BUNDLED, CORE_DIR, DEFAULT_NAME, isEnabled, loadConfig, paths, personasOf, saveConfigPatch, validName, validPhrase, wakePhrasesOf, type BrainHarness, type AssistantConfig, type Persona } from "./config.ts"
+import { bareNameAddress, gate, stripWakeWord, type GateResult, type WakeOptions } from "./gate.ts"
 import { Inbox, oneLine, truncate } from "./inbox.ts"
 import { SystemPrompt, renderPrompt } from "./prompt.ts"
 import { SkillStore } from "./skills.ts"
@@ -145,6 +145,8 @@ export class Assistant {
   followUpUntil = 0
   /** The name he last used (follow-ups keep it): who answers, in whose voice. */
   activePersona = ""
+  /** An install from before wake phrases: the first bare name he says to her gets "You can wake me with 'hey Vera' now." */
+  private wakeNotice = false
   /** Vera's own output level (0-1, see VOLUME_STEP). The App applies and persists it. */
   volume: number
   /** Microphone muted from the tray: nothing heard counts. */
@@ -205,6 +207,11 @@ export class Assistant {
     this.volume = state.volume ?? this.config.voice.defaultVolume
     // Whoever he was talking to keeps answering across restarts and new sessions.
     this.activePersona = state.persona ?? ""
+    // Wake phrases (2026-11-26): an install from before them is told once how she wakes now.
+    if (state.wakePhrases === undefined) {
+      this.wakeNotice = existsSync(paths.state)
+      this.saveState({ wakePhrases: this.wakeNotice ? "pending" : "told" })
+    } else this.wakeNotice = state.wakePhrases === "pending"
     this.inbox = new Inbox(paths.inbox)
     this.prompt = new SystemPrompt(paths.systemPrompt, paths.promptHistory)
     const upgrade = this.prompt.upgradeSeed(previousSeeds(), readFileSync(paths.seedPrompt, "utf8"))
@@ -363,11 +370,12 @@ export class Assistant {
         break
       case "settings_changed": {
         const before = this.name
-        const personasBefore = JSON.stringify(this.personas)
+        const personasBefore = this.promptPersonas()
         this.config = loadConfig()
         if (typeof ev.volume === "number") this.adoptVolume(ev.volume)
         this.log("settings changed; config reloaded")
-        if (this.name !== before || JSON.stringify(this.personas) !== personasBefore) this.renamed(before)
+        // Wake phrases apply at once from config; only what her prompt says restarts the brain.
+        if (this.name !== before || this.promptPersonas() !== personasBefore) this.renamed(before)
         break
       }
         break
@@ -457,14 +465,47 @@ export class Assistant {
   }
 
   private wakeIn(text: string): boolean {
-    const m = stripWakeWord(text, {
-      names: this.personas.map((p) => p.name),
+    return stripWakeWord(text, this.wakeOptions(Date.now())).found
+  }
+
+  /** How the gate wakes her now: her enabled personas, each by its phrases (and its name alone if allowed). */
+  wakeOptions(now: number): WakeOptions {
+    return {
+      personas: this.awake.map((p) => ({ name: p.name, phrases: wakePhrasesOf(p), bare: p.bareName === true })),
       extra: this.config.wake.words,
       maxLeadingWords: this.config.wake.maxLeadingWords,
       soft: this.config.wake.soft,
-      recentlyActive: Date.now() - this.lastActiveAt < this.config.wake.warmSeconds * 1000,
-    })
-    return m.found
+      recentlyActive: now - this.lastActiveAt < this.config.wake.warmSeconds * 1000,
+    }
+  }
+
+  /**
+   * Once, on an install from before wake phrases: he said a persona's name
+   * alone as he used to ("Vera, what time is it?") and it no longer wakes
+   * her, so she says how it does now. A wake through a phrase means he
+   * knows: nothing to say.
+   */
+  private maybeWakeNotice(g: GateResult, text: string) {
+    if (!this.wakeNotice) return
+    if (g.action !== "ignore") {
+      if (g.action !== "turn" || g.via === "wake") this.toldWakeNotice()
+      return
+    }
+    const opts = this.wakeOptions(Date.now())
+    const name = bareNameAddress(text, opts.personas!, this.config.wake.maxLeadingWords)
+    const p = name && this.findPersona(name)
+    if (!p) return
+    this.toldWakeNotice()
+    const phrase = wakePhrasesOf(p)[0]
+    if (!phrase) return
+    const line = `You can wake me with '${phrase}' now.`
+    this.log(`wake phrases: told him once ("${line}")`)
+    this.mouth.say(line, undefined, this.voiceOverride ?? p.voice)
+  }
+
+  private toldWakeNotice() {
+    this.wakeNotice = false
+    this.saveState({ wakePhrases: "told" })
   }
 
   /**
@@ -549,7 +590,7 @@ export class Assistant {
     const brain = createBrain(harness, {
       model: settings.model,
       effort: settings.effort,
-      systemPrompt: renderPrompt(this.prompt.read(), this.name, this.personas, this.skills.render()),
+      systemPrompt: renderPrompt(this.prompt.read(), this.name, this.awake, this.skills.render()),
       mcp: this.mcpLaunch(harness),
       servers,
       cwd: paths.brainDir,
@@ -638,13 +679,8 @@ export class Assistant {
     this.resumable = null
     const open = this.mouth.speaking || input.duringPlayback || this.bargePending || !!resume
     const followUpUntil = open ? Number.MAX_SAFE_INTEGER : this.followUpUntil
-    const g = gate(input, { followUpUntil }, now, {
-      names: this.personas.map((p) => p.name),
-      extra: this.config.wake.words,
-      maxLeadingWords: this.config.wake.maxLeadingWords,
-      soft: this.config.wake.soft,
-      recentlyActive: now - this.lastActiveAt < this.config.wake.warmSeconds * 1000,
-    })
+    const g = gate(input, { followUpUntil }, now, this.wakeOptions(now))
+    if (!input.direct) this.maybeWakeNotice(g, input.text)
     const wasBarge = this.bargePending
     this.bargePending = false
     this.lastHeard = input.text
@@ -1051,9 +1087,20 @@ export class Assistant {
     return personasOf(this.config)
   }
 
-  /** The persona answering now: the name he last used (the first one until then). */
+  /** Her personas that are on: only these wake, answer, and are in her prompt. */
+  get awake(): Persona[] {
+    return this.personas.filter(isEnabled)
+  }
+
+  /** What of her personas the prompt shows (an enabled persona's wake phrases don't restart the brain). */
+  private promptPersonas(): string {
+    return JSON.stringify(this.awake.map((p) => [p.name, p.voice, p.style ?? ""]))
+  }
+
+  /** The persona answering now: the name he last used, if it's on (else the first that is). */
   get persona(): Persona {
-    const all = this.personas
+    const on = this.awake
+    const all = on.length ? on : this.personas
     return all.find((p) => p.name.toLowerCase() === this.activePersona.toLowerCase()) ?? all[0]
   }
 
@@ -1088,7 +1135,7 @@ export class Assistant {
     if (to === old.name) return { from: old.name, to }
     const clash = this.findPersona(to)
     if (clash && clash.name !== old.name) throw new Error(`there's already a persona called ${clash.name}`)
-    const list = this.personas.map((p) => (p.name === old.name ? { ...p, name: to } : p))
+    const list = this.personas.map((p) => (p.name === old.name ? renamedPersona(p, to) : p))
     if (this.activePersona.toLowerCase() === old.name.toLowerCase()) {
       this.activePersona = to
       this.saveState()
@@ -1122,6 +1169,52 @@ export class Assistant {
   }
 
   /** "Make Jarvis use the Eli voice." */
+  /**
+   * "Turn off Tony", "let 'hey Tony' wake you", "stop answering to just
+   * Vera": a persona's switch, wake phrases, and name-alone wake, saved and
+   * applied at once. The first persona can't be turned off or left with no
+   * way to wake it from here (Settings can), so he can't lock himself out.
+   */
+  setWake(name: string | undefined, change: { enabled?: boolean; bareName?: boolean; add?: string; remove?: string; phrases?: string[] }): Persona {
+    const p = name ? this.findPersona(name) : this.persona
+    if (!p) throw new Error(`no persona called "${name}"; have ${this.personas.map((x) => x.name).join(", ")}`)
+    const next: Persona = { ...p }
+    if (change.enabled !== undefined) next.enabled = change.enabled
+    if (change.bareName !== undefined) next.bareName = change.bareName
+    let phrases = wakePhrasesOf(p)
+    if (change.phrases) phrases = change.phrases.map((x) => validPhrase(x)).filter((x): x is string => !!x)
+    if (change.add) {
+      const add = validPhrase(change.add)
+      if (!add) throw new Error(`"${change.add}" can't be a wake phrase: one to five words`)
+      if (!phrases.some((x) => x.toLowerCase() === add.toLowerCase())) phrases = [...phrases, add]
+    }
+    if (change.remove) {
+      const key = validPhrase(change.remove)?.toLowerCase()
+      const kept = phrases.filter((x) => x.toLowerCase() !== key)
+      if (kept.length === phrases.length) throw new Error(`${p.name} has no wake phrase "${change.remove}"; it has ${phrases.map((x) => `"${x}"`).join(", ") || "none"}`)
+      phrases = kept
+    }
+    if (change.phrases || change.add || change.remove) next.wakePhrases = phrases
+    const first = this.personas[0]
+    if (p.name === first.name) {
+      if (next.enabled === false) throw new Error(`${p.name} is the main persona and can't be turned off by voice (Settings can do it)`)
+      if (!wakePhrasesOf(next).length && next.bareName !== true) throw new Error(`that would leave no way to wake ${p.name}; keep a wake phrase or the name alone`)
+    }
+    // Tidy: leave defaults out of config.
+    if (next.enabled !== false) delete next.enabled
+    if (next.bareName !== true) delete next.bareName
+    if (next.wakePhrases && JSON.stringify(next.wakePhrases) === JSON.stringify([`hey ${p.name}`])) delete next.wakePhrases
+    const list = this.personas.map((x) => (x.name === p.name ? next : x))
+    if (next.enabled === false && this.persona.name === p.name && this.current) this.current.persona = undefined
+    this.config = saveConfigPatch({ assistant: { name: list[0].name, personas: list } })
+    const on = isEnabled(next)
+    this.log(`wake: ${p.name} ${on ? "on" : "off"}, phrases ${JSON.stringify(wakePhrasesOf(next))}, name alone ${next.bareName ? "on" : "off"}`)
+    // The App's Settings show it; the prompt lists only the personas that are on.
+    this.send({ cmd: "name", name: list[0].name })
+    if (isEnabled(p) !== on) this.renamed(this.name)
+    return next
+  }
+
   setPersonaVoice(name: string, voice: string): Persona {
     const p = this.findPersona(name)
     if (!p) throw new Error(`no persona called "${name}"; have ${this.personas.map((x) => x.name).join(", ")}`)
@@ -1242,6 +1335,7 @@ export class Assistant {
   switchPersona(name: string, why: string): Persona {
     const p = this.findPersona(name)
     if (!p) throw new Error(`no persona called "${name}"; have ${this.personas.map((x) => x.name).join(", ")}`)
+    if (!isEnabled(p)) throw new Error(`${p.name} is turned off; set_wake with enabled:true turns it on`)
     if (p.name !== this.activePersona) {
       this.log(`persona: ${this.activePersona || "(first)"} -> ${p.name} (${why})`)
       this.activePersona = p.name
@@ -1251,7 +1345,7 @@ export class Assistant {
     return p
   }
 
-  private loadState(): { volume?: number; persona?: string } {
+  private loadState(): { volume?: number; persona?: string; wakePhrases?: "pending" | "told" } {
     try {
       return JSON.parse(readFileSync(paths.state, "utf8"))
     } catch {
@@ -1259,11 +1353,11 @@ export class Assistant {
     }
   }
 
-  private saveState() {
+  private saveState(extra: Record<string, unknown> = {}) {
     try {
       writeFileSync(
         paths.state,
-        JSON.stringify({ ...this.loadState(), volume: this.volume, persona: this.activePersona || undefined }, null, 2) + "\n",
+        JSON.stringify({ ...this.loadState(), volume: this.volume, persona: this.activePersona || undefined, ...extra }, null, 2) + "\n",
       )
     } catch {}
   }
@@ -1562,4 +1656,10 @@ function previousSeeds(): string[] {
   } catch {
     return []
   }
+}
+
+/** A persona renamed: its wake phrases that said the old name say the new one. */
+export function renamedPersona(p: Persona, to: string): Persona {
+  const old = new RegExp(`\\b${p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi")
+  return { ...p, name: to, ...(p.wakePhrases ? { wakePhrases: p.wakePhrases.map((x) => x.replace(old, to)) } : {}) }
 }

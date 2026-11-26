@@ -36,6 +36,8 @@ pub(crate) struct AssistantUi {
     /// One name field per persona; they follow `view.personas` unless one
     /// is being edited.
     names: Vec<TextEdit>,
+    /// One wake-phrases field per persona ("hey Vera, okay Vera"), the same way.
+    phrases: Vec<TextEdit>,
     open: Option<Open>,
     /// The volume while its slider is dragged; saved when it lets go.
     volume_drag: Option<f32>,
@@ -72,6 +74,7 @@ impl AssistantUi {
         Self {
             view: SettingsView::default(),
             names: Vec::new(),
+            phrases: Vec::new(),
             open: None,
             volume_drag: None,
             prompt: None,
@@ -82,6 +85,7 @@ impl AssistantUi {
     pub(crate) fn fixture() -> Self {
         Self {
             names: fields(&fixture_view().personas),
+            phrases: phrase_fields(&fixture_view().personas),
             view: fixture_view(),
             open: None,
             volume_drag: None,
@@ -103,6 +107,10 @@ impl AssistantUi {
         if !editing && shown != saved {
             self.names = fields(&view.personas);
         }
+        let editing = self.phrases.iter().any(|field| field.focused);
+        if !editing && view.personas != self.view.personas {
+            self.phrases = phrase_fields(&view.personas);
+        }
         self.view = view;
     }
 
@@ -120,17 +128,43 @@ impl AssistantUi {
             {
                 continue;
             }
-            let mut persona = self.view.personas.get(index).cloned().unwrap_or(Persona {
-                name: String::new(),
-                voice: self.view.personas[0].voice.clone(),
-                style: None,
-            });
-            persona.name = name;
+            let persona = match self.view.personas.get(index) {
+                Some(old) => old.renamed(&name),
+                None => Persona::new(&name, &self.view.personas[0].voice, None),
+            };
             personas.push(persona);
         }
         if !personas.is_empty() && personas != self.view.personas {
             self.view.personas = personas.clone();
             self.act(UiAction::SetPersonas(personas));
+        }
+    }
+
+    /// Saves one persona's wake settings: what its phrases field says
+    /// (empty: "hey <name>" again), and `edit` for its switches.
+    fn commit_wake(&mut self, index: usize, edit: impl FnOnce(&mut Persona)) {
+        let Some(old) = self.view.personas.get(index) else {
+            return;
+        };
+        let mut persona = old.clone();
+        let typed = self.phrases.get(index).map(|f| f.text.clone()).unwrap_or_default();
+        let mut list: Vec<String> = Vec::new();
+        for phrase in typed.split([',', ';']).filter_map(crate::assistant::config::valid_phrase) {
+            if !list.iter().any(|x| x.eq_ignore_ascii_case(&phrase)) {
+                list.push(phrase);
+            }
+        }
+        let default = vec![format!("hey {}", persona.name)];
+        persona.wake_phrases = (!list.is_empty() && list != default).then_some(list);
+        edit(&mut persona);
+        if persona != *old {
+            let mut personas = self.view.personas.clone();
+            personas[index] = persona;
+            self.phrases = phrase_fields(&personas);
+            self.view.personas = personas.clone();
+            self.act(UiAction::SetPersonas(personas));
+        } else {
+            self.phrases = phrase_fields(&self.view.personas);
         }
     }
 
@@ -141,6 +175,7 @@ impl AssistantUi {
         let mut personas = self.view.personas.clone();
         personas.remove(index);
         self.names = fields(&personas);
+        self.phrases = phrase_fields(&personas);
         self.view.personas = personas.clone();
         self.act(UiAction::SetPersonas(personas));
     }
@@ -209,6 +244,14 @@ fn fields(personas: &[Persona]) -> Vec<TextEdit> {
         .collect()
 }
 
+/// A wake-phrases field per persona: its phrases, comma separated.
+fn phrase_fields(personas: &[Persona]) -> Vec<TextEdit> {
+    personas
+        .iter()
+        .map(|p| TextEdit::new(p.phrases().join(", ")))
+        .collect()
+}
+
 /// The stock prompt, for renders and scenes.
 const FIXTURE_PROMPT: &str = include_str!("../../../assistant/core/prompts/system.md");
 
@@ -218,13 +261,19 @@ pub(crate) fn fixture_view() -> SettingsView {
         status: Status {
             tone: Tone::Ready,
             title: "Listening".into(),
-            detail: "Say \u{201c}Vera\u{201d} to start \u{00b7} Ctrl+Alt+Space stops her talking"
+            detail: "Say \u{201c}hey Vera\u{201d} to start \u{00b7} Ctrl+Alt+Space stops her talking"
                 .into(),
         },
         name: crate::assistant::config::DEFAULT_NAME.into(),
-        personas: crate::assistant::config::default_personas(
-            crate::assistant::config::DEFAULT_NAME,
-        ),
+        personas: {
+            let mut list =
+                crate::assistant::config::default_personas(crate::assistant::config::DEFAULT_NAME);
+            // Show each state: Jarvis answers to his name alone too, Tony is off.
+            list[2].bare_name = true;
+            list[2].wake_phrases = Some(vec!["hey Jarvis".into(), "okay Jarvis".into()]);
+            list[6].enabled = false;
+            list
+        },
         muted: false,
         microphones: vec![
             "Microphone (Shure MV7+)".into(),
@@ -618,7 +667,7 @@ fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
             .gap(2.0)
             .child(text("Names").key("title").font(p.k.ty.ui).color(p.text()))
             .child(
-                text("Say any of these names to wake the assistant. Each answers in its own voice")
+                text("Each name wakes to its phrases and answers in its own voice. Name alone lets just the name wake it too")
                     .key("description")
                     .font(DESCRIPTION)
                     .color(p.muted()),
@@ -681,18 +730,65 @@ fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
             .on_press(move |ui: &mut AssistantUi| ui.remove_persona(index))
             .build(p.k)
             .key(format!("remove-{index}"));
+        let saved = ui.view.personas.get(index);
+        let on = saved.is_some_and(|p| p.enabled);
+        let toggle = pressable_row(
+            el().key(format!("enabled-{index}"))
+                .label(&format!("{} on", field.text.trim()))
+                .child(row_switch(p, on)),
+            on,
+        )
+        .disabled(saved.is_none())
+        .on_press(move |ui: &mut AssistantUi| ui.commit_wake(index, |p| p.enabled = !on));
         rows.push(
             row()
                 .key(format!("persona-{index}"))
                 .px(METRICS.row_px)
-                .py(8.0)
+                .pt(8.0)
+                .pb(if saved.is_some() { 2.0 } else { 8.0 })
                 .gap(8.0)
                 .center_y()
+                .child(toggle)
                 .child(name)
                 .child(el().grow(1.0))
                 .child(picker)
                 .child(remove),
         );
+        if let Some(persona) = saved {
+            let bare = persona.bare_name;
+            let phrases = TextInput::new(&ui.phrases[index])
+                .placeholder(&format!("hey {}", persona.name))
+                .label("Wake phrases")
+                .on_edit(move |ui: &mut AssistantUi| &mut ui.phrases[index])
+                .on_submit(move |ui: &mut AssistantUi, _: &mut Tx| ui.commit_wake(index, |_| {}))
+                .build(p.k)
+                .key(format!("phrases-{index}"))
+                .grow(1.0)
+                .shrink();
+            let alone = pressable_row(
+                row()
+                    .key(format!("bare-{index}"))
+                    .gap(6.0)
+                    .center_y()
+                    .label("Name alone")
+                    .child(text("Name alone").key("title").font(DESCRIPTION).color(p.muted()))
+                    .child(row_switch(p, bare)),
+                bare,
+            )
+            .on_press(move |ui: &mut AssistantUi| ui.commit_wake(index, |p| p.bare_name = !bare));
+            rows.push(
+                row()
+                    .key(format!("wake-{index}"))
+                    .px(METRICS.row_px)
+                    .pl(METRICS.row_px + 44.0)
+                    .pb(8.0)
+                    .gap(12.0)
+                    .center_y()
+                    .opacity(if on { 1.0 } else { 0.5 })
+                    .child(phrases)
+                    .child(alone),
+            );
+        }
     }
     let adding = ui.names.len() > ui.view.personas.len();
     rows.push(

@@ -258,7 +258,13 @@ impl Controller {
             tone: Tone::Ready,
             title: "Listening".into(),
             detail: format!(
-                "Say \u{201c}{{name}}\u{201d} to start \u{00b7} {} stops her talking",
+                "Say \u{201c}{}\u{201d} to start \u{00b7} {} stops her talking",
+                self.config
+                    .personas
+                    .iter()
+                    .find(|p| p.enabled)
+                    .and_then(|p| p.phrases().into_iter().next())
+                    .unwrap_or_else(|| format!("hey {}", self.config.name)),
                 self.config.stop_hotkey
             ),
         }

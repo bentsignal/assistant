@@ -123,9 +123,21 @@ impl Controller {
             self.publish(true);
             return;
         }
-        let list: Vec<serde_json::Value> = personas.iter().map(|p| p.to_json()).collect();
         let first = personas[0].name.clone();
         self.save(|root| {
+            // Over what each was (by name, else by place): Core's own keys, such as `acks`, stay.
+            let old = root["assistant"]["personas"].as_array().cloned().unwrap_or_default();
+            let list: Vec<serde_json::Value> = personas
+                .iter()
+                .enumerate()
+                .map(|(index, p)| {
+                    let base = old
+                        .iter()
+                        .find(|o| o["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&p.name)))
+                        .or_else(|| old.get(index));
+                    p.to_json_over(base)
+                })
+                .collect();
             *config::slot(root, &["assistant", "personas"]) = json!(list);
             *config::slot(root, &["assistant", "name"]) = json!(first);
         });

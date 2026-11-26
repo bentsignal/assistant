@@ -424,6 +424,22 @@ export const TOOLS: ToolDef[] = [
     inputSchema: { type: "object", properties: { name: str("The persona's name.") }, required: ["name"] },
   },
   {
+    name: "set_wake",
+    description:
+      "Change what wakes a persona, or turn one off or on, when Shawn asks ('turn off Tony', 'let hey Tony wake you', 'stop answering to just Vera', 'answer to plain Jarvis too'). Each persona wakes to its phrases (by default 'hey <name>'); bare_name:true lets the name alone wake it too. A persona that's off never wakes or answers. The first persona can't be turned off this way (Settings can). Applies at once, saved. Confirm in a few words.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        persona: str("Which persona; leave out for the one he's talking to."),
+        enabled: bool("false turns the persona off, true on."),
+        bare_name: bool("Whether the name alone wakes it ('Tony, ...'), beside its phrases."),
+        add_phrase: str("A wake phrase to add, like 'hey Tony' or 'okay Vera'."),
+        remove_phrase: str("A wake phrase to remove."),
+        phrases: { type: "array", items: { type: "string" }, description: "Replace all its wake phrases." },
+      },
+    },
+  },
+  {
     name: "set_voice",
     description:
       "List voices or change them. No args: lists the voices and which persona uses which. persona+voice: gives that persona its own voice ('make Jarvis use the Eli voice'). voice alone: an override every persona speaks in, for auditioning ('switch to Eli', 'try the next voice': 'next' / 'previous' step through them); voice 'default' clears the override so each persona speaks in its own voice again ('use your normal voices'). Applies from your next speak line, so after a switch say a short line in the new voice. Saved.",

@@ -1,6 +1,6 @@
 import { join } from "node:path"
 import { availableBrains } from "./brain/index.ts"
-import { CORE_DIR, paths, type BrainHarness } from "./config.ts"
+import { CORE_DIR, paths, wakePhrasesOf, type BrainHarness } from "./config.ts"
 import { probeServer, redactSpec, redactValue, resolveSpec, transportOf } from "./mcp/config.ts"
 import { appliesNote, checkValue, describeSettings, getKey, SETTINGS } from "./settings.ts"
 import { installCommandLine, installOf, readCheck, startDetached, updateArgs } from "./updates.ts"
@@ -623,11 +623,28 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
         } catch {}
       }
       const p = assistant.addPersona(name, voice, typeof args.style === "string" ? args.style : undefined)
-      return `Added ${p.name} (voice ${p.voice}). "${p.name}" wakes you now, and you answer in that voice. Confirm in a few words.`
+      return `Added ${p.name} (voice ${p.voice}). "hey ${p.name}" wakes you now, and you answer in that voice. Confirm in a few words.`
     }
     const { from, to } = assistant.setName(name, typeof args.from === "string" && args.from.trim() ? args.from : undefined)
     if (from === to) return `That persona is already called ${to}.`
-    return `Done: ${from} is ${to} now. Shawn wakes that persona with "${to}" from now on, and the next turn's prompt uses the new name. Confirm in a few words, as ${to}.`
+    return `Done: ${from} is ${to} now. Shawn wakes that persona with "hey ${to}" from now on, and the next turn's prompt uses the new name. Confirm in a few words, as ${to}.`
+  },
+
+  set_wake(assistant, args) {
+    const name = typeof args.persona === "string" && args.persona.trim() ? args.persona.trim() : undefined
+    const flag = (v: unknown) => (typeof v === "boolean" ? v : undefined)
+    const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined)
+    const p = assistant.setWake(name, {
+      enabled: flag(args.enabled),
+      bareName: flag(args.bare_name),
+      add: text(args.add_phrase),
+      remove: text(args.remove_phrase),
+      phrases: Array.isArray(args.phrases) ? args.phrases.filter((x: unknown): x is string => typeof x === "string") : undefined,
+    })
+    if (p.enabled === false) return `${p.name} is off: it no longer wakes or answers, and leaves your prompt from the next turn. Confirm in a few words.`
+    const phrases = wakePhrasesOf(p)
+    const ways = [...phrases.map((x) => `"${x}"`), ...(p.bareName ? [`"${p.name}" alone`] : [])]
+    return `${p.name} wakes to ${ways.join(", ") || "nothing"}${p.bareName ? "" : ` (not the name alone)`}. Applies now. Confirm in a few words.`
   },
 
   async set_voice(assistant, args) {

@@ -192,6 +192,34 @@ export interface Persona {
   style?: string
   /** Short lines Core says for this persona while she works ("One moment, sir."); built-in ones otherwise (`ack.ts`). */
   acks?: string[]
+  /** Off: this persona never wakes, never answers, and isn't in her prompt. Default on. */
+  enabled?: boolean
+  /** What wakes this persona ("hey Tony"). Unset: `"hey <name>"`, following a rename. */
+  wakePhrases?: string[]
+  /** The name alone wakes it too ("Tony, ..."). Default off: names come up in conversation. */
+  bareName?: boolean
+}
+
+/** Whether a persona is on (`enabled` unset counts as on). */
+export function isEnabled(p: Persona): boolean {
+  return p.enabled !== false
+}
+
+/** The phrases that wake a persona: its own, else "hey <name>". */
+export function wakePhrasesOf(p: Persona): string[] {
+  return p.wakePhrases ?? [`hey ${p.name}`]
+}
+
+/** A wake phrase as kept: words and apostrophes, single spaces, 1 to 5 words. Null if it isn't one. */
+export function validPhrase(phrase: unknown): string | null {
+  if (typeof phrase !== "string") return null
+  const p = phrase
+    .replace(/[’]/g, "'")
+    .replace(/[^\p{L}\p{N}' ]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  const words = p.split(" ").filter(Boolean)
+  return words.length >= 1 && words.length <= 5 && p.length <= 60 ? p : null
 }
 
 /** The names she starts with. The first is her own (Vera, in the `isla` voice). */
@@ -224,7 +252,18 @@ export function personasOf(config: Pick<AssistantConfig, "assistant">): Persona[
     const voice = typeof o.voice === "string" && o.voice.trim() ? o.voice.trim() : DEFAULT_PERSONAS[0].voice
     const style = typeof o.style === "string" && o.style.trim() ? o.style.trim() : undefined
     const acks = Array.isArray(o.acks) ? o.acks.filter((a): a is string => typeof a === "string" && !!a.trim()).map((a) => a.trim()) : []
-    out.push({ name, voice, ...(style ? { style } : {}), ...(acks.length ? { acks } : {}) })
+    const phrases = Array.isArray(o.wakePhrases)
+      ? [...new Set(o.wakePhrases.map(validPhrase).filter((x): x is string => !!x))]
+      : undefined
+    out.push({
+      name,
+      voice,
+      ...(style ? { style } : {}),
+      ...(acks.length ? { acks } : {}),
+      ...(o.enabled === false ? { enabled: false } : {}),
+      ...(phrases ? { wakePhrases: phrases } : {}),
+      ...(o.bareName === true ? { bareName: true } : {}),
+    })
   }
   return out.length ? out : [{ ...DEFAULT_PERSONAS[0] }]
 }

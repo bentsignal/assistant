@@ -183,7 +183,23 @@ export interface WakeMatch {
   explicit?: boolean
 }
 
+/**
+ * One persona as the gate sees it: its name, the phrases that wake it
+ * ("hey vera"; unset: "hey <name>"), and whether the name alone does too.
+ */
+export interface WakeName {
+  name: string
+  phrases?: string[]
+  bare?: boolean
+}
+
 export interface WakeOptions {
+  /**
+   * Her personas with their wake phrases; overrides `names` and `name`.
+   * A phrase wakes her ("Hey Vera", "hey, Vera", "hay Vera"); the name
+   * alone ("Vera, ...") only for a persona with `bare`.
+   */
+  personas?: WakeName[]
   /** Her name (default Vera): the wake word. Vera's tuned mishearings apply only to Vera. */
   name?: string
   /**
@@ -214,7 +230,7 @@ export function stripWakeWord(text: string, opts: WakeOptions = {}): WakeMatch {
     if (said.includes(key)) m.explicit = true
   }
   // Which name woke her is reported only to callers that gave several (personas).
-  if (!opts.names?.length && m.name !== undefined) {
+  if (!opts.names?.length && !opts.personas && m.name !== undefined) {
     delete m.name
     delete m.explicit
   }
@@ -222,13 +238,19 @@ export function stripWakeWord(text: string, opts: WakeOptions = {}): WakeMatch {
 }
 
 function stripWake(text: string, opts: WakeOptions): WakeMatch {
-  const extra = (opts.extra ?? []).map((w) => w.toLowerCase())
+  if (opts.personas) return stripPersonas(text, opts, opts.personas)
   const names = opts.names?.filter(Boolean).length ? opts.names.filter(Boolean) : [opts.name || DEFAULT_NAME]
-  const vera = names.find((n) => nameKey(n) === "vera")
+  return stripBare(text, opts, names, true)
+}
+
+/** The bare-name wake: any of `names` alone wakes her; `veraSoft` adds Vera's tuned mishearings. */
+function stripBare(text: string, opts: WakeOptions, names: string[], veraSoft: boolean): WakeMatch {
+  const extra = (opts.extra ?? []).map((w) => w.toLowerCase())
+  const vera = veraSoft ? names.find((n) => nameKey(n) === "vera") : undefined
   const maxLeading = opts.maxLeadingWords ?? 3
   const words = text.trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return { found: false, text: "" }
-  const found = (w: string) => matchNames(w, names, extra)
+  const found = (w: string) => (names.length ? matchNames(w, names, extra) : null)
   const match = (w: string) => found(w)?.kind ?? null
 
   // Leading: up to maxLeading filler words, then the wake word (a near
@@ -268,6 +290,116 @@ function stripWake(text: string, opts: WakeOptions): WakeMatch {
   const inside = words.map(found).find((m) => m?.kind === "exact")
   if (inside) return { found: true, name: inside.name, text: text.trim() }
   return { found: false, text: text.trim() }
+}
+
+/** How a phrase's other words may be heard: "hey" as "hay", "hi", "hei", ... */
+const WORD_ALIKE: Record<string, string[]> = {
+  hey: ["hey", "hay", "hei", "hae", "heh", "hi", "heya", "hiya"],
+  hi: ["hi", "hey", "hay"],
+  okay: ["okay", "ok", "okey", "kay"],
+  ok: ["ok", "okay", "okey"],
+}
+
+/** The phrases that wake a persona: its own, else "hey <name>". */
+export function phrasesOf(p: WakeName): string[] {
+  return p.phrases ?? [`hey ${p.name}`]
+}
+
+/**
+ * Personas by wake phrase, then (for those with `bare`) by the name alone.
+ * A phrase is matched word for word with punctuation ignored ("Hey, Vera."),
+ * its name word fuzzily as the name is (exact anywhere; a near miss, or for
+ * Vera "Sarah"/"Variable", only leading), and its other words by sound
+ * ("hay Vera"). "Hey there," (a misheard "Hey Vera") wakes Vera near a recent
+ * interaction, whether or not her name alone does.
+ */
+function stripPersonas(text: string, opts: WakeOptions, personas: WakeName[]): WakeMatch {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return { found: false, text: "" }
+  const extra = (opts.extra ?? []).map((w) => w.toLowerCase())
+  const maxLeading = opts.maxLeadingWords ?? 3
+  const soft = opts.soft !== false
+  const keys = words.map((w) => normalizeWord(w).replace(/'/g, ""))
+  const vera = personas.find((p) => nameKey(p.name) === "vera")
+
+  type Hit = { at: number; len: number; name: string; kind: "exact" | "near" | "soft" }
+  const hits: Hit[] = []
+  for (const [pi, p] of personas.entries()) {
+    const key = nameKey(p.name)
+    for (const phrase of phrasesOf(p)) {
+      const tokens = normalizePhrase(phrase).replace(/'/g, "").split(" ").filter(Boolean)
+      if (!tokens.length) continue
+      const fused = tokens.join("")
+      for (let i = 0; i < words.length; i++) {
+        // "Heyvera": the phrase run together into one word.
+        if (tokens.length > 1 && keys[i] === fused) {
+          hits.push({ at: i, len: 1, name: p.name, kind: "exact" })
+          continue
+        }
+        if (i + tokens.length > words.length) break
+        let kind: Hit["kind"] | null = "exact"
+        for (const [j, t] of tokens.entries()) {
+          const w = keys[i + j]
+          if (t === key) {
+            const m = wakeMatch(w, p.name, pi === 0 ? extra : [])
+            const k = m ?? (vera === p && SOFT_WAKE.has(w) ? "soft" : null)
+            if (!k) kind = null
+            else if (k !== "exact") kind = k
+          } else if (!(WORD_ALIKE[t] ?? [t]).includes(w)) kind = null
+          if (!kind) break
+        }
+        if (kind) hits.push({ at: i, len: tokens.length, name: p.name, kind })
+      }
+    }
+  }
+  const leading = (i: number) => i <= maxLeading && keys.slice(0, i).every((w) => FILLERS.has(w))
+  const explicit = (h: Hit) => keys.slice(h.at, h.at + h.len).some((w) => w === nameKey(h.name) || w.endsWith(nameKey(h.name)))
+  const result = (h: Hit, rest: string): WakeMatch => ({
+    found: true,
+    name: h.name,
+    text: rest,
+    ...(h.kind !== "exact" ? { soft: true } : {}),
+    ...(h.kind === "exact" && explicit(h) ? { explicit: true } : {}),
+  })
+  // Leading: "Hey Vera, what time is it?" (a near miss or "Hey Sarah," counts here only).
+  const lead = hits
+    .filter((h) => leading(h.at) && (h.kind === "exact" || (soft && (h.kind === "near" || vocativeEnd(words, h.at + h.len - 1)))))
+    .sort((a, b) => a.at - b.at || (a.kind === "exact" ? -1 : 1))[0]
+  if (lead) return result(lead, afterWake(words, lead.at + lead.len))
+
+  // The name alone, for personas that allow it.
+  const bare = personas.filter((p) => p.bare).map((p) => p.name)
+  const b = stripBare(text, { ...opts, recentlyActive: false }, bare, !!vera?.bare)
+  if (b.found) return b
+
+  // Warm: "Hey there, ..." only right after she was active.
+  if (vera && soft && opts.recentlyActive && words.length >= 2) {
+    if (WARM_WAKE.some(([x, y]) => x === keys[0] && y === keys[1]) && vocativeEnd(words, 1)) {
+      return { found: true, soft: true, name: vera.name, text: afterWake(words, 2) }
+    }
+  }
+  const exact = hits.filter((h) => h.kind === "exact")
+  // Trailing: "what's the weather, hey Vera?"
+  const tail = exact.find((h) => h.at + h.len === words.length)
+  if (tail) return result(tail, cleanEdges(words.slice(0, tail.at).join(" ")))
+  // Anywhere else: keep the sentence as said.
+  if (exact.length) return result(exact[0], text.trim())
+  return { found: false, text: text.trim() }
+}
+
+/**
+ * The name alone, said to her the way that woke her before wake phrases
+ * ("Vera, what time is it?"), of a persona it no longer wakes: who he meant,
+ * so Core can tell him once how she wakes now. Null otherwise ("Vera the app
+ * is...": not said to her).
+ */
+export function bareNameAddress(text: string, personas: WakeName[], maxLeading = 3): string | null {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  let i = 0
+  while (i < words.length - 1 && i < maxLeading && FILLERS.has(normalizeWord(words[i]))) i++
+  if (!words[i] || !vocativeEnd(words, i)) return null
+  const w = normalizeWord(words[i]).replace(/'/g, "")
+  return personas.find((p) => !p.bare && nameKey(p.name) === w)?.name ?? null
 }
 
 function afterWake(words: string[], from: number): string {

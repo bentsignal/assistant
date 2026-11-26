@@ -179,30 +179,105 @@ pub(crate) struct Config {
     pub(crate) turn: crate::assistant_ears::patience::Patience,
 }
 
-/// One of her names and the voice it speaks in.
+/// One of her names, the voice it speaks in, and what wakes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Persona {
     pub(crate) name: String,
     pub(crate) voice: String,
     pub(crate) style: Option<String>,
+    /// Off: it never wakes or answers (`enabled: false`).
+    pub(crate) enabled: bool,
+    /// Its own wake phrases (`wakePhrases`); `None` is "hey <name>".
+    pub(crate) wake_phrases: Option<Vec<String>>,
+    /// The name alone wakes it too (`bareName`).
+    pub(crate) bare_name: bool,
 }
 
 impl Persona {
-    fn new(name: &str, voice: &str, style: Option<&str>) -> Self {
+    pub(crate) fn new(name: &str, voice: &str, style: Option<&str>) -> Self {
         Self {
             name: name.into(),
             voice: voice.into(),
             style: style.map(str::to_owned),
+            enabled: true,
+            wake_phrases: None,
+            bare_name: false,
         }
     }
 
-    pub(crate) fn to_json(&self) -> Value {
-        let mut value = json!({ "name": self.name, "voice": self.voice });
+    /// What wakes it: its own phrases, else "hey <name>".
+    pub(crate) fn phrases(&self) -> Vec<String> {
+        self.wake_phrases
+            .clone()
+            .unwrap_or_else(|| vec![format!("hey {}", self.name)])
+    }
+
+    /// Renamed: phrases that said the old name say the new one.
+    pub(crate) fn renamed(&self, to: &str) -> Self {
+        let mut next = self.clone();
+        next.wake_phrases = self.wake_phrases.as_ref().map(|list| {
+            list.iter()
+                .map(|phrase| {
+                    phrase
+                        .split(' ')
+                        .map(|word| {
+                            if word.eq_ignore_ascii_case(&self.name) {
+                                to
+                            } else {
+                                word
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect()
+        });
+        next.name = to.into();
+        next
+    }
+
+    /// As config.json keeps it, over what was there (`base`: Core's own keys, such as `acks`, stay).
+    pub(crate) fn to_json_over(&self, base: Option<&Value>) -> Value {
+        let mut value = match base {
+            Some(Value::Object(map)) => Value::Object(map.clone()),
+            _ => json!({}),
+        };
+        value["name"] = json!(self.name);
+        value["voice"] = json!(self.voice);
         if let Some(style) = &self.style {
             value["style"] = json!(style);
         }
+        let map = value.as_object_mut().expect("an object");
+        for key in ["enabled", "wakePhrases", "bareName"] {
+            map.remove(key);
+        }
+        if !self.enabled {
+            map.insert("enabled".into(), json!(false));
+        }
+        if let Some(phrases) = &self.wake_phrases {
+            map.insert("wakePhrases".into(), json!(phrases));
+        }
+        if self.bare_name {
+            map.insert("bareName".into(), json!(true));
+        }
         value
     }
+
+    pub(crate) fn to_json(&self) -> Value {
+        self.to_json_over(None)
+    }
+}
+
+/// A wake phrase as kept: words and apostrophes, single spaces, one to
+/// five words. Matches Core's `validPhrase`.
+pub(crate) fn valid_phrase(phrase: &str) -> Option<String> {
+    let cleaned: String = phrase
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '\'' { c } else { ' ' })
+        .collect();
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let phrase = words.join(" ");
+    (!words.is_empty() && words.len() <= 5 && phrase.chars().count() <= 60).then_some(phrase)
 }
 
 /// The personas a config without `assistant.personas` starts with: her
@@ -365,6 +440,17 @@ impl Config {
                             name,
                             voice,
                             style: string(&p["style"]),
+                            enabled: p["enabled"].as_bool() != Some(false),
+                            wake_phrases: p["wakePhrases"].as_array().map(|list| {
+                                let mut out: Vec<String> = Vec::new();
+                                for phrase in list.iter().filter_map(|x| x.as_str()).filter_map(valid_phrase) {
+                                    if !out.iter().any(|x| x.eq_ignore_ascii_case(&phrase)) {
+                                        out.push(phrase);
+                                    }
+                                }
+                                out
+                            }),
+                            bare_name: p["bareName"].as_bool() == Some(true),
                         })
                     })
                     .collect()
@@ -462,6 +548,30 @@ mod tests {
         assert_eq!(config.personas.len(), 2);
         assert_eq!(config.personas[1].style.as_deref(), Some("crisp"));
         assert_eq!(config.personas[1].to_json()["voice"], "eli");
+    }
+
+    #[test]
+    fn personas_keep_their_wake_settings_and_cores_keys() {
+        let config = Config::from_value(&json!({ "assistant": { "personas": [
+            { "name": "Vera", "voice": "isla" },
+            { "name": "Tony", "voice": "tony", "enabled": false, "wakePhrases": ["hey Tony", "yo,  Tony!", "hey tony"], "bareName": true, "acks": ["Yeah."] }
+        ] } }));
+        let vera = &config.personas[0];
+        assert!(vera.enabled && !vera.bare_name);
+        assert_eq!(vera.phrases(), vec!["hey Vera".to_owned()]);
+        let tony = &config.personas[1];
+        assert!(!tony.enabled && tony.bare_name);
+        assert_eq!(tony.phrases(), vec!["hey Tony".to_owned(), "yo Tony".to_owned()]);
+        let base = json!({ "name": "Tony", "voice": "tony", "acks": ["Yeah."], "enabled": false });
+        let mut on = tony.clone();
+        on.enabled = true;
+        let saved = on.to_json_over(Some(&base));
+        assert_eq!(saved["acks"][0], "Yeah.", "Core's keys stay");
+        assert!(saved.get("enabled").is_none(), "on is the default, left out");
+        assert_eq!(saved["bareName"], true);
+        assert_eq!(tony.renamed("Rex").phrases(), vec!["hey Rex".to_owned(), "yo Rex".to_owned()]);
+        assert_eq!(valid_phrase("  Hey,  Vera! "), Some("Hey Vera".into()));
+        assert_eq!(valid_phrase(" , "), None);
     }
 
     #[test]

@@ -24,7 +24,7 @@ export const ACK_AFTER_MS = 1500
 
 /** Tools that answer at once: calling one first isn't a reason to acknowledge. */
 export const QUICK_TOOLS = new Set([
-  "speak", "show", "hide", "set_volume", "set_voice", "switch_persona", "set_name", "inbox", "job_status", "cancel_job",
+  "speak", "show", "hide", "set_volume", "set_voice", "switch_persona", "set_name", "set_wake", "inbox", "job_status", "cancel_job",
   "config_get", "skill_list", "skill_read", "read_system_prompt", "mcp_list",
 ])
 

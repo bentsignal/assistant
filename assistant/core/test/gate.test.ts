@@ -157,3 +157,62 @@ test("personas: any name wakes her and says which; Vera's mishearings stay Vera'
   assert.equal((warm as any).persona, undefined)
   assert.equal((gate({ text: "okay Optimus, report" }, { followUpUntil: 0 }, now, opts) as any).persona, "Optimus")
 })
+
+test("wake phrases: 'hey <name>' by default, with transcription variants; the name alone only by opt-in", () => {
+  const personas = [{ name: "Vera" }, { name: "Tony" }, { name: "Jarvis", bare: true }]
+  const opts = { personas }
+  for (const t of ["Hey Vera, what time is it?", "hey, Vera what time is it", "Hay Vera, what time is it?", "Hey Vera, what time is it", "Heyvera what time is it?", "okay hey Vera, what time is it?"]) {
+    const m = stripWakeWord(t, opts)
+    assert.equal(m.found, true, t)
+    assert.equal(m.name, "Vera", t)
+    assert.equal(m.text.replace(/\?$/, ""), "what time is it", t)
+  }
+  assert.equal(gate({ text: "Hey Vera." }, closed, now, opts).action, "wake")
+  assert.equal(gate({ text: "Hey, Vera, stop." }, closed, now, opts).action, "stop")
+  // The name alone, or the name in conversation, no longer wakes her.
+  for (const t of ["Vera, what time is it?", "Vera the app is crashing on launch", "I pushed the Vera build", "what time is it, Vera?", "Tony, grab a beer", "Tony said hi", "Vera.", "the onions are very hot", "hey there, what's up"]) {
+    assert.equal(gate({ text: t }, closed, now, opts).action, "ignore", t)
+  }
+  // Opted in: Jarvis wakes to his name alone, and to "hey Jarvis".
+  assert.deepEqual(gate({ text: "Jarvis, lights" }, closed, now, opts), { action: "turn", text: "lights", via: "wake", persona: "Jarvis" })
+  assert.equal((gate({ text: "hey Jarvis, lights" }, closed, now, opts) as any).persona, "Jarvis")
+  assert.deepEqual(gate({ text: "hey Tony, what's up?" }, closed, now, opts), { action: "turn", text: "what's up?", via: "wake", persona: "Tony" })
+  // Follow-ups still need no phrase.
+  assert.equal(gate({ text: "and tomorrow?", start: now }, { followUpUntil: now + 1000 }, now, opts).action, "turn")
+})
+
+test("wake phrases: mishearings wake but never switch who answers", () => {
+  const opts = { personas: [{ name: "Vera" }, { name: "Alfred" }] }
+  for (const t of ["Hey Vara, set a timer", "Hey Sarah, set a timer", "hey Alfread, the news"]) {
+    const g = gate({ text: t }, closed, now, opts)
+    assert.equal(g.action, "turn", t)
+    assert.equal((g as any).persona, undefined, t)
+  }
+  // "Hey Sarah" counts only as a leading vocative, and "Sarah," alone not at all now.
+  assert.equal(gate({ text: "hey Sarah is coming over" }, closed, now, opts).action, "ignore")
+  assert.equal(gate({ text: "Sarah, set a timer" }, closed, now, opts).action, "ignore")
+  assert.equal(gate({ text: "Variable, what time is it?" }, closed, now, opts).action, "ignore")
+  // "Hey there," (a misheard "Hey Vera") still wakes Vera near a recent interaction, naming nobody.
+  const warm = gate({ text: "Hey there, what's next?" }, closed, now, { ...opts, recentlyActive: true })
+  assert.equal(warm.action, "turn")
+  assert.equal((warm as any).persona, undefined)
+  // A named persona said as itself switches.
+  assert.equal((gate({ text: "Hey Alfred, the news" }, closed, now, opts) as any).persona, "Alfred")
+})
+
+test("wake phrases: custom phrases, and a persona left out (off) never wakes", () => {
+  const opts = { personas: [{ name: "Vera", phrases: ["hey Vera", "okay Vera"] }, { name: "Saul", phrases: [] }] }
+  assert.equal(gate({ text: "OK Vera, lights" }, closed, now, opts).action, "turn")
+  assert.equal(gate({ text: "hey Saul, lights" }, closed, now, opts).action, "ignore", "no phrases: nothing wakes it")
+  // Off personas aren't given to the gate at all (Core passes only enabled ones).
+  assert.equal(gate({ text: "hey Tony, lights" }, closed, now, opts).action, "ignore")
+})
+
+test("bareNameAddress: the bare name said to her, for the one-time notice", async () => {
+  const { bareNameAddress } = await import("../src/gate.ts")
+  const personas = [{ name: "Vera" }, { name: "Jarvis", bare: true }]
+  assert.equal(bareNameAddress("Vera, what time is it?", personas), "Vera")
+  assert.equal(bareNameAddress("okay Vera?", personas), "Vera")
+  assert.equal(bareNameAddress("Vera the app is broken", personas), null)
+  assert.equal(bareNameAddress("Jarvis, lights", personas), null, "it still wakes him")
+})

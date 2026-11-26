@@ -635,6 +635,7 @@ impl Controller {
                 self.config
                     .personas
                     .iter()
+                    .filter(|p| p.enabled)
                     .map(|p| p.name.clone())
                     .collect(),
             );
