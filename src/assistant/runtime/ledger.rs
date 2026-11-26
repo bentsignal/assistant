@@ -142,7 +142,7 @@ impl Ledger {
         ended
     }
 
-    #[cfg(test)]
+    /// No line is waiting to start or finish.
     pub(super) fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
