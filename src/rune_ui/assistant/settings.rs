@@ -108,7 +108,11 @@ impl AssistantUi {
             self.names = fields(&view.personas);
         }
         let editing = self.phrases.iter().any(|field| field.focused);
-        if !editing && view.personas != self.view.personas {
+        // The fields start empty, and the first view can equal the default
+        // one: they follow the personas whenever the count is off too.
+        if self.phrases.len() != view.personas.len()
+            || (!editing && view.personas != self.view.personas)
+        {
             self.phrases = phrase_fields(&view.personas);
         }
         self.view = view;
@@ -763,7 +767,7 @@ fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
                 .child(picker)
                 .child(remove),
         );
-        if let Some(persona) = saved {
+        if let Some(persona) = saved.filter(|_| index < ui.phrases.len()) {
             let bare = persona.bare_name;
             let phrases = TextInput::new(&ui.phrases[index])
                 .placeholder(&format!("hey {}", persona.name))
@@ -1278,4 +1282,23 @@ fn footer(ui: &AssistantUi, p: Paint) -> El {
                         .a11y_hidden(),
                 ),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The live window starts from the default view, and the first one the
+    /// runtime publishes can equal it: each persona still gets its wake
+    /// phrases field (opening Settings once indexed an empty list).
+    #[test]
+    fn the_first_view_gives_every_persona_a_phrases_field() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut ui = AssistantUi::live(tx);
+        let view = SettingsView::default();
+        assert!(!view.personas.is_empty());
+        ui.set_view(view.clone());
+        assert_eq!(ui.phrases.len(), view.personas.len());
+        assert_eq!(ui.names.len(), view.personas.len());
+    }
 }
