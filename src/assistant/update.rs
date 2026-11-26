@@ -413,6 +413,10 @@ pub(crate) fn cli(
             from,
         ])
         .args(["--wait-pid", &pid.to_string()])
+        // Not this terminal's pipes: the app it starts would hold them open.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()?;
     Ok(())
 }
