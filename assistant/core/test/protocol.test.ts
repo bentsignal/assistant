@@ -577,7 +577,7 @@ test("personas: 'Hey Alfred' answers in Alfred's voice, a follow-up stays Alfred
     const log = readFileSync(join(app.home, "brain", "script-brain.log.jsonl"), "utf8")
     assert.match(log, /\[Shawn is talking to Alfred\]/)
     assert.match(log, /\[Shawn is talking to Jarvis\]/)
-    assert.match(readFileSync(join(app.home, "brain", "script-brain.prompt.md"), "utf8"), /- Jarvis \(voice jarvis\): a crisp/)
+    assert.match(readFileSync(join(app.home, "brain", "script-brain.prompt.md"), "utf8"), /- Jarvis \(voice jarvis\): in character as J\.A\.R\.V\.I\.S\./)
   } finally {
     await app.stop()
   }

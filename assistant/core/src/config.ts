@@ -147,12 +147,12 @@ export interface Persona {
 /** The names she starts with. The first is her own (Vera, in the `isla` voice). */
 export const DEFAULT_PERSONAS: readonly Persona[] = [
   { name: DEFAULT_NAME, voice: "isla" },
-  { name: "Alfred", voice: "alfred", style: "a dry, courteous English butler" },
-  { name: "Jarvis", voice: "jarvis", style: "a crisp, unflappable AI aide with polite wit" },
-  { name: "Optimus", voice: "optimus", style: "a calm, noble commander of few words" },
-  { name: "Buzz", voice: "buzz", style: "an earnest, upbeat space ranger" },
-  { name: "Saul", voice: "saul", style: "a quick, persuasive fixer with a wink" },
-  { name: "Tony", voice: "tony", style: "a quick, confident inventor with a wry edge" },
+  { name: "Alfred", voice: "alfred", style: "in character as Alfred Pennyworth from The Dark Knight" },
+  { name: "Jarvis", voice: "jarvis", style: "in character as J.A.R.V.I.S. from Iron Man" },
+  { name: "Optimus", voice: "optimus", style: "in character as Optimus Prime from Transformers" },
+  { name: "Buzz", voice: "buzz", style: "in character as Buzz Lightyear from Toy Story" },
+  { name: "Saul", voice: "saul", style: "in character as Saul Goodman from Breaking Bad and Better Call Saul" },
+  { name: "Tony", voice: "tony", style: "in character as Tony Soprano from The Sopranos" },
 ]
 
 /**
