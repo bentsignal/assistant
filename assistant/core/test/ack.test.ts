@@ -47,7 +47,9 @@ test("a slow first tool gets an acknowledgement at once, before the tool; her ow
       steps: [{ tool: "ask_claude", args: { task: "summarize the repo" } }, { sleep: 300 }, { tool: "speak", args: { text: "Checking. It's a voice assistant." } }],
     },
   ]
-  const app = await FakeApp.start({ config: ackConfig(), script })
+  // A long dead-air threshold, so a slow runner reaching the tool after 1.2 s
+  // still tests the before-the-tool acknowledgement, not the silence one.
+  const app = await FakeApp.start({ config: testConfig({ turn: { acknowledgeMs: 8000 } }), script })
   try {
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
