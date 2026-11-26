@@ -153,6 +153,8 @@ export const TOOLS: ToolDef[] = [
         message: str("The brief for the agent."),
         title: str("Short thread title."),
         watch: bool("Watch it (default true)."),
+        environmentId: str("A linked machine's environment id (t3_environments) to start it there; omit for this one."),
+        model: str("Only on another machine, when its project has no default model: a Claude model id (default claude-sonnet-5-5)."),
       },
       required: ["project", "message"],
     },
@@ -160,7 +162,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "t3_send",
     description:
-      "Send a message to a T3 thread: Shawn's answer to an agent's question, approval, or a follow-up. Relay his words faithfully. A busy thread is steered: the agent gets it in its running turn, at once. Set queue only when Shawn says to queue it (it then waits for the current turn to end). The thread is watched afterwards.",
+      "Send a message to a T3 thread: Shawn's answer to an agent's question, approval, or a follow-up. Relay his words faithfully. A busy thread is steered (the agent gets it in its running turn, at once) and an idle one starts a turn. Set queue only when Shawn says to queue it (it then waits for the current turn to end). The thread is watched afterwards, on whichever machine it's on.",
     inputSchema: {
       type: "object",
       properties: {
@@ -174,10 +176,15 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "t3_watch",
-    description: "Watch a T3 thread: chime and an inbox item when it finishes or waits on an approval or an answer. stop:true stops watching.",
+    description:
+      "Watch a T3 thread on this machine or a linked one: chime and an inbox item when it finishes, fails, or waits on an approval or an answer (and once if it can't be checked). stop:true stops watching. Threads you start or send to are watched already.",
     inputSchema: {
       type: "object",
-      properties: { thread: str("Thread id."), stop: bool("Stop watching instead.") },
+      properties: {
+        thread: str("Thread id."),
+        environmentId: str("The linked machine's environment id (t3_environments) when the thread is on another machine."),
+        stop: bool("Stop watching instead."),
+      },
       required: ["thread"],
     },
   },
@@ -190,7 +197,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "t3_tool",
     description:
-      "Call any T3 Code tool by name (see t3_tools) with its arguments, with Shawn's full access. Pass environmentId in args to act on another machine (t3_environments lists them; Winserve is 573af78b-3442-4163-8b9b-bc5cb90eefde). A launch in a project with no default model needs modelSelection (orchestrator_capabilities lists providers and models; for Claude: {provider: claudeAgent, instanceId: claudeAgent, model: claude-sonnet-5-5}). Use it for whatever the simpler t3_* tools don't cover: launching threads with options, creating projects, settling or archiving threads, answering pending requests, PRs, issues. Confirm out loud before anything destructive or outward-facing.",
+      "Call any T3 Code tool by name (see t3_tools) with its arguments, with Shawn's full access. Pass environmentId in args to act on another machine (t3_environments lists them; Winserve is 573af78b-3442-4163-8b9b-bc5cb90eefde). A launch in a project with no default model needs modelSelection (orchestrator_capabilities lists providers and models; for Claude: {provider: claudeAgent, instanceId: claudeAgent, model: claude-sonnet-5-5}). Use it for whatever the simpler t3_* tools don't cover: launching threads with options, creating projects, settling or archiving threads, answering pending requests, PRs, issues. A thread t3_thread_launch starts with a message is watched for you (chime and inbox when done). Confirm out loud before anything destructive or outward-facing.",
     inputSchema: {
       type: "object",
       properties: {

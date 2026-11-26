@@ -10,7 +10,8 @@ import { SkillStore } from "./skills.ts"
 import { McpStore, brainServers, type ResolvedServer } from "./mcp/config.ts"
 import { patchFor, SETTINGS } from "./settings.ts"
 import { Jobs, type Job } from "./jobs.ts"
-import { T3, T3Watcher, isBusy } from "./t3.ts"
+import { T3, T3Watcher, isBusy, watchNotice } from "./t3.ts"
+import { ACK_AFTER_MS, ackNote, acksFor, endsSilently, pickAck, slowTool, stripOpeningAck } from "./ack.ts"
 import { AppMouth, type AppEvent, type AppLink, type ChimeKind, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
 import { createBrain, type Brain, type TurnResult } from "./brain/index.ts"
 import { continues, joinTurns, resumeNote, type Resumable } from "./turns.ts"
@@ -57,6 +58,13 @@ export interface TurnRecord {
   interrupted?: boolean
   /** Shawn talked over this turn's speech (or stopped it): further speech is dropped. */
   muted?: boolean
+  /** What Core said for her while she worked ("One sec."), and why (`ack.ts`). */
+  ack?: string
+  ackWhy?: string
+  /** The brain has done something this turn (spoken or called a tool). */
+  acted?: boolean
+  /** She's been told about the acknowledgement. */
+  ackNoted?: boolean
 }
 
 export interface UtteranceInput {
@@ -170,6 +178,8 @@ export class Assistant {
   /** His next words continue this turn (he went on before she'd answered; `turns.ts`). */
   private resumable: Resumable | null = null
   private logFile: string
+  private ackTimer: NodeJS.Timeout | null = null
+  private ackSeq = 0
 
   constructor(link: AppLink) {
     this.link = link
@@ -204,11 +214,9 @@ export class Assistant {
     this.watcher = new T3Watcher(
       this.t3,
       paths.watches,
-      (e) => {
-        const what = e.kind === "waiting" ? "needs your input" : e.kind === "failed" ? "failed" : "finished"
-        this.notify({ kind: "t3", title: `T3 "${e.watch.title}" ${what}`, summary: e.message || e.status, ref: e.watch.threadId })
-      },
+      (e) => this.notify(watchNotice(e)),
       () => this.changed(),
+      (line) => this.log(line),
     )
     this.inbox.onChange(() => this.changed())
     this.prompt.onChange(() => {
@@ -246,6 +254,7 @@ export class Assistant {
     this.syncHud(true)
     this.syncBadge()
     this.watcher.start(this.config.t3.pollSeconds * 1000)
+    this.warmAcks()
     // Warm the brain so the first turn doesn't pay for process start.
     this.ensureBrain().catch((err) => this.log(`brain failed to start: ${err.message}`))
   }
@@ -509,6 +518,8 @@ export class Assistant {
     brain.on("tool", (t: { name?: string }) => {
       // Her own servers' tools don't come through Core: note them in the log.
       if (t?.name?.startsWith("mcp__") && !t.name.startsWith("mcp__assistant__")) this.log(`brain tool ${t.name}`)
+      // Any MCP tool (hers or Core's) is an action; the harness's own (ToolSearch and such) aren't.
+      if (this.brain === brain && t?.name?.startsWith("mcp__")) this.beforeTool(t.name)
     })
     brain.on("mcp", (states: { name: string; status: string; error?: string }[]) => {
       for (const st of states) {
@@ -684,8 +695,87 @@ export class Assistant {
     this.turns.push(rec)
     if (this.turns.length > 50) this.turns.shift()
     this.changed()
+    this.armAck(rec)
     void this.runTurn(rec)
     return rec
+  }
+
+  // ---- acknowledgements (ack.ts) -------------------------------------------
+
+  /** Starts the dead-air clock: nothing spoken `ACK_AFTER_MS` after he stopped talking, and Core acknowledges. */
+  private armAck(rec: TurnRecord) {
+    if (this.ackTimer) clearTimeout(this.ackTimer)
+    this.ackTimer = null
+    const after = this.config.turn?.acknowledgeMs ?? ACK_AFTER_MS
+    if (!after || endsSilently(rec.text)) return
+    const now = Date.now()
+    const end = rec.heardEndAt && rec.heardEndAt <= now && now - rec.heardEndAt < 10_000 ? rec.heardEndAt : now
+    this.ackTimer = setTimeout(() => {
+      this.ackTimer = null
+      if (this.current === rec) this.acknowledge(rec, "silence")
+    }, Math.max(0, end + after - now))
+    this.ackTimer.unref()
+  }
+
+  /**
+   * The brain is calling `tool` (through Core, or one of her own MCP
+   * servers): the turn's first action, if it's a slow tool, gets an
+   * acknowledgement at once.
+   */
+  beforeTool(tool: string) {
+    const rec = this.current
+    if (!rec || rec.acted) return
+    rec.acted = true
+    if (slowTool(tool)) this.acknowledge(rec, `before ${tool.replace(/^mcp__assistant__/, "")}`)
+  }
+
+  /** Says a short acknowledgement for `rec` in its persona's voice, once, if it's still owed one. */
+  private acknowledge(rec: TurnRecord, why: string) {
+    if (!(this.config.turn?.acknowledgeMs ?? ACK_AFTER_MS)) return
+    if (rec.ack || rec.muted || rec.firstSpeakMs !== undefined || rec.durationMs !== undefined || endsSilently(rec.text)) return
+    if (this.ackTimer) clearTimeout(this.ackTimer)
+    this.ackTimer = null
+    const persona = (rec.persona && this.findPersona(rec.persona)) || this.persona
+    const text = pickAck(persona, this.ackSeq++)
+    rec.ack = text
+    rec.ackWhy = why
+    this.log(`turn ${rec.id}: acknowledged "${text}" (${why}, ${Date.now() - (rec.heardEndAt ?? rec.startedAt)} ms after he stopped)`)
+    if (rec.heardEndAt) this.awaitingAudio = rec
+    const item = this.mouth.say(text, rec.id, persona.voice)
+    const list = this.speechByTurn.get(rec.id) ?? []
+    list.push(item)
+    this.speechByTurn.set(rec.id, list)
+    this.changed()
+  }
+
+  /** Once per turn, after Core acknowledged: the note a tool result carries so she doesn't acknowledge again. */
+  takeAckNote(): string {
+    const rec = this.current
+    if (!rec?.ack || rec.ackNoted) return ""
+    rec.ackNoted = true
+    return "\n" + ackNote(rec.ack)
+  }
+
+  /**
+   * Has the voice service keep every persona's acknowledgements rendered,
+   * so they play at once. Retried while the service is starting.
+   */
+  warmAcks(tries = 20) {
+    const items = this.personas.flatMap((p) => acksFor(p).map((text) => ({ text, voice: this.voiceOverride ?? p.voice })))
+    fetch(`http://127.0.0.1:${this.voicePort}/v1/speech/warm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ items }),
+      signal: AbortSignal.timeout(4000),
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        this.log(`acknowledgements: ${JSON.stringify(await r.json())} warming in the voice service`)
+      })
+      .catch((err) => {
+        if (tries > 1) setTimeout(() => this.warmAcks(tries - 1), 15_000).unref()
+        else this.log(`acknowledgements not warmed (voice service: ${(err as Error).message}); they render on first use`)
+      })
   }
 
   private async runTurn(rec: TurnRecord) {
@@ -712,6 +802,8 @@ export class Assistant {
     // A timeout was already reported the moment it hit.
     if (!timedOut && !result.ok && !result.interrupted) this.alert("brain", result.error ?? "the brain failed")
     this.current = null
+    if (this.ackTimer) clearTimeout(this.ackTimer)
+    this.ackTimer = null
     this.turnWaiters.get(rec.id)?.(rec)
     this.turnWaiters.delete(rec.id)
     this.changed()
@@ -913,6 +1005,7 @@ export class Assistant {
   private renamed(from: string) {
     this.log(`name: ${from} -> ${this.name}`)
     this.brainDirty = true
+    this.warmAcks(3)
     this.changed()
   }
 
@@ -943,11 +1036,21 @@ export class Assistant {
   // ---- speech ---------------------------------------------------------------
 
   /** The speak tool. Returns false when the turn was talked over (nothing is said). */
-  say(text: string): boolean {
+  say(text: string, opts: { fromBrain?: boolean } = {}): boolean | "skipped" {
     const rec = this.current
     if (rec?.muted) {
       this.log(`not spoken (turn ${rec.id} was interrupted): ${text}`)
       return false
+    }
+    if (rec && opts.fromBrain) {
+      rec.acted = true
+      if (rec.ack && rec.firstSpeakMs === undefined) {
+        // Core already acknowledged: her own opening "checking" would double it.
+        const rest = stripOpeningAck(text)
+        if (rest !== text.trim()) this.log(`turn ${rec.id}: dropped her own acknowledgement after Core's: "${truncate(text, 80)}"`)
+        if (!rest) return "skipped"
+        text = rest
+      }
     }
     if (rec) {
       if (rec.firstSpeakMs === undefined) {
@@ -994,6 +1097,7 @@ export class Assistant {
       this.log("chime notify waits until Shawn finishes speaking")
       return
     }
+    if (kind === "notify") this.log("chime notify")
     this.mouth.chime(kind)
   }
 
@@ -1068,7 +1172,7 @@ export class Assistant {
 
   notify(item: { kind: "job" | "t3" | "system"; title: string; summary: string; ref?: string }) {
     this.inbox.add(item)
-    this.log(`inbox: ${item.title}`)
+    this.log(`inbox: ${item.title}${item.ref ? ` [${item.ref}]` : ""}`)
     this.chime("notify")
   }
 
@@ -1142,6 +1246,7 @@ export class Assistant {
     this.config = saveConfigPatch({ app: { voice: id } })
     this.log(`voice override: ${id ?? "none (each persona's own)"}`)
     this.send({ cmd: "voice", voice: id })
+    this.warmAcks(3)
   }
 
   setBrain(harness: BrainHarness, model?: string, effort?: string): string {

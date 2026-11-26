@@ -232,6 +232,11 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   (reverb, tint) are applied in the service. Volume is **not**; the app owns it.
   Output is loudness-normalized (about −20 LUFS) with peaks under −3 dBFS.
 - `GET /v1/voices` returns `{"default", "voices": [{"id","name","engine","gender","accent","description","available"}], "presets": [{"id","description"}]}` for the settings window.
+- `POST /v1/speech/warm {"items":[{"text","voice"?}]}` renders short lines (48
+  characters at most) in the background and keeps them, so a later
+  `/v1/speech` for the same voice, preset and text plays at once; any short line
+  rendered in full is kept too (`phrases.py`). Core warms the personas'
+  acknowledgements this way.
 - Closing the speech connection cancels synthesis. Unknown voice or preset: 400.
 - Implemented in `assistant/voice` (see its README). Setup: `assistant\voice\scripts\setup.ps1`.
   Spawn: `~\.assistant\voice\venv\Scripts\pythonw.exe -m assistant_voice serve --port 7314
@@ -248,8 +253,17 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   and the voice service's lexicon (`assistant/voice/assistant_voice/lexicon.py`, plus
   `~/.assistant/voice/lexicon.json`) says tech terms, names, and acronyms the way
   Shawn does (T3, GitHub, JSON, npm, CLI, ...).
+- **No dead air.** When a turn's first action is a slow tool, or nothing is
+  spoken `turn.acknowledgeMs` (1.2 s) after Shawn stopped, Core says a short
+  line for her in the persona's voice and manner ("One sec.", "One moment,
+  sir."; `assistant/core/src/ack.ts`). Never on a quick answer or a turn that
+  ends silently ("thanks"); her own opening "checking" is then dropped and the
+  next tool result tells her. Barge-in cuts it like any line.
 - **No unprompted talking.** Finished background work or a T3 thread that
-  needs input gets a chime, an inbox item, and a tray badge. Vera speaks only
+  needs input gets a chime, an inbox item, and a tray badge. Threads she starts
+  or sends to are watched on whichever machine they're on; a watched thread
+  that finishes, fails or waits always notifies once, and one that can't be
+  checked (machine unreachable, thread gone) is logged and reported once. Vera speaks only
   when asked ("Vera, what's new?"). The inbox digest goes to the brain with
   the next user turn.
 - **Wake word** "Vera" (fuzzy matching; see `assistant/core/src/gate.ts`), or the
@@ -268,8 +282,8 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
 
 - Coding work in a project: start or continue a **T3 Code** thread (Shawn
   watches T3 side by side). Quick one-off file edits or questions about local
-  code: `ask_claude`. Sends steer a running turn by default (queue only when he
-  asks), through T3's own MCP endpoint; threads on his other machines are
+  code: `ask_claude`. Sends steer a running turn and start a turn on an idle
+  thread by default (T3's mode `auto`; queue only when he asks), through T3's own MCP endpoint; threads on his other machines are
   reached by environment id. Feedback about Vera herself goes to the
   orchestrator thread (`t3.orchestratorThread` in `config.json`, Winserve's
   by default) with `send_feedback`.

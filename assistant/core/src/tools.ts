@@ -9,6 +9,7 @@ import type { Job, JobAgent } from "./jobs.ts"
 import type { Assistant } from "./assistant.ts"
 import { runCli, type RunResult } from "./proc.ts"
 import { formatSkill, skillSlug, splitCommand } from "./skills.ts"
+import { launchedId } from "./t3.ts"
 import { describeVoices, fetchVoices, pickVoice } from "./voices.ts"
 
 /**
@@ -117,11 +118,46 @@ async function resolveThreadTitle(assistant: Assistant, id: string): Promise<str
   return row?.title ?? id
 }
 
+/** A linked machine's environment id from the tool's args (`environmentId`, or the older `environment`). */
+export function envArg(args: any): string | undefined {
+  for (const k of ["environmentId", "environment"]) {
+    const v = args?.[k]
+    if (typeof v === "string" && v.trim()) return v.trim()
+  }
+  return undefined
+}
+
+/** How a delivered message went, for her to say. */
+export function deliveryWords(delivery: string): string {
+  return delivery === "steered"
+    ? "Steered into its running turn"
+    : delivery === "queued"
+      ? "Queued after its current turn"
+      : delivery === "started"
+        ? "Started a new turn with it"
+        : delivery === "restarted"
+          ? "Restarted its turn with it"
+          : "Sent"
+}
+
+/** Watches a thread Vera just started or sent to; says why if it can't. */
+async function autoWatch(assistant: Assistant, threadId: string, environmentId?: string): Promise<string> {
+  try {
+    await assistant.watcher.ensure(threadId, environmentId)
+    return "watching it"
+  } catch (err) {
+    assistant.log(`[t3] couldn't watch ${threadId}: ${(err as Error).message}`)
+    return `but couldn't watch it (${truncate((err as Error).message, 200)}), so tell Shawn there'll be no chime when it's done`
+  }
+}
+
 export const HANDLERS: Record<string, ToolHandler> = {
   speak(assistant, args) {
     const text = need(args, "text")
-    if (!assistant.say(text)) return "Not spoken: Shawn talked over you or said stop. Say nothing more this turn."
-    return "Speaking."
+    const said = assistant.say(text, { fromBrain: true })
+    if (said === false) return "Not spoken: Shawn talked over you or said stop. Say nothing more this turn."
+    if (said === "skipped") return `Not spoken: it only acknowledged, and Core had already said "${assistant.currentTurn?.ack}" for you. Say the answer itself.`
+    return "Speaking." + assistant.takeAckNote()
   },
 
   show(assistant, args) {
@@ -193,9 +229,9 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
     const message = need(args, "message")
     const target = assistant.config.t3.orchestratorThread
     try {
-      const sent = await assistant.t3.send(target.threadId, message, { environmentId: target.environmentId })
-      const how = sent.delivery === "steered" ? "steered into its running turn" : sent.delivery === "queued" ? "queued" : "sent"
-      return `Feedback ${how} to the orchestrator${sent.steerRefused ? ` (queued, not steered: ${steerNote(assistant)})` : ""}. Confirm in a few words.`
+      const sent = await assistant.t3.send(target.threadId, message, { mode: "auto", environmentId: target.environmentId })
+      const how = deliveryWords(sent.delivery).toLowerCase()
+      return `Feedback to the orchestrator: ${how}${sent.steerRefused ? ` (queued, not steered: ${steerNote(assistant)})` : ""}. Confirm in a few words.`
     } catch (err) {
       const code = (err as any).code as string | undefined
       if (code?.endsWith("_escalation_denied")) return t3Refusal(assistant, err as Error & { code?: string })
@@ -235,40 +271,51 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
   },
 
   async t3_start_thread(assistant, args) {
-    const project = await assistant.t3.findProject(need(args, "project"))
-    const res = await assistant.t3.start(project.id, need(args, "message"), { title: args.title })
-    const id = res.threadId ?? res.thread?.threadId ?? res.id
-    if (!id) return `Started, but T3 didn't return an id: ${truncate(JSON.stringify(res), 300)}`
-    if (args.watch !== false) await assistant.watcher.add(id).catch(() => {})
-    return `Started thread ${id} in ${project.title}${args.watch !== false ? ", watching it" : ""}.`
+    const environmentId = envArg(args)
+    const message = need(args, "message")
+    const project = await assistant.t3.findProject(need(args, "project"), environmentId)
+    let id: string | undefined
+    if (environmentId) {
+      try {
+        const res = await assistant.t3.launch(environmentId, project, message, { title: args.title, model: args.model })
+        id = res.threadId
+        if (!id) return `Started, but T3 didn't return an id: ${truncate(JSON.stringify(res.raw), 300)}`
+      } catch (err) {
+        if (!(err as any).code) throw err
+        return t3Refusal(assistant, err as Error & { code?: string })
+      }
+    } else {
+      const res = await assistant.t3.start(project.id, message, { title: args.title })
+      id = res.threadId ?? res.thread?.threadId ?? res.id
+      if (!id) return `Started, but T3 didn't return an id: ${truncate(JSON.stringify(res), 300)}`
+    }
+    const where = environmentId ? ` on ${environmentId}` : ""
+    if (args.watch === false) return `Started thread ${id} in ${project.title}${where}.`
+    return `Started thread ${id} in ${project.title}${where}, ${await autoWatch(assistant, id!, environmentId)}.`
   },
 
   async t3_send(assistant, args) {
     const thread = need(args, "thread")
-    const environmentId = typeof args.environment === "string" && args.environment ? args.environment : undefined
+    const environmentId = envArg(args)
     let sent
     try {
-      sent = await assistant.t3.send(thread, need(args, "message"), { mode: args.queue === true ? "queue" : "steer", environmentId })
+      sent = await assistant.t3.send(thread, need(args, "message"), { mode: args.queue === true ? "queue" : "auto", environmentId })
     } catch (err) {
       if (!(err as any).code) throw err
       return t3Refusal(assistant, err as Error & { code?: string })
     }
     const note = sent.steerRefused ? ` Queued rather than steered: ${steerNote(assistant)}` : ""
-    const how0 = sent.delivery === "steered" ? "Steered into its running turn" : sent.delivery === "queued" ? "Queued after its current turn" : "Sent"
-    // Threads on another machine aren't watched (the watcher reads this one).
-    if (environmentId) return `${how0} (thread ${thread} on ${environmentId}).${note}`
-    if (!assistant.watcher.watches.has(thread)) await assistant.watcher.add(thread).catch(() => {})
-    else assistant.watcher.expectRun(thread)
-    const how =
-      sent.delivery === "steered" ? "Steered into its running turn" : sent.delivery === "queued" ? "Queued after its current turn" : "Sent"
-    return `${how} ("${await resolveThreadTitle(assistant, thread)}"); watching for the reply.${note}`
+    const watching = await autoWatch(assistant, thread, environmentId)
+    const name = environmentId ? `thread ${thread} on ${environmentId}` : `"${await resolveThreadTitle(assistant, thread).catch(() => thread)}"`
+    return `${deliveryWords(sent.delivery)} (${name}); ${watching}.${note}`
   },
 
   async t3_watch(assistant, args) {
     const thread = need(args, "thread")
-    if (args.stop) return assistant.watcher.remove(thread) ? "Stopped watching." : "Wasn't watching that thread."
-    const w = await assistant.watcher.add(thread)
-    return `Watching "${w.title}" (now ${w.lastStatus}).`
+    const environmentId = envArg(args)
+    if (args.stop) return assistant.watcher.remove(thread, environmentId) ? "Stopped watching." : "Wasn't watching that thread."
+    const w = await assistant.watcher.add(thread, { environmentId })
+    return `Watching "${w.title}"${w.environmentId ? ` on ${w.environmentId}` : ""} (now ${w.lastStatus}).`
   },
 
   async t3_tools(assistant, args) {
@@ -288,7 +335,14 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
     if (typeof input === "string") input = input.trim() ? JSON.parse(input) : {}
     if (typeof input !== "object" || Array.isArray(input)) throw new Error("args must be an object")
     try {
-      return truncate(JSON.stringify(await assistant.t3.mcpTool(name, input)), 8000)
+      const result = await assistant.t3.mcpTool(name, input)
+      let watched = ""
+      // A thread she launches is watched like one t3_start_thread starts.
+      if (name === "t3_thread_launch" && (input.message || input.attachments)) {
+        const id = launchedId(result)
+        if (id) watched = `\n(${await autoWatch(assistant, id, envArg(input))})`
+      }
+      return truncate(JSON.stringify(result), 8000) + watched
     } catch (err) {
       return t3Refusal(assistant, err as Error & { code?: string })
     }
@@ -591,9 +645,13 @@ export function logged(name: string, args: any): unknown {
 export async function runTool(assistant: Assistant, name: string, args: unknown): Promise<string> {
   const h = HANDLERS[name]
   if (!h) throw new Error(`unknown tool ${name}`)
+  if (name !== "speak") assistant.beforeTool(name) // acknowledges first, so it plays as the tool starts
   assistant.log(`tool ${name} ${truncate(oneLine(JSON.stringify(logged(name, args ?? {}))), 300)}`)
   assistant.currentTurn?.tools.push(name)
-  const result = await h(assistant, args ?? {})
-  if (name !== "speak") assistant.log(`tool ${name} -> ${truncate(oneLine(result), 240)}`)
+  let result = await h(assistant, args ?? {})
+  if (name !== "speak") {
+    assistant.log(`tool ${name} -> ${truncate(oneLine(result), 240)}`)
+    result += assistant.takeAckNote()
+  }
   return result
 }

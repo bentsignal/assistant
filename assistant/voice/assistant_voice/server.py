@@ -6,6 +6,10 @@ POST /v1/voices/reload -> the same, after reading the voice list again (user voi
 POST /v1/speech  {"text": "...", "voice"?: "...", "preset"?: "..."}
                  -> chunked raw little-endian f32 mono PCM, X-Sample-Rate header.
                  Closing the connection stops synthesis at the next chunk.
+                 A short line already rendered (see phrases.py) plays at once.
+POST /v1/speech/warm {"items": [{"text": "...", "voice"?: "..."}]}
+                 -> {"queued": n}: renders those short lines in the background
+                 so they play at once (Core's acknowledgements).
 """
 from __future__ import annotations
 
@@ -15,8 +19,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import numpy as np
+
 from .synth import Synth
 from .engines import SAMPLE_RATE
+from .phrases import PhraseCache
 
 log = logging.getLogger("assistant.voice")
 
@@ -27,6 +34,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "assistant-voice/2"
     synth: Synth  # set on the class by serve()
+    phrases = PhraseCache()
 
     def log_message(self, fmt, *args):
         log.debug("%s %s", self.address_string(), fmt % args)
@@ -55,10 +63,19 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             self.rfile.read(n)
             try:
+                self.phrases.clear()
                 return self._json(200, self.synth.reload_voices())
             except Exception as e:
                 log.exception("reloading voices failed")
                 return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+        if self.path == "/v1/speech/warm":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                req = json.loads(self.rfile.read(n) or b"{}")
+                items = [i for i in (req.get("items") or []) if isinstance(i, dict)]
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+            return self._json(200, {"queued": self.phrases.warm(self.synth, items), "cached": len(self.phrases)})
         if self.path != "/v1/speech":
             return self._json(404, {"error": "not found"})
         try:
@@ -87,12 +104,21 @@ class Handler(BaseHTTPRequestHandler):
         timing: dict = {}
         sent = 0
         t0 = time.perf_counter()
+        cached = self.phrases.get(v.id, p.name, text) if self.phrases.keeps(text) else None
+        kept: list | None = [] if cached is None and self.phrases.keeps(text) else None
+        source = [cached] if cached is not None else self.synth.stream(text, v.id, p.name, stop=stop, timing=timing)
+        if cached is not None:
+            timing["first_audio_ms"] = 0
         try:
-            for pcm in self.synth.stream(text, v.id, p.name, stop=stop, timing=timing):
+            for pcm in source:
+                if kept is not None:
+                    kept.append(pcm)
                 b = pcm.astype("<f4").tobytes()
                 self.wfile.write(b"%x\r\n%s\r\n" % (len(b), b))
                 self.wfile.flush()
                 sent += len(pcm)
+            if kept and not stop.is_set():
+                self.phrases.put(v.id, p.name, text, np.concatenate(kept))
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -102,7 +128,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         log.info("spoke %d chars, %.2fs audio, first audio %.0f ms, total %.0f ms (%s/%s)%s",
                  len(text), sent / SAMPLE_RATE, timing.get("first_audio_ms", -1),
-                 1000 * (time.perf_counter() - t0), v.id, p.name,
+                 1000 * (time.perf_counter() - t0), v.id, p.name + (" cached" if cached is not None else ""),
                  f", {timing['regenerated']} sentence(s) regenerated" if timing.get("regenerated") else "")
 
 

@@ -13,7 +13,15 @@
 // hosted by assistant/core/scripts/smoke-core.ts).
 // --skip-t3 leaves out the T3 steps. Those launch a full-access scratch thread
 // on Winserve (through Core's own T3 session), have her steer it and settle
-// it by voice, and check both in T3.
+// it by voice, and check both in T3. Then she starts a short thread on
+// Winserve with t3_start_thread and this machine's environment id; the step
+// waits for its watch to chime and land in the inbox, has her send to it
+// once it's idle (that must start a turn), waits for that finish too, and
+// settles it.
+//
+// The acknowledgement step asks something that needs a slow tool and checks
+// that a line went to the App before the first tool other than speak (Core's
+// own "One sec." or hers).
 //
 // The skill steps teach her a skill by voice (wrapping `hostname`), check she
 // runs it on the next turn, then have her remove it.
@@ -214,8 +222,91 @@ if (!argv.includes("--skip-mcp")) {
   results.push(gone)
 }
 
+// No dead air: a line plays before the first slow tool.
+if (!argv.includes("--skip-t3")) results.push(await ackStep())
+
 // T3 with full access: steer a full-access thread on Winserve, then settle it.
 if (!argv.includes("--skip-t3")) results.push(...(await t3Steps()))
+if (!argv.includes("--skip-t3")) results.push(...(await watchSteps()))
+
+/** Something that needs a slow tool: a line must reach the App before that tool runs. */
+async function ackStep() {
+  const read = tail()
+  const ok = await step("answers with a slow tool", `${NAME}, how many T3 threads are running on this machine right now?`, ["t3_list_threads|t3_tool|t3_environments"])
+  const log = read()
+  const firstSpeak = log.search(/-> app \{"cmd":"speak"/)
+  const firstTool = log.search(/\btool (?!speak\b)\w+ \{/)
+  const acked = /acknowledged "[^"]+"/.exec(log)?.[0]
+  const before = firstSpeak >= 0 && (firstTool < 0 || firstSpeak < firstTool)
+  console.log(`${before ? "PASS" : "FAIL"} a line went out before the first slow tool (${acked ? `Core ${acked}` : "she spoke first herself"})`)
+  return ok && before
+}
+
+/** Waits (up to `ms`) for the log to match `re`; returns the match or null. */
+async function waitLog(read, re, ms) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    const m = re.exec(read())
+    if (m) return m
+    await sleep(1000)
+  }
+  return null
+}
+
+/**
+ * t3_start_thread on Winserve given by environment id, its watch to the
+ * finish (chime and inbox), a send to it while idle (a new turn), and a
+ * settle.
+ */
+async function watchSteps() {
+  const WINSERVE = "573af78b-3442-4163-8b9b-bc5cb90eefde"
+  const out = []
+  const title = `Assistant watch smoke ${Date.now().toString(36)}`
+  const read = tail()
+  out.push(
+    await step(
+      "start a thread by environment id",
+      `${NAME}, call t3_start_thread with project "No project", environmentId ${WINSERVE}, title "${title}", and this exact brief: Reply with the single word done, and do nothing else.`,
+      ["t3_start_thread"],
+    ),
+  )
+  const started = /tool t3_start_thread -> Started thread (\S+) in [^\n]*watching it/.exec(read())
+  if (!started) {
+    console.log("FAIL t3_start_thread started and watched a thread")
+    return [...out, false]
+  }
+  const threadId = started[1]
+  console.log(`PASS t3_start_thread started ${threadId} on Winserve and watches it`)
+  out.push(true)
+  const esc = threadId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const finished = await waitLog(read, new RegExp(`inbox: T3 [^\\n]* finished \\[${esc}\\][^\\n]*\\n[^\\n]*chime notify`), 240_000)
+  console.log(`${finished ? "PASS" : "FAIL"} its finish chimed and landed in the inbox`)
+  out.push(!!finished)
+  const read2 = tail()
+  out.push(
+    await step(
+      "send to the idle thread",
+      `${NAME}, use t3_send to tell thread ${threadId} on environment ${WINSERVE}: reply with the single word mango.`,
+      ["t3_send"],
+    ),
+  )
+  const turned = /tool t3_send -> Started a new turn/.test(read2())
+  console.log(`${turned ? "PASS" : "FAIL"} sending to the idle thread started a turn`)
+  out.push(turned)
+  const again = await waitLog(read2, new RegExp(`inbox: T3 [^\\n]* finished \\[${esc}\\]`), 240_000)
+  console.log(`${again ? "PASS" : "FAIL"} that turn's finish was announced too`)
+  out.push(!!again)
+  try {
+    const r = await post("/api/t3-tool", { name: "t3_thread_organize", args: { environmentId: WINSERVE, threadId, action: "settle" } })
+    if (r.error) throw new Error(r.error)
+    console.log(`PASS settled ${threadId}`)
+    out.push(true)
+  } catch (err) {
+    console.log(`FAIL settling ${threadId}: ${err.message}`)
+    out.push(false)
+  }
+  return out
+}
 
 
 /** Launches a full-access scratch thread on Winserve, has her steer it and settle it by voice, and checks both. */

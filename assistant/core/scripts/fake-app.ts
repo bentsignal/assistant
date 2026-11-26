@@ -231,6 +231,8 @@ export function testConfig(over: Record<string, unknown> = {}): Record<string, u
     wake: { followUpSeconds: 1.5 },
     jobs: { defaultCwd: CORE_DIR, claude: { command: [process.execPath, join(CORE_DIR, "scripts", "fake-job.mjs"), "1200"] } },
     t3: { pollSeconds: 3600 },
+    // Off unless a test is about acknowledgements: scripted turns that sleep would get one.
+    turn: { acknowledgeMs: 0 },
     ...over,
   }
 }

@@ -10,7 +10,7 @@ import { FakeApp } from "./fake-app.ts"
 const app = await FakeApp.start({
   config: {
     brain: { harness: "claude-code", "claude-code": { model: "sonnet", effort: "low" } },
-    t3: { pollSeconds: 3600 },
+    t3: { pollSeconds: 5 }, // the T3 steps watch a thread to its finish
     voice: { defaultVolume: 0 },
   },
   msPerChar: 10,

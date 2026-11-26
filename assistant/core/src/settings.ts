@@ -46,6 +46,7 @@ export const SETTINGS: Record<string, KeyDef> = {
   "turn.maxMs": num(1000, 30000, "app", "The longest wait for the end of his turn.", true),
   "turn.mergeSeconds": num(0, 60, "now", "Words within this long of his last ones join the same turn while she thinks."),
   "turn.bargeMergeSeconds": num(0, 10, "now", "Words this soon after her first audio join the turn."),
+  "turn.acknowledgeMs": num(0, 10000, "now", "Silence after his turn before Core says a short 'one sec' for her (also before a slow first tool); 0 is off."),
   "brain.firstSpeakTimeoutSeconds": num(10, 600, "now", "A turn that hasn't spoken this long is given up on."),
   "brain.turnTimeoutSeconds": num(30, 1800, "now", "Any turn is given up on after this long."),
   "brain.claude-code.model": { schema: model, applies: "brain", about: "Her model on Claude Code (set_brain does this too)." },
