@@ -78,7 +78,7 @@ impl Brain {
     /// The models Settings offers for this harness, besides the saved one.
     pub(crate) fn models(self) -> &'static [&'static str] {
         match self {
-            Self::ClaudeCode => &["sonnet", "opus", "haiku"],
+            Self::ClaudeCode => &["opus", "sonnet", "haiku"],
             Self::Codex => &["gpt-6.2-sol", "gpt-6.2", "gpt-6.2-mini"],
         }
     }

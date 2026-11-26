@@ -130,6 +130,9 @@ pub(crate) struct Failure {
     pub(crate) reason: String,
     #[serde(default)]
     pub(crate) at: u64,
+    /// The version rolled back to has said so (once, by voice).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) told: bool,
 }
 
 /// `install.json`.
@@ -199,6 +202,7 @@ pub(crate) fn choose(state: &mut State, root: &Path) -> Option<String> {
                 label: state.current.clone(),
                 reason: "it didn't start cleanly twice".into(),
                 at: now(),
+                told: false,
             });
             state.current = from;
             state.pending = None;
@@ -216,6 +220,7 @@ pub(crate) fn choose(state: &mut State, root: &Path) -> Option<String> {
             label: state.current.clone(),
             reason: "its files are missing".into(),
             at: now(),
+            told: false,
         });
         state.current = previous.clone();
         state.pending = None;

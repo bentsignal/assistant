@@ -301,7 +301,7 @@ pub(crate) fn fixture_view() -> SettingsView {
         ],
         voice: Some("isla".into()),
         brain: Brain::ClaudeCode,
-        model: "sonnet".into(),
+        model: "opus".into(),
         wake: Wake::Normal,
         start_at_login: true,
         stop_hotkey: "Ctrl+Alt+Space".into(),

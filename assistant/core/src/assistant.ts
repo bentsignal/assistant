@@ -16,6 +16,7 @@ import { ACK_AFTER_MS, ackNote, acksFor, endsSilently, pickAck, slowTool, stripO
 import { AppMouth, type AppEvent, type AppLink, type ChimeKind, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
 import { createBrain, type Brain, type TurnResult } from "./brain/index.ts"
 import { continues, joinTurns, resumeNote, type Resumable } from "./turns.ts"
+import { backLine, failedLine, rolledBackLine, UPDATE_TIMEOUT_MS, type UpdateAction, type UpdateReply } from "./updates.ts"
 
 export type Status = HudState
 
@@ -346,8 +347,65 @@ export class Assistant {
       case "ui":
         this.onUi(ev)
         break
+      case "update":
+        this.onUpdate(ev)
+        break
     }
     this.changed()
+  }
+
+  // ---- updates (the App's updater) -------------------------------------------
+
+  private updateSeq = 0
+  private updateWaiters = new Map<string, (r: UpdateReply) => void>()
+
+  /** Asks the App's updater (Settings › Updates' own); null if it doesn't answer in time. */
+  requestUpdate(action: UpdateAction, channel?: "stable" | "nightly"): Promise<UpdateReply | null> {
+    const id = `u${++this.updateSeq}`
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.updateWaiters.delete(id)
+        this.log(`update ${id} (${action}): no answer from the App in ${UPDATE_TIMEOUT_MS[action] / 1000} s`)
+        resolve(null)
+      }, UPDATE_TIMEOUT_MS[action])
+      this.updateWaiters.set(id, (r) => {
+        clearTimeout(timer)
+        resolve(r)
+      })
+      this.send({ cmd: "update", id, action, ...(channel ? { channel } : {}) })
+    })
+  }
+
+  /**
+   * The App's updater spoke. An answer goes to the tool waiting on it;
+   * anything else is something that really happened, said once in the
+   * current persona's voice: back on the version now running, rolled back
+   * (with the reason install.json records), or an install she started failed.
+   */
+  private onUpdate(ev: UpdateReply) {
+    const waiter = ev.id ? this.updateWaiters.get(ev.id) : undefined
+    if (waiter) {
+      this.updateWaiters.delete(ev.id!)
+      waiter(ev)
+      return
+    }
+    if (ev.id) return // a tool that already gave up
+    const line = ev.state === "back" ? backLine(ev) : ev.state === "rolled_back" ? rolledBackLine(ev) : ev.state === "failed" ? failedLine(ev) : null
+    if (!line) return
+    this.log(`update: ${ev.state} (${ev.running}${ev.latest ? `, ${ev.latest}` : ""}${ev.message ? `: ${ev.message}` : ""})`)
+    this.announce(line)
+  }
+
+  /** A line of her own, not part of a turn, in the current persona's voice. Off is off: nothing is said. */
+  announce(text: string) {
+    if (this.micMuted) {
+      this.log(`not said (listening is off): ${text}`)
+      return
+    }
+    const persona = this.persona
+    this.lines.push({ who: "assistant", text, at: Date.now(), persona: persona.name })
+    this.trimLines()
+    this.mouth.say(text, undefined, persona.voice)
   }
 
   private onUi(ev: Extract<AppEvent, { type: "ui" }>) {

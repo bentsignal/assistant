@@ -65,6 +65,32 @@ pub(crate) enum CoreCommand {
     Listening {
         on: bool,
     },
+    /// Shawn asked her about updates (Core's `update_*` tools): the app runs
+    /// its own updater, the same one as Settings › Updates, and answers with
+    /// an [`AppEvent::Update`] carrying the same `id`.
+    Update {
+        #[serde(default)]
+        id: Option<String>,
+        action: UpdateAction,
+        /// `stable` or `nightly`: with `channel` (required) or `install`,
+        /// switch to it first.
+        #[serde(default)]
+        channel: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UpdateAction {
+    /// The running version, channel, and the updater's state, at once.
+    Status,
+    /// Look for the channel's current release; answers once it's known.
+    Check,
+    /// Check, then install what it finds: answers `started` as soon as the
+    /// download begins (or `up_to_date`, `no_release`, `failed`).
+    Install,
+    /// Switch the channel (saved), then check it.
+    Channel,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -121,6 +147,27 @@ pub(crate) enum AppEvent {
     Playback {
         speak_id: String,
         state: &'static str,
+    },
+    /// The updater, for Core (DESIGN.md, updates by voice). With an `id`:
+    /// the answer to Core's `update` command. Without: something Core
+    /// didn't ask about just now: `back` (this version was just updated to
+    /// and started cleanly), `rolled_back` (`latest` failed to start;
+    /// `message` says why), or `failed` (an install she started failed).
+    /// `state` is otherwise the updater's phase (`up_to_date`,
+    /// `available`, `started`, …).
+    Update {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        state: &'static str,
+        /// The version running now (its release label).
+        running: String,
+        channel: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latest: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        /// False in a development build: it can check but not install.
+        installed: bool,
     },
     Ui {
         action: &'static str,
@@ -240,6 +287,22 @@ mod tests {
                 voice: Some("alfred".into())
             })
         );
+        assert_eq!(
+            parse(r#"{"cmd":"update","id":"u1","action":"install","channel":"nightly"}"#),
+            Some(CoreCommand::Update {
+                id: Some("u1".into()),
+                action: UpdateAction::Install,
+                channel: Some("nightly".into())
+            })
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"update","action":"status"}"#),
+            Some(CoreCommand::Update {
+                id: None,
+                action: UpdateAction::Status,
+                channel: None
+            })
+        );
         assert_eq!(parse("Core v2 ready"), None);
         assert_eq!(parse(r#"{"cmd":"dance"}"#), None);
     }
@@ -271,6 +334,19 @@ mod tests {
             }
             .line(),
             r#"{"type":"playback","speak_id":"s1","state":"interrupted"}"#
+        );
+        assert_eq!(
+            AppEvent::Update {
+                id: None,
+                state: "back",
+                running: "2.0.0-nightly.20261126.abc1234".into(),
+                channel: "nightly",
+                latest: None,
+                message: None,
+                installed: true,
+            }
+            .line(),
+            r#"{"type":"update","state":"back","running":"2.0.0-nightly.20261126.abc1234","channel":"nightly","installed":true}"#
         );
     }
 }

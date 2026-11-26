@@ -3,7 +3,7 @@ import { availableBrains } from "./brain/index.ts"
 import { CORE_DIR, paths, wakePhrasesOf, type BrainHarness } from "./config.ts"
 import { probeServer, redactSpec, redactValue, resolveSpec, transportOf } from "./mcp/config.ts"
 import { appliesNote, checkValue, describeSettings, getKey, SETTINGS } from "./settings.ts"
-import { installCommandLine, installOf, readCheck, startDetached, updateArgs } from "./updates.ts"
+import { describeChannel, describeUpdate } from "./updates.ts"
 import { oneLine, truncate } from "./inbox.ts"
 import type { Job, JobAgent } from "./jobs.ts"
 import type { Assistant } from "./assistant.ts"
@@ -448,53 +448,23 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
     return `Set ${key} to ${JSON.stringify(value)} (was ${JSON.stringify(before ?? null)}). ${appliesNote(SETTINGS[key].applies)}`
   },
 
-  update_status(assistant) {
-    const inst = installOf(CORE_DIR)
-    if (!inst.installed) return `Updates aren't available here: ${inst.why}. Say so in one sentence.`
-    const configured = getKey(assistant.config, "app.updates.channel")
-    const channel = configured === "stable" || configured === "nightly" ? configured : inst.channel
-    return `Running Assistant ${inst.label} (${inst.channel} build), updating from ${channel === "nightly" ? "Nightly" : "Stable"}${
-      configured ? "" : " (the build's own channel)"
-    }. Say the version the way a person would, briefly.`
+  // Updates go through the App's own updater (Settings › Updates): its answer is the only truth.
+  async update_status(assistant) {
+    return describeUpdate("status", await assistant.requestUpdate("status"))
   },
 
-  async update_check(_assistant, args) {
-    const inst = installOf(CORE_DIR)
-    if (!inst.installed) return `Updates aren't available here: ${inst.why}. Say so in one sentence.`
-    const r = await runCli(inst.launcher, updateArgs({ channel: args?.channel }), { timeoutMs: 60_000 })
-    const out = `${r.stdout}\n${r.stderr}`.trim()
-    if (r.code !== 0) return `The check failed (exit ${r.code}): ${truncate(oneLine(out), 400)}`
-    const c = readCheck(out)
-    if (c.none) return "That channel has no release yet."
-    if (c.upToDate) return `Up to date: ${inst.label} is the newest${args?.channel ? ` on ${args.channel}` : ""}.`
-    if (c.available) return `An update is available: ${c.latest} (running ${inst.label}). update_install installs it, restarting you; ask Shawn first if he didn't ask to install.`
-    return truncate(out, 1000)
+  async update_check(assistant) {
+    return describeUpdate("check", await assistant.requestUpdate("check"))
   },
 
   async update_install(assistant, args) {
-    const inst = installOf(CORE_DIR)
-    if (!inst.installed) return `Updates aren't available here: ${inst.why}. Say so in one sentence.`
-    const channel = typeof args?.channel === "string" && args.channel ? args.channel : null
-    if (channel) assistant.setConfigKey("app.updates.channel", checkValue("app.updates.channel", channel))
-    const check = await runCli(inst.launcher, updateArgs({ channel }), { timeoutMs: 60_000 })
-    const c = readCheck(`${check.stdout}\n${check.stderr}`)
-    if (c.upToDate) return `Nothing to install: ${inst.label} is already the newest. Say so.`
-    if (c.none) return "That channel has no release yet. Say so."
-    const log = join(paths.logs, "update-voice.log")
-    await startDetached(installCommandLine(inst.launcher, updateArgs({ install: true, channel }), log))
-    assistant.log(`update: installing ${c.latest ?? "the update"} (log ${log})`)
-    return `Installing ${c.latest ?? "the update"}: it downloads, then Assistant restarts into it (about a minute). If you haven't said so yet, speak one short line now; then stop.`
+    const channel = typeof args?.channel === "string" && args.channel ? (checkValue("app.updates.channel", args.channel) as "stable" | "nightly") : undefined
+    return describeUpdate("install", await assistant.requestUpdate("install", channel))
   },
 
   async update_channel(assistant, args) {
-    const inst = installOf(CORE_DIR)
-    const channel = checkValue("app.updates.channel", need(args, "channel")) as string
-    assistant.setConfigKey("app.updates.channel", channel)
-    if (!inst.installed) return `Saved the channel as ${channel}, but updates aren't available here: ${inst.why}.`
-    const r = await runCli(inst.launcher, updateArgs({ channel }), { timeoutMs: 60_000 }).catch(() => null)
-    const c = r ? readCheck(`${r.stdout}\n${r.stderr}`) : null
-    const news = c?.upToDate ? " It's already on its newest release." : c?.available ? ` ${c.latest} is available there: update_install installs it.` : ""
-    return `Updates now follow ${channel === "nightly" ? "Nightly" : "Stable"}.${news} Confirm in a few words.`
+    const channel = checkValue("app.updates.channel", need(args, "channel")) as "stable" | "nightly"
+    return describeChannel(channel, await assistant.requestUpdate("channel", channel))
   },
 
   skill_list(assistant) {

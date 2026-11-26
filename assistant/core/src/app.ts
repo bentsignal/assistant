@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events"
 import type { Readable, Writable } from "node:stream"
 import { onLines } from "./proc.ts"
+import type { UpdateAction, UpdateReply } from "./updates.ts"
 
 /**
  * The App ⇄ Core stdio protocol (DESIGN.md): JSON lines, app events on stdin,
@@ -22,6 +23,8 @@ export type AppEvent =
   | { type: "barge_in"; speak_id?: string }
   | { type: "playback"; speak_id: string; state: PlaybackState }
   | { type: "ui"; action: UiAction; card_id?: string; volume?: number }
+  /** The App's updater: the answer to an `update` command (same `id`), or `back` / `rolled_back` / `failed` on its own. */
+  | UpdateReply
 
 export type CoreCommand =
   /** `voice`: the speaking persona's voice (the App's `app.voice` override beats it). */
@@ -44,8 +47,10 @@ export type CoreCommand =
   | { cmd: "voice"; voice: string | null }
   /** Shawn asked her to stop listening: the App turns Listening off (only the tray turns it back on). */
   | { cmd: "listening"; on: false }
+  /** Updates by voice: the App runs its own updater (Settings › Updates' check and install) and answers with an `update` event. */
+  | { cmd: "update"; id: string; action: UpdateAction; channel?: "stable" | "nightly" }
 
-const EVENT_TYPES = new Set(["ready", "speech_start", "partial", "final", "speech_cancel", "barge_in", "playback", "ui"])
+const EVENT_TYPES = new Set(["ready", "speech_start", "partial", "final", "speech_cancel", "barge_in", "playback", "ui", "update"])
 
 /** Reads app events from a stream and writes core commands to another. Emits "event" and "close". */
 export class AppLink extends EventEmitter {

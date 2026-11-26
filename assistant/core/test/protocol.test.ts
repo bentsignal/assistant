@@ -888,3 +888,40 @@ test("an install from before wake phrases: the first bare 'Vera,' gets told once
     await app.stop()
   }
 })
+
+test("updates by voice go through the App's updater; she's back from what's running, and a failure is the updater's own", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [{ match: "update yourself", steps: [{ tool: "update_install", args: {} }, { tool: "speak", args: { text: "Updating, back in a moment." } }] }],
+  })
+  try {
+    let m = app.mark
+    await app.say("Hey Vera, update yourself.")
+    const ask = (await app.waitFor(isCmd("update"), 5000, m)) as any
+    assert.equal(ask.action, "install")
+    assert.match(ask.id, /^u\d+$/)
+    // Nothing is said until the App answers.
+    await sleep(300)
+    assert.deepEqual(spoken(app.since(m)), [])
+    const running = "2.0.0-nightly.20261125.abc1234"
+    app.send({ type: "update", id: ask.id, state: "started", running, channel: "nightly", latest: "2.0.0-nightly.20261126.1a43cd3e", installed: true } as any)
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "Updating, back in a moment.", 5000, m)
+
+    // The new version confirmed: she says so from the version it reports.
+    m = app.mark
+    app.send({ type: "update", state: "back", running: "2.0.0-nightly.20261126.1a43cd3e", channel: "nightly", installed: true } as any)
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "I'm back, on the November 26 Nightly, build 1 A 4 3.", 5000, m)
+
+    // A failure she hears is the updater's, with its reason.
+    m = app.mark
+    app.send({ type: "update", state: "failed", running, channel: "nightly", message: "download: HTTP 404", installed: true } as any)
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "The update failed: download: HTTP 404.", 5000, m)
+    // A late answer to a request nobody waits on says nothing.
+    m = app.mark
+    app.send({ type: "update", id: "u99", state: "failed", running, channel: "nightly", installed: true } as any)
+    await sleep(500)
+    assert.deepEqual(spoken(app.since(m)), [])
+  } finally {
+    await app.stop()
+  }
+})

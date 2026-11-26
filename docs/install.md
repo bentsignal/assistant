@@ -109,6 +109,11 @@ Nothing ever deletes the version that's running or the one before it, so there's
 always a working copy. Logs: `~/.assistant/logs/updater.log` (the launcher, the
 supervisor, downloads) and `assistant-app.log`.
 
+By voice ("update yourself"), Core asks the App over the protocol and the App
+runs this same updater (DESIGN.md, updates by voice): she says one line while
+it installs, and after the switch the new version says "I'm back, on
+<version>" (or, once, that it rolled back and why).
+
 From a terminal: `assistant update` checks, `assistant update --install` does
 the whole switch (`--channel stable|nightly`).
 

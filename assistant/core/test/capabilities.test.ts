@@ -7,7 +7,7 @@ import { McpStore, brainServers, claudeMcpConfig, probeServer, redactSpec, resol
 import { codexServer } from "../src/brain/codex.ts"
 import { checkValue, getKey, patchFor, SETTINGS } from "../src/settings.ts"
 import { findT3Cli } from "../src/t3.ts"
-import { installCommandLine, installOf, readCheck, updateArgs } from "../src/updates.ts"
+import { backLine, describeChannel, describeUpdate, failedLine, rolledBackLine, speakableVersion, type UpdateReply } from "../src/updates.ts"
 import { logged } from "../src/tools.ts"
 
 const found = (name: string) => (name === "node" || name === "npx" ? `C:\\bin\\${name}${name === "npx" ? ".cmd" : ".exe"}` : null)
@@ -165,30 +165,33 @@ test("t3 CLI: config, then T3CODE_CLI_PATH, then PATH, then T3 Code's launcher, 
 
 // ---- updates ----------------------------------------------------------------
 
-test("updates: the launcher's arguments for a check, an install, and a channel", () => {
-  assert.deepEqual(updateArgs(), ["update"])
-  assert.deepEqual(updateArgs({ install: true }), ["update", "--install"])
-  assert.deepEqual(updateArgs({ install: true, channel: "Nightly" }), ["update", "--install", "--channel", "nightly"])
-  assert.deepEqual(updateArgs({ channel: "stable" }), ["update", "--channel", "stable"])
-  assert.throws(() => updateArgs({ channel: "beta" }), /stable or nightly/)
+const reply = (r: Partial<UpdateReply>): UpdateReply => ({ type: "update", state: "idle", running: "2.0.0-nightly.20261125.abc1234", channel: "nightly", installed: true, ...r })
+
+test("updates: versions are said the way a person would, Nightlies by day and build", () => {
+  assert.equal(speakableVersion("2.0.0-nightly.20261126.1a43cd3e"), "the November 26 Nightly, build 1 A 4 3")
+  assert.equal(speakableVersion("2.1.0"), "version 2.1.0")
+  assert.equal(speakableVersion("dev"), "dev")
 })
 
-test("updates: an installed Core finds its launcher and label; a repo Core has no install", () => {
-  const root = "C:\\Users\\s\\AppData\\Local\\Programs\\Assistant"
-  const files = [join(root, "install.json"), join(root, "assistant.exe")]
-  const inst = installOf(join(root, "versions", "2.0.0-nightly.20261126.abc1234", "core"), (p) => files.includes(p))
-  assert.deepEqual(inst, { installed: true, root, label: "2.0.0-nightly.20261126.abc1234", launcher: join(root, "assistant.exe"), channel: "nightly" })
-  const dev = installOf("D:\\dev\\assistant\\assistant\\core", () => true)
-  assert.equal(dev.installed, false)
-  assert.match((dev as any).why, /development build/)
-})
-
-test("updates: the check's output is read; the install line runs outside Core with its output logged", () => {
-  const out = "running 2.0.0 · Nightly abc1234 (2.0.0-nightly.1.abc1234, built x)\nlayout: Installed\nNightly: 2.0.0-nightly.2.def5678 (date, 1 bytes, sha256 x)\nan update is available\n"
-  assert.deepEqual(readCheck(out), { latest: "2.0.0-nightly.2.def5678", upToDate: false, available: true, none: false })
-  assert.equal(readCheck("Stable: 2.0.0 (x)\nthat's this build: up to date").upToDate, true)
+test("updates: she says she's back from what's running, a rollback with its reason, and the updater's own failure", () => {
+  assert.equal(backLine(reply({ state: "back", running: "2.0.0-nightly.20261126.1a43cd3e" })), "I'm back, on the November 26 Nightly, build 1 A 4 3.")
   assert.equal(
-    installCommandLine("C:\\Program Files\\A\\assistant.exe", ["update", "--install"], "C:\\logs\\u.log"),
-    'cmd.exe /d /c ""C:\\Program Files\\A\\assistant.exe" update --install > C:\\logs\\u.log 2>&1"',
+    rolledBackLine(reply({ state: "rolled_back", latest: "2.0.0-nightly.20261126.1a43cd3e", message: "it exited during startup (exit code: 1)" })),
+    "The update to the November 26 Nightly, build 1 A 4 3 didn't take, so I'm back on the November 25 Nightly, build A B C 1: it exited during startup (exit code: 1).",
   )
+  assert.equal(failedLine(reply({ state: "failed", message: "download: HTTP 404" })), "The update failed: download: HTTP 404.")
+  assert.equal(failedLine(reply({ state: "failed" })), "The update failed: the updater didn't say why.")
+})
+
+test("updates: the tools report only what the App's updater answered", () => {
+  assert.match(describeUpdate("install", reply({ state: "started", latest: "2.0.0-nightly.20261126.1a43cd3e" })), /^Started: .*one short line/)
+  assert.match(describeUpdate("install", reply({ state: "up_to_date" })), /^No update available/)
+  assert.match(describeUpdate("install", reply({ state: "no_release" })), /no release yet/)
+  assert.match(describeUpdate("install", reply({ state: "failed", message: "GitHub said 503" })), /GitHub said 503/)
+  // No answer is never a failure.
+  assert.match(describeUpdate("install", null), /Don't say the update failed/)
+  assert.match(describeUpdate("check", reply({ state: "available", latest: "2.0.0-nightly.20261126.1a43cd3e" })), /update_install installs it/)
+  assert.match(describeUpdate("status", reply({ state: "up_to_date" })), /Running 2\.0\.0-nightly.*updating from Nightly/)
+  assert.match(describeUpdate("install", reply({ state: "unavailable", installed: false, message: "this is a development build" })), /aren't available here/)
+  assert.match(describeChannel("stable", reply({ state: "up_to_date", channel: "stable" })), /follow Stable\. It's already on its newest/)
 })

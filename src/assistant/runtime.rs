@@ -21,6 +21,7 @@ mod hud;
 mod launch;
 mod ledger;
 mod show;
+mod voice_update;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -99,6 +100,8 @@ pub(crate) enum Msg {
     Update,
     /// An update is unpacked and ready: hand over and quit.
     UpdateReady(super::update::Offer),
+    /// Her "updating" line is done: hand over now.
+    HandOver(super::update::Offer),
     /// Rune's loop ended (logoff, or Quit already handled).
     Shutdown,
 }
@@ -324,6 +327,8 @@ struct Controller {
     /// This version was just switched to and hasn't yet confirmed it starts
     /// cleanly (`update::apply::confirm`).
     unconfirmed: bool,
+    /// Updates Shawn asked for by voice (`voice_update.rs`).
+    voice_updates: voice_update::VoiceUpdates,
 }
 
 impl Controller {
@@ -451,6 +456,7 @@ impl Controller {
             watched: Instant::now(),
             updates,
             unconfirmed,
+            voice_updates: voice_update::VoiceUpdates::new(),
         };
         controller.start_audio();
         controller
@@ -686,8 +692,16 @@ impl Controller {
             Msg::StopHotkey => self.stop_talking(),
             Msg::OpenSettings => self.open_settings(),
             Msg::Voice(status) => self.voice_status(status),
-            Msg::Update => self.publish(true),
-            Msg::UpdateReady(offer) => return self.hand_over(&offer),
+            Msg::Update => {
+                self.voice_update_changed();
+                self.publish(true);
+            }
+            Msg::UpdateReady(offer) => {
+                if !self.hold_hand_over(&offer) {
+                    return self.hand_over(&offer);
+                }
+            }
+            Msg::HandOver(offer) => return self.hand_over(&offer),
             Msg::Shutdown => return true,
         }
         false
@@ -724,6 +738,11 @@ impl Controller {
                 text,
                 voice,
             } => self.speak(speak_id, text, voice),
+            CoreCommand::Update {
+                id,
+                action,
+                channel,
+            } => self.voice_update(id, action, channel),
             CoreCommand::StopSpeaking => {
                 self.drop_held(true);
                 if let Some(audio) = &self.audio {
@@ -1052,6 +1071,8 @@ impl Controller {
         self.watch_children();
         self.updates.tick();
         self.confirm_update();
+        self.tell_rollback();
+        self.release_held_hand_over();
         self.release_held();
         if self.audio.is_none() && self.audio_restart_at.is_some_and(|at| Instant::now() >= at) {
             tracing::info!("starting the audio engine again");
@@ -1185,7 +1206,12 @@ impl Controller {
         if core && voice {
             self.unconfirmed = false;
             match super::update::apply::confirm() {
-                Ok(_) => tracing::info!(version = super::update::stamp::LABEL, "update confirmed"),
+                Ok(true) => {
+                    tracing::info!(version = super::update::stamp::LABEL, "update confirmed");
+                    // She says she's back, from what's running.
+                    self.tell_update(None, "back", None, None);
+                }
+                Ok(false) => {}
                 Err(error) => {
                     tracing::error!(error = %format!("{error:#}"), "could not confirm the update")
                 }

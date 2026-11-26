@@ -1,83 +1,130 @@
-import { spawn } from "node:child_process"
-import { existsSync } from "node:fs"
-import { basename, dirname, join } from "node:path"
+/**
+ * Updates by voice go through the App's own updater, the same one as
+ * Settings › Updates (DESIGN.md): Core sends `{"cmd":"update","id",
+ * "action","channel"?}` and the App answers with an `update` event carrying
+ * the same `id`. The App's answer is the only truth about an update: these
+ * helpers turn it into what the tool returns, and the App's later
+ * unsolicited events (`back`, `rolled_back`, `failed`) into what she says.
+ */
+export type UpdateAction = "status" | "check" | "install" | "channel"
+
+export interface UpdateReply {
+  type: "update"
+  id?: string
+  /** The updater's phase (`up_to_date`, `available`, `checking`, ...), `started`, or `back` / `rolled_back` / `failed` / `unavailable` / `superseded`. */
+  state: string
+  /** The release label running now. */
+  running: string
+  channel: "stable" | "nightly"
+  /** The release it's about (the channel's current one, or the one that failed). */
+  latest?: string
+  message?: string
+  /** False in a development build (it can check, but not install). */
+  installed: boolean
+}
+
+/** How long a tool waits for the App's answer: a check talks to GitHub. */
+export const UPDATE_TIMEOUT_MS: Record<UpdateAction, number> = { status: 5_000, check: 60_000, install: 90_000, channel: 60_000 }
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
 /**
- * Updates by voice, through the installed launcher's own CLI
- * (docs/install.md): `assistant update` checks, `assistant update
- * --install` downloads, verifies and switches (the app restarts),
- * `--channel stable|nightly` picks the channel. Core runs from
- * `<root>\versions\<label>\core`, so the install is found from there; a
- * repo or dev build has none, and updates aren't available.
+ * A release label the way she says it: "version 2.1.0", or for a Nightly
+ * (`2.0.0-nightly.20261126.abc1234`) "the November 26 Nightly, build a b c 1"
+ * (the commit's first four characters, spelled, so two Nightlies of one day
+ * are told apart).
  */
-export type Install =
-  | { installed: true; root: string; label: string; launcher: string; channel: "stable" | "nightly" }
-  | { installed: false; why: string }
-
-/** The install around a Core folder, if it's an installed one. */
-export function installOf(coreDir: string, exists: (p: string) => boolean = existsSync): Install {
-  const versionDir = dirname(coreDir)
-  const versions = dirname(versionDir)
-  const root = dirname(versions)
-  const launcher = join(root, "assistant.exe")
-  if (basename(versions).toLowerCase() !== "versions" || !exists(join(root, "install.json")) || !exists(launcher)) {
-    return { installed: false, why: "this is a development build run from the repo, not an installed Assistant, so it can't update itself" }
+export function speakableVersion(label: string): string {
+  const nightly = label.match(/^(\d+\.\d+\.\d+)-nightly\.(\d{4})(\d{2})(\d{2})\.([0-9a-f]+)/i)
+  if (nightly) {
+    const month = MONTHS[Number(nightly[3]) - 1]
+    const day = Number(nightly[4])
+    const build = nightly[5].slice(0, 4).toUpperCase().split("").join(" ")
+    return `${month ? `the ${month} ${day} Nightly` : "the Nightly"}, build ${build}`
   }
-  const label = basename(versionDir)
-  return { installed: true, root, label, launcher, channel: /nightly/i.test(label) ? "nightly" : "stable" }
+  const plain = label.match(/^\d+\.\d+\.\d+$/)
+  return plain ? `version ${label}` : label
 }
 
-/** The launcher's arguments for a check or an install. */
-export function updateArgs(opts: { install?: boolean; channel?: string | null } = {}): string[] {
-  const args = ["update"]
-  if (opts.install) args.push("--install")
-  if (opts.channel) {
-    const c = opts.channel.trim().toLowerCase()
-    if (c !== "stable" && c !== "nightly") throw new Error(`the channel is stable or nightly (got ${opts.channel})`)
-    args.push("--channel", c)
+/** The updater's reason, as one spoken sentence's worth. */
+function reasonOf(message: string | undefined): string {
+  const one = (message ?? "").replace(/\s+/g, " ").trim()
+  if (!one) return "the updater didn't say why"
+  return one.length > 160 ? `${one.slice(0, 157)}...` : one
+}
+
+/** What she says when a new version confirms it started: from what's actually running. */
+export function backLine(reply: UpdateReply): string {
+  return `I'm back, on ${speakableVersion(reply.running)}.`
+}
+
+/** What she says, once, in the version a failed update rolled back to. */
+export function rolledBackLine(reply: UpdateReply): string {
+  const failed = reply.latest ? speakableVersion(reply.latest) : "the new version"
+  return `The update to ${failed} didn't take, so I'm back on ${speakableVersion(reply.running)}: ${reasonOf(reply.message)}.`
+}
+
+/** What she says when an install she started fails (the updater's reason). */
+export function failedLine(reply: UpdateReply): string {
+  return `The update failed: ${reasonOf(reply.message)}.`
+}
+
+const channelName = (c: string) => (c === "nightly" ? "Nightly" : "Stable")
+
+/** The tool's result for an answer (or for no answer: `null`). */
+export function describeUpdate(action: UpdateAction, reply: UpdateReply | null): string {
+  if (!reply) {
+    return `The app's updater hasn't answered yet. Don't say the update failed or worked: you don't know. Say in a few words that you couldn't get an answer from the updater just now.`
   }
-  return args
-}
-
-/** What `assistant update` printed, read: the channel's release, and whether it's this one. */
-export function readCheck(stdout: string): { latest?: string; upToDate: boolean; available: boolean; none: boolean } {
-  const latest = stdout.match(/^(?:Stable|Nightly): (\S+)/m)?.[1]
-  return {
-    latest,
-    upToDate: /up to date/i.test(stdout),
-    available: /an update is available/i.test(stdout),
-    none: /has no release yet/i.test(stdout),
+  const running = `${reply.running} (${speakableVersion(reply.running)})`
+  const latest = reply.latest ? `${reply.latest} (${speakableVersion(reply.latest)})` : "a new release"
+  const on = channelName(reply.channel)
+  if (action === "status") return statusLine(reply, running, latest, on)
+  switch (reply.state) {
+    case "started":
+      return `Started: the app is installing ${latest} and will restart into it by itself. Speak exactly one short line, like "Updating, back in a moment.", then end the turn. Don't say how long it takes or whether it worked: when you're back you'll say so automatically.`
+    case "installing":
+      return `An update to ${latest} is already installing; the app restarts into it by itself. Say so in a few words.`
+    case "up_to_date":
+      return `No update available: ${running} is the newest on ${on}. Say so in a few words.`
+    case "no_release":
+      return `${on} has no release yet, so there's nothing to install. Say so in a few words.`
+    case "available":
+      return action === "install"
+        ? `${latest} is available but the install didn't start. Say that in one sentence.`
+        : `An update is available on ${on}: ${latest} (running ${running}). update_install installs it, restarting you; ask Shawn first if he didn't ask to install.`
+    case "failed":
+      return `The updater reported a failure: ${reasonOf(reply.message)}. Tell Shawn that reason in one sentence; don't guess at anything else.`
+    case "unavailable":
+      return `Updates aren't available here: ${reasonOf(reply.message)}. Say so in one sentence.`
+    case "superseded":
+      return "A newer update request replaced this one. Say nothing about it."
+    default:
+      return statusLine(reply, running, latest, on)
   }
 }
 
-/** Quotes one argument for a Windows command line. */
-function winQuote(a: string): string {
-  return /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a
+/** The version, the channel, and the updater's phase as it stands. */
+function statusLine(reply: UpdateReply, running: string, latest: string, on: string): string {
+  return `Running ${running}, updating from ${on}. The updater is ${reply.state.replace(/_/g, " ")}${reply.latest ? ` (${latest})` : ""}${
+    reply.message ? `: ${reasonOf(reply.message)}` : ""
+  }${reply.installed ? "" : "; this is a development build, which can check but can't install"}. Say the version the way a person would, briefly.`
 }
 
-/**
- * The command line that runs the install outside Core's process tree: the
- * App kills its job (Core and everything Core started) when it quits for the
- * update, so the install is started by WMI instead, and its output goes to
- * a log.
- */
-export function installCommandLine(launcher: string, args: string[], log: string): string {
-  const inner = [launcher, ...args].map(winQuote).join(" ")
-  return `cmd.exe /d /c "${inner} > ${winQuote(log)} 2>&1"`
-}
-
-/** Starts the install detached from the App's job (Windows: WMI's Win32_Process.Create). */
-export function startDetached(commandLine: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const ps = `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:ASSISTANT_UPDATE_CMD }; if ($r.ReturnValue -ne 0) { Write-Error "Win32_Process.Create returned $($r.ReturnValue)"; exit 1 }`
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], {
-      windowsHide: true,
-      stdio: ["ignore", "ignore", "pipe"],
-      env: { ...process.env, ASSISTANT_UPDATE_CMD: commandLine },
-    })
-    let err = ""
-    child.stderr!.setEncoding("utf8").on("data", (d) => (err += d))
-    child.on("error", reject)
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(err.trim() || `powershell exited ${code}`))))
-  })
+/** The channel tool's result: the switch, then what the check found. */
+export function describeChannel(channel: string, reply: UpdateReply | null): string {
+  const switched = `Updates now follow ${channelName(channel)}.`
+  if (!reply) return `${switched} The check hasn't answered yet. Confirm the switch in a few words.`
+  if (reply.state === "failed" && !reply.latest && /channel/.test(reply.message ?? "")) return describeUpdate("channel", reply)
+  const news =
+    reply.state === "up_to_date"
+      ? " It's already on its newest release."
+      : reply.state === "available"
+        ? ` ${reply.latest} (${speakableVersion(reply.latest ?? "")}) is available there: update_install installs it.`
+        : reply.state === "no_release"
+          ? " That channel has no release yet."
+          : reply.state === "failed"
+            ? ` The check failed: ${reasonOf(reply.message)}.`
+            : ""
+  return `${switched}${news} Confirm in a few words.`
 }

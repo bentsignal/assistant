@@ -392,12 +392,22 @@ models, `t3.*`, `app.updates.*`. The port, harness, names, voice and every
 argv are refused. Each key says when it applies: now, at the brain's next
 start, or when the App restarts.
 
-Updates go through the installed launcher's CLI (`assistant update`,
-`--install`, `--channel`): `update_status`, `update_check`, `update_channel`
-(saves `app.updates.channel`), and `update_install`, which she announces
-first because it restarts her. The install is started through WMI so it
-outlives the App's job when the App quits; its output is
-`logs/update-voice.log`. A repo build has no install and says so.
+Updates by voice use the App's own updater, the one behind Settings ›
+Updates, over the protocol: Core sends `{"cmd":"update","id","action",
+"channel"?}` (`status`, `check`, `install`, `channel`) and the App answers
+with `{"type":"update","id","state","running","channel","latest"?,
+"message"?,"installed"}`. `check`, `install` and `channel` always run a
+fresh check first; `install` answers `started` as soon as the download
+begins (or `up_to_date`, `no_release`, `failed` with the updater's reason),
+then the App's own install and supervised switch run exactly as for the
+Update button, holding the switch until her one "Updating, back in a
+moment" line has played (at most 15 s). Without an `id`, the App reports
+what really happened: `failed` (an install she started failed), `back`
+(this version confirmed it started cleanly: Core says "I'm back, on
+<version>", from `running`, once, in the current persona's voice), or
+`rolled_back` (once, in the version rolled back to, with `install.json`'s
+reason; `failed.told` records it). The tools return only what the App said;
+no answer is never reported as a failure.
 
 ## User state (`~/.assistant/`, never in the repo)
 

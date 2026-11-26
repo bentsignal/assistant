@@ -58,6 +58,43 @@ pub(crate) enum Phase {
     },
 }
 
+impl Phase {
+    /// The phase's name in the App ⇄ Core protocol (`update` events).
+    pub(crate) fn key(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Checking => "checking",
+            Self::UpToDate => "up_to_date",
+            Self::NoRelease => "no_release",
+            Self::Available(_) => "available",
+            Self::Downloading { .. } => "downloading",
+            Self::Preparing { .. } => "preparing",
+            Self::Ready(_) => "ready",
+            Self::Failed { .. } => "failed",
+        }
+    }
+
+    /// The release it's about, if any.
+    pub(crate) fn offer(&self) -> Option<&Offer> {
+        match self {
+            Self::Available(offer)
+            | Self::Ready(offer)
+            | Self::Downloading { offer, .. }
+            | Self::Preparing { offer, .. } => Some(offer),
+            Self::Failed { offer, .. } => offer.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Downloading, preparing, or handing over.
+    pub(crate) fn installing(&self) -> bool {
+        matches!(
+            self,
+            Self::Downloading { .. } | Self::Preparing { .. } | Self::Ready(_)
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Snapshot {
     pub(crate) phase: Phase,
@@ -221,10 +258,11 @@ impl Updater {
 
     /// Downloads, verifies, and unpacks the offered release and prepares its
     /// voice env; `ready` is called once it's in place (the runtime then
-    /// hands over and quits).
-    pub(crate) fn install(&self, ready: impl FnOnce(Offer) + Send + 'static) {
+    /// hands over and quits). Returns whether it started (an installed copy
+    /// with an offer, and nothing else in flight).
+    pub(crate) fn install(&self, ready: impl FnOnce(Offer) + Send + 'static) -> bool {
         let Some(root) = install::layout().root().map(std::path::Path::to_path_buf) else {
-            return;
+            return false;
         };
         let offer = {
             let mut shared = lock(&self.shared);
@@ -233,10 +271,10 @@ impl Updater {
                 Phase::Failed {
                     offer: Some(offer), ..
                 } => offer.clone(),
-                _ => return,
+                _ => return false,
             };
             if shared.busy {
-                return;
+                return false;
             }
             shared.busy = true;
             shared.phase = Phase::Downloading {
@@ -309,6 +347,7 @@ impl Updater {
                     }
                 }
             });
+        true
     }
 
     /// Stops a download in progress (quitting).

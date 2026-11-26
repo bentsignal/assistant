@@ -230,6 +230,7 @@ pub(crate) fn supervise(root: &Path, to: &str, from: &str, wait_pid: Option<u32>
             label: to.to_string(),
             reason,
             at: install::now(),
+            told: false,
         });
     })?;
     spawn_detached(&install::version_exe(root, from), &[])?;

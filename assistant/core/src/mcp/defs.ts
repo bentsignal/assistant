@@ -292,18 +292,18 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "update_status",
-    description: "Which version of Assistant (you) is running and which channel (Stable or Nightly) it updates from. In a development build, says updates aren't available there.",
+    description: "Which version of Assistant (you) is running, which channel (Stable or Nightly) it updates from, and what the app's updater is doing. The only source of truth about an update.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "update_check",
-    description: "Check for an update to Assistant (you) on its channel, or on another channel. Says the newest release and whether it's this one.",
-    inputSchema: { type: "object", properties: { channel: { type: "string", enum: ["stable", "nightly"], description: "Check this channel instead of the configured one." } } },
+    description: "Check for an update to Assistant (you) on its channel, through the app's own updater (the same as Settings › Updates). Says the newest release and whether it's this one.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "update_install",
     description:
-      "Install the update to Assistant (you), when Shawn asks. It downloads, verifies, and restarts you, so FIRST speak a short line saying you'll restart to update and be back in a minute or so, then call this. Only when update_check says one is available. channel installs that channel's release (and switches to it).",
+      "Update Assistant (you), when Shawn asks: the app's own updater (the same as Settings › Updates' Update button) checks, downloads, verifies, and restarts you into the new version. Call it straight away, without speaking first; it returns as soon as the install starts (or says there's nothing to install, or the updater's reason it failed). Then follow what it returns. You announce yourself automatically once you're back. channel installs that channel's release (and switches to it).",
     inputSchema: { type: "object", properties: { channel: { type: "string", enum: ["stable", "nightly"], description: "Install from this channel (also switches to it)." } } },
   },
   {

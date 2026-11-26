@@ -167,7 +167,7 @@ impl Default for SettingsView {
             voices: Vec::new(),
             voice: None,
             brain: Brain::ClaudeCode,
-            model: "sonnet".into(),
+            model: "opus".into(),
             wake: Wake::Normal,
             start_at_login: true,
             stop_hotkey: crate::assistant::config::DEFAULT_STOP_HOTKEY.into(),
