@@ -11,11 +11,19 @@ import type { Persona } from "./config.ts"
  * next revert walks one step further back, and saves the text it replaced
  * as `-pre-revert.md` (kept for safety, never restored automatically).
  */
-/** The prompt as the brain gets it: `{{name}}` is her name. A prompt without it works as written. */
-export function renderPrompt(text: string, name: string, personas: Persona[] = []): string {
-  return text
+/**
+ * The prompt as the brain gets it: `{{name}}` is her name. A prompt without it works as written.
+ * `skills` (her skills, rendered) goes where `{{skills}}` is, else at the end, so a custom or
+ * edited prompt still gets them.
+ */
+export function renderPrompt(text: string, name: string, personas: Persona[] = [], skills?: string): string {
+  const out = text
     .replace(/\{\{\s*name\s*\}\}/g, name)
     .replace(/\{\{\s*personas\s*\}\}/g, describePersonas(personas.length ? personas : [{ name, voice: "" }]))
+  const slot = /\{\{\s*skills\s*\}\}/g
+  if (skills === undefined) return out.replace(slot, "")
+  if (/\{\{\s*skills\s*\}\}/.test(out)) return out.replace(slot, () => skills)
+  return out.replace(/\s*$/, "\n\n") + skills + "\n"
 }
 
 /** One line per persona for the prompt: "- Alfred (voice alfred): a dry, courteous English butler". */

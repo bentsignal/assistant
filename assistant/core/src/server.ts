@@ -26,7 +26,7 @@ async function readBody(req: IncomingMessage, limit = 1_000_000): Promise<any> {
 /**
  * Core's loopback HTTP server. It serves no pages. The brain's MCP server
  * calls tools through POST /api/tool; the rest are debug and test hooks
- * (/api/state, /api/utterance, /api/say, /api/chime, /api/notify,
+ * (/api/state, /api/utterance, /api/say, /api/chime, /api/notify, /api/t3-tool,
  * /api/brain).
  *
  * Every POST must be JSON (which a cross-site page can't send without a CORS
@@ -97,6 +97,12 @@ function listen(assistant: Assistant, wantPort: number): Promise<{ close: () => 
           if (typeof body.text !== "string" || !body.text.trim()) return json(res, 400, { error: "text required" })
           assistant.say(body.text)
           return json(res, 200, { ok: true })
+        case "/api/t3-tool": // call a T3 MCP tool with Core's session (test hook; any local user can run t3 anyway)
+          try {
+            return json(res, 200, { result: await assistant.t3.mcpTool(String(body.name ?? ""), body.args ?? {}) })
+          } catch (err) {
+            return json(res, 200, { error: (err as Error).message, code: (err as any).code })
+          }
         case "/api/notify": // add an inbox item and chime, as a finished job would (test hook)
           assistant.notify({ kind: "system", title: String(body.title ?? "Test notification"), summary: String(body.summary ?? "") })
           return json(res, 200, { ok: true })

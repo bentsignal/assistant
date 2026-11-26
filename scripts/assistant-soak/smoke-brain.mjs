@@ -9,6 +9,14 @@
 //   node scripts/assistant-soak/smoke-brain.mjs [--home ~/.assistant] [--timeout 60] [--skip-codex]
 //
 // --skip-codex leaves out the Codex steps on a machine where Codex isn't signed in.
+// --skip-voice leaves out the voice steps where no voice service runs (a Core
+// hosted by assistant/core/scripts/smoke-core.ts).
+// --skip-t3 leaves out the T3 steps. Those launch a full-access scratch thread
+// on Winserve (through Core's own T3 session), have her steer it and settle
+// it by voice, and check both in T3.
+//
+// The skill steps teach her a skill by voice (wrapping `hostname`), check she
+// runs it on the next turn, then have her remove it.
 //
 // It talks out loud (it's the real app) and changes things it puts back:
 // the voice (restored at the end), the brain (back to Claude), and the
@@ -17,7 +25,7 @@
 // persona's voice (`-> app {"cmd":"speak",…,"voice":"alfred"}`).
 
 import { existsSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync } from "node:fs"
-import { homedir } from "node:os"
+import { homedir, hostname } from "node:os"
 import { join } from "node:path"
 
 const argv = process.argv.slice(2)
@@ -108,7 +116,7 @@ async function step(label, text, tools, voice) {
     // Each expected tool somewhere in the turn (the brain may speak first),
     // then a speak whose line finished playing.
     for (const tool of tools) {
-      if (!new RegExp(`\\btool ${tool}\\b`).test(log)) {
+      if (!new RegExp(`\\btool (?:${tool})\\b`).test(log)) {
         missing = `tool ${tool}`
         break
       }
@@ -142,8 +150,9 @@ try {
 }
 
 results.push(await step("say ready", `${NAME}, say ready.`, ["speak"]))
-results.push(await step("switch to Eli", `${NAME}, switch to Eli.`, ["set_voice"]))
-results.push(await step("own voices again", `${NAME}, use each persona's own voice again.`, ["set_voice"]))
+const skipVoice = argv.includes("--skip-voice")
+if (!skipVoice) results.push(await step("switch to Eli", `${NAME}, switch to Eli.`, ["set_voice"]))
+if (!skipVoice) results.push(await step("own voices again", `${NAME}, use each persona's own voice again.`, ["set_voice"]))
 results.push(await step("Hey Alfred", "Hey Alfred, say hello.", [], "alfred"))
 results.push(await step("Jarvis", "Jarvis, say hello.", [], "jarvis"))
 // A mishearing of Vera's name still wakes her but keeps whoever answered last.
@@ -157,9 +166,96 @@ if (!argv.includes("--skip-codex")) {
 results.push(await step("prompt edit", `${NAME}, remember to keep answers under two sentences.`, ["edit_system_prompt"]))
 results.push(await step("prompt revert", `${NAME}, undo that last change to your prompt.`, ["revert_system_prompt"]))
 
+// Skills: learned by voice, used on the next turn, then forgotten.
+{
+  const host = hostname().toLowerCase()
+  results.push(
+    await step(
+      "skill learned",
+      `${NAME}, learn a new skill called machine-name: running the hostname command prints this computer's name. Save it so you remember it.`,
+      ["skill_save"],
+    ),
+  )
+  const read = tail()
+  results.push(await step("skill used", `${NAME}, what's this computer called?`, ["run_command"]))
+  const ran = new RegExp(`tool run_command -> Exit 0[^\n]*${host}`, "i").test(read())
+  console.log(`${ran ? "PASS" : "FAIL"} skill ran hostname and got ${host}`)
+  results.push(ran)
+  results.push(await step("skill forgotten", `${NAME}, remove your machine-name skill now, no need to confirm.`, ["skill_remove"]))
+}
+
+// T3 with full access: steer a full-access thread on Winserve, then settle it.
+if (!argv.includes("--skip-t3")) results.push(...(await t3Steps()))
+
+
+/** Launches a full-access scratch thread on Winserve, has her steer it and settle it by voice, and checks both. */
+async function t3Steps() {
+  const WINSERVE = "573af78b-3442-4163-8b9b-bc5cb90eefde"
+  const out = []
+  const title = `Assistant smoke ${Date.now().toString(36)}`
+  const call = async (name, args) => {
+    const r = await post("/api/t3-tool", { name, args })
+    if (r.error) throw new Error(r.error)
+    return r.result
+  }
+  let threadId
+  try {
+    const launched = await call("t3_thread_launch", {
+      environmentId: WINSERVE,
+      scratch: true,
+      title,
+      runtimeMode: "full-access",
+      modelSelection: { provider: "claudeAgent", instanceId: "claudeAgent", model: "claude-sonnet-5-5", options: [{ id: "effort", value: "low" }] },
+      message:
+        "This is a test from Shawn's voice assistant. Run the shell command: powershell -NoProfile -Command Start-Sleep -Seconds 45 . Then reply with one word: done. Messages may arrive while you wait; follow them too.",
+    })
+    threadId = launched.threadId ?? launched.thread?.threadId
+    if (!threadId) throw new Error(`no thread id: ${JSON.stringify(launched).slice(0, 300)}`)
+    console.log(`PASS launched full-access thread "${title}" (${threadId})`)
+    out.push(true)
+  } catch (err) {
+    console.log(`FAIL launching a full-access thread on Winserve: ${err.message}`)
+    return [false]
+  }
+  await sleep(8000) // let its turn start
+  const read = tail()
+  out.push(
+    await step(
+      "steer the thread",
+      `${NAME}, tell my "${title}" thread on Winserve to also say the word pineapple when it's done.`,
+      ["t3_send|t3_tool|send_feedback"],
+    ),
+  )
+  const steered = /tool (?:t3_send|t3_tool) -> [^\n]*(?:Steered|"steered")/.test(read())
+  console.log(`${steered ? "PASS" : "FAIL"} the message steered the running turn (not queued or refused)`)
+  out.push(steered)
+  // T3 settles only a thread that isn't mid-turn: wait for its run (the sleep, then "done").
+  for (let i = 0; i < 40; i++) {
+    const list = await call("t3_thread_list", { environmentId: WINSERVE, allProjects: true, titleContains: title, limit: 5 }).catch(() => null)
+    const row = list?.threads?.find((t) => t.threadId === threadId)
+    if (row && !/^(preparing|queued|starting|running)$/.test(row.status ?? "")) break
+    await sleep(3000)
+  }
+  out.push(await step("settle the thread", `${NAME}, settle the "${title}" thread on Winserve.`, ["t3_tool"]))
+  try {
+    const list = await call("t3_thread_list", { environmentId: WINSERVE, allProjects: true, settled: true, titleContains: title, limit: 5 })
+    const settled = JSON.stringify(list).includes(threadId)
+    console.log(`${settled ? "PASS" : "FAIL"} the thread is settled in T3`)
+    out.push(settled)
+    const shown = await call("t3_thread_read", { environmentId: WINSERVE, threadId, limit: 8 })
+    const got = /pineapple/i.test(JSON.stringify(shown))
+    console.log(`${got ? "PASS" : "FAIL"} the thread got the steered message`)
+    out.push(got)
+  } catch (err) {
+    console.log(`FAIL checking the thread: ${err.message}`)
+    out.push(false)
+  }
+  return out
+}
+
 // Put back what the run changed.
 const after = readJson(join(HOME, "config.json"), {})
-if ((after?.app?.voice ?? null) !== startVoice) {
+if (!skipVoice && (after?.app?.voice ?? null) !== startVoice) {
   const back = startVoice ? `${NAME}, switch your voice back to ${startVoice}.` : `${NAME}, switch back to your first voice.`
   results.push(await step("voice back", back, ["set_voice"]))
 }

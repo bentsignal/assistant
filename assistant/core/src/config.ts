@@ -41,6 +41,10 @@ export const paths = {
   get watches() {
     return join(assistantHome(), "t3-watches.json")
   },
+  /** Her skills, one Markdown file each (src/skills.ts). */
+  get skills() {
+    return join(assistantHome(), "skills")
+  },
   get brainDir() {
     return join(assistantHome(), "brain")
   },

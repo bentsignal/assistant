@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -245,14 +246,51 @@ export class T3 {
     return join(dirname(this.tokenFile), "t3-mcp-token.json")
   }
 
-  /** A T3 MCP client session (subject `mcp-client`, may operate threads), cached for 30 days. */
+  /** Drops the cached MCP session, so the next call gets (and grants) a new one. */
+  forgetMcpSession(): void {
+    try {
+      writeFileSync(this.mcpTokenFile(), "{}")
+    } catch {}
+    this.mcpAccess = "unknown"
+  }
+
+  /** The access the cached MCP session has: "full-access" once granted, else T3's default ceiling. */
+  mcpAccess: "full-access" | "approval-required" | "unknown" = "unknown"
+  /** Why the full-access grant failed, if it did (Core then uses an approval-required session). */
+  mcpGrantError: string | null = null
+
+  /**
+   * A T3 MCP client session, cached for 30 days. It's full-access: T3 caps a
+   * session the CLI issues (`auth session issue --subject mcp-client`) at
+   * approval-required, and only its OAuth approval sets a broader ceiling. So
+   * Core runs that approval itself, as Shawn: a five-minute approver session
+   * from his own CLI (which any local T3 CLI user may issue) approves
+   * Assistant's OAuth client at full-access, as clicking Approve on T3's
+   * agent sign-in page would. If that fails, it falls back to the CLI-issued
+   * session, records why, and tries the grant again after an hour.
+   */
   private async mcpToken(fresh = false): Promise<string> {
     const file = this.mcpTokenFile()
     if (!fresh && existsSync(file)) {
       try {
         const t = JSON.parse(readFileSync(file, "utf8"))
-        if (t.token && t.expires > Date.now() + 3600_000) return t.token
+        // A cached approval-required session (older Cores) is replaced once a grant works.
+        const retryGrant = t.access !== "full-access" && (t.grantTriedAt ?? 0) < Date.now() - 3600_000
+        if (t.token && t.expires > Date.now() + 3600_000 && !retryGrant) {
+          this.mcpAccess = t.access === "full-access" ? "full-access" : "approval-required"
+          return t.token
+        }
       } catch {}
+    }
+    try {
+      const granted = await this.grantFullAccess()
+      writeFileSync(file, JSON.stringify({ token: granted.token, expires: granted.expires, access: "full-access" }), { mode: 0o600 })
+      this.mcpAccess = "full-access"
+      this.mcpGrantError = null
+      return granted.token
+    } catch (err) {
+      this.mcpGrantError = (err as Error).message
+      console.error(`[t3] full-access grant failed, using an approval-required session: ${this.mcpGrantError}`)
     }
     const r = await this.cli([
       "auth", "session", "issue", "--token-only", "--label", "assistant", "--ttl", "30d",
@@ -260,12 +298,113 @@ export class T3 {
     ])
     const token = r.stdout.split(/\s+/).find((s) => s.startsWith("ey"))
     if (!token) throw new Error(`couldn't get a T3 MCP session: ${r.stderr.trim() || r.stdout.trim()}`)
-    writeFileSync(file, JSON.stringify({ token, expires: Date.now() + 29 * 86400_000 }), { mode: 0o600 })
+    writeFileSync(
+      file,
+      JSON.stringify({ token, expires: Date.now() + 29 * 86400_000, access: "approval-required", grantTriedAt: Date.now() }),
+      { mode: 0o600 },
+    )
+    this.mcpAccess = "approval-required"
     return token
+  }
+
+  /**
+   * T3's MCP OAuth (register, approval, decision, token), approved by a
+   * short-lived session from the CLI. Returns a full-access MCP client session.
+   */
+  async grantFullAccess(): Promise<{ token: string; expires: number }> {
+    const { origin } = this.runtime()
+    const r = await this.cli(["auth", "session", "issue", "--token-only", "--label", "assistant approval", "--ttl", "5m"])
+    const approver = r.stdout.split(/\s+/).find((s) => s.startsWith("ey"))
+    if (!approver) throw new Error(`couldn't get an approver session from the t3 CLI: ${r.stderr.trim() || r.stdout.trim()}`)
+    const post = async (path: string, body: unknown, bearer?: string) => {
+      const res = await fetch(origin + path, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
+      })
+      const text = await res.text()
+      if (!res.ok) throw new Error(`T3 ${path}: HTTP ${res.status} ${text.slice(0, 300)}`)
+      return JSON.parse(text)
+    }
+    // Never visited: the code comes back in the decision's redirect.
+    const redirectUri = "http://127.0.0.1:7319/t3-callback"
+    const client = await post("/oauth/mcp/register", {
+      client_name: "Assistant",
+      redirect_uris: [redirectUri],
+      token_endpoint_auth_method: "none",
+    })
+    const verifier = randomBytes(32).toString("base64url")
+    const authorization = {
+      response_type: "code",
+      client_id: client.client_id,
+      redirect_uri: redirectUri,
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      code_challenge_method: "S256",
+      state: randomBytes(12).toString("base64url"),
+      resource: origin + "/mcp",
+    }
+    const details = await post("/oauth/mcp/approval", authorization, approver)
+    if (details.runtimeModeCeiling) {
+      throw new Error(`${details.runtimeModeCeiling.organization}'s managed policy caps T3 at ${details.runtimeModeCeiling.maxRuntimeMode}`)
+    }
+    if (!details.csrfToken) throw new Error("T3 didn't let the CLI's session approve an MCP client")
+    const decided = await post(
+      "/oauth/mcp/decision",
+      { authorization, decision: { _tag: "browser-session", access: "full-access", csrfToken: details.csrfToken } },
+      approver,
+    )
+    const code = new URL(decided.redirectTo).searchParams.get("code")
+    if (!code) throw new Error(`T3's approval returned no code: ${String(decided.redirectTo).slice(0, 200)}`)
+    const res = await fetch(origin + "/oauth/mcp/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: client.client_id,
+        code_verifier: verifier,
+        resource: authorization.resource,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    const tok: any = await res.json().catch(() => ({}))
+    if (!res.ok || !tok.access_token) throw new Error(`T3 /oauth/mcp/token: HTTP ${res.status} ${JSON.stringify(tok).slice(0, 300)}`)
+    return { token: tok.access_token, expires: Date.now() + Math.max(3600, Number(tok.expires_in ?? 86400) - 3600) * 1000 }
   }
 
   /** Calls one of the server's MCP tools and returns its JSON result (throws its failure). */
   async mcpTool(name: string, args: Record<string, unknown>): Promise<any> {
+    const reply = await this.mcpRpc("tools/call", { name, arguments: args })
+    const text = reply.result?.content?.find((c: any) => c.type === "text")?.text ?? "{}"
+    let value: any
+    try {
+      value = JSON.parse(text)
+    } catch {
+      value = { message: text }
+    }
+    if (reply.result?.isError || value?._tag === "OrchestratorMcpFailure") {
+      const err = new Error(value?.message ?? text) as Error & { code?: string }
+      err.code = value?.code
+      throw err
+    }
+    return value
+  }
+
+  /** T3's MCP tools (name, description, input schema), cached for ten minutes. */
+  async mcpList(): Promise<{ name: string; description?: string; inputSchema?: any }[]> {
+    if (this.toolCache && this.toolCache.at > Date.now() - 600_000) return this.toolCache.tools
+    const reply = await this.mcpRpc("tools/list", {})
+    const tools = reply.result?.tools ?? []
+    this.toolCache = { at: Date.now(), tools }
+    return tools
+  }
+
+  private toolCache: { at: number; tools: any[] } | null = null
+
+  /** One JSON-RPC request in its own MCP session. Throws a JSON-RPC error. */
+  private async mcpRpc(method: string, params: Record<string, unknown>): Promise<any> {
     const { origin } = this.runtime()
     for (const fresh of [false, true]) {
       const token = await this.mcpToken(fresh)
@@ -288,23 +427,11 @@ export class T3 {
       const session = init.headers.get("mcp-session-id")
       if (session) headers["mcp-session-id"] = session
       await (await post({ jsonrpc: "2.0", method: "notifications/initialized" })).text()
-      const res = await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } })
+      const res = await post({ jsonrpc: "2.0", id: 2, method, params })
       const reply = parseRpc(await res.text())
       if (session) void fetch(origin + "/mcp", { method: "DELETE", headers }).catch(() => {})
       if (reply.error) throw new Error(`T3 MCP: ${reply.error.message ?? JSON.stringify(reply.error)}`)
-      const text = reply.result?.content?.find((c: any) => c.type === "text")?.text ?? "{}"
-      let value: any
-      try {
-        value = JSON.parse(text)
-      } catch {
-        value = { message: text }
-      }
-      if (reply.result?.isError || value?._tag === "OrchestratorMcpFailure") {
-        const err = new Error(value?.message ?? text) as Error & { code?: string }
-        err.code = value?.code
-        throw err
-      }
-      return value
+      return reply
     }
     throw new Error("T3 MCP: unauthorized")
   }

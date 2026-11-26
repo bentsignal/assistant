@@ -242,8 +242,9 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   the next user turn.
 - **Wake word** "Vera" (fuzzy matching; see `assistant/core/src/gate.ts`), or the
   follow-up window after Vera speaks, or a barge-in.
-- **Thin brain.** The brain doesn't edit files or run shell commands; it
-  delegates.
+- **Thin brain.** The brain doesn't edit files and has no shell; it
+  delegates. It runs programs only through its skills (`run_command`: a
+  program some skill lists, no shell, bounded time and output).
 - **Never touches system settings** such as master volume unless explicitly
   asked to change that system setting.
 
@@ -262,10 +263,44 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
 - General web search: the brain's own web search tool.
 - Vera's own volume: `set_volume`. Showing or closing visuals: `show` / `hide`.
 - Confirm out loud before anything destructive or outward-facing.
+- **Figure it out.** She looks projects and threads up herself (every linked
+  machine, Winserve included) and acts; a short question only when it's truly
+  ambiguous, and never "do it yourself" when a tool can.
+
+## T3 access
+
+Core's T3 MCP session is **full-access**: whatever Shawn can do in T3 Code,
+she can (`t3_tools` lists T3's tools, `t3_tool` calls any of them). T3 caps
+a session the CLI issues (`auth session issue --subject mcp-client`) at
+approval-required, and only its OAuth approval sets a broader ceiling, so
+Core runs that approval itself as Shawn: a five-minute session from his own
+`t3` CLI approves Assistant's OAuth client (`/oauth/mcp/register`,
+`/approval`, `/decision` with `browser-session` at `full-access`,
+`/token`), as Approve on T3's agent sign-in page would. The session is cached
+in `~/.assistant/t3-mcp-token.json` (30 days) and shows under Authorized
+clients in T3's Settings › Sharing & access. If the grant fails, Core falls
+back to an approval-required session, retries hourly, and every refusal
+tells her the one thing that fixes it (`t3_access retry`, or re-linking a
+machine with `--access full-access`), which she says plainly. Work on a
+linked machine is also capped by that link's access.
+
+## Skills
+
+Her skills are `~/.assistant/skills/<name>.md`: front matter (`name`,
+`description`, `commands`: the programs `run_command` may run) and a body
+(what it's for, exact commands, where config and auth live). All of them go
+into the system prompt at `{{skills}}` (or at the end of a prompt without
+it), so they survive app updates and prompt edits; a change restarts the
+brain before the next turn. Tools: `skill_list`, `skill_read`,
+`skill_save`, `skill_remove` (moves it to `skills/.removed`),
+`skill_setup` (a background Claude Code job installs, checks, and writes the
+skill file itself), and `run_command`. Core seeds `shawns-preferences` once
+(where projects, coding, computer use and searches go); a removed seed stays
+removed.
 
 ## User state (`~/.assistant/`, never in the repo)
 
-`config.json`, `system-prompt.md` (+ `prompt-history/`; Settings › General ›
+`config.json`, `skills/`, `t3-mcp-token.json`, `system-prompt.md` (+ `prompt-history/`; Settings › General ›
 Personality edits it in place, with Save and Revert to default, and Core picks
 up the change from the next turn), `logs/`, `jobs/`,
 `models/`, `ears/`.

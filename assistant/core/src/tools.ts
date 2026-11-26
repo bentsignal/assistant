@@ -1,9 +1,80 @@
+import { join } from "node:path"
 import { availableBrains } from "./brain/index.ts"
 import type { BrainHarness } from "./config.ts"
 import { oneLine, truncate } from "./inbox.ts"
 import type { Job, JobAgent } from "./jobs.ts"
 import type { Assistant } from "./assistant.ts"
+import { runCli, type RunResult } from "./proc.ts"
+import { formatSkill, skillSlug, splitCommand } from "./skills.ts"
 import { describeVoices, fetchVoices, pickVoice } from "./voices.ts"
+
+/**
+ * What to say when T3 refuses an action for its access level: plainly, with
+ * the one thing Shawn can do, never "I can't".
+ */
+export function t3Refusal(assistant: Assistant, err: Error & { code?: string }): string {
+  const modeRefused = err.code === "runtime_mode_escalation_denied" || err.code === "interaction_mode_escalation_denied"
+  if (!modeRefused) return `T3 refused: ${truncate(err.message, 400)}`
+  if (assistant.t3.mcpAccess !== "full-access") {
+    return `T3 refused because your T3 session is only approval-required: getting full access failed (${truncate(assistant.t3.mcpGrantError ?? "unknown reason", 200)}). Try t3_access with retry: true once. If that fails too, tell Shawn plainly in one sentence: T3 Code must be running on this machine with its t3 command working, and then he can say "retry T3 access".`
+  }
+  if (/Linked environment/i.test(err.message)) {
+    return `T3 refused: ${truncate(err.message, 300)} Tell Shawn plainly: that machine was linked with less than full access; to fix it he runs "t3 pair" on that machine and then "t3 environment link <its address> --pairing-code <the code> --access full-access" here (or links it again with full access in T3's Settings, Sharing and access). Offer to queue the message meanwhile (t3_send with queue).`
+  }
+  return `T3 refused: ${truncate(err.message, 400)} Tell Shawn in one sentence what it said.`
+}
+
+/** The brief for a setup job: install, configure, verify, then write the skill file. */
+export function setupBrief(goal: string, slug: string, file: string, details: string): string {
+  const example = formatSkill({
+    name: slug,
+    description: "One sentence: what this lets the voice assistant do.",
+    commands: ["program-name"],
+    body: "- What it's for, and when to use it.\n- Exact commands, one per line, with what each prints (read-only ones first).\n- Where its config and auth live, and how to refresh a login.",
+  })
+  return `You are setting something up for Shawn's voice assistant (Assistant, "Vera") on this Windows machine, so she can use it from now on.
+
+Goal: ${goal}
+${details ? `Details from Shawn: ${details}\n` : ""}
+Do this:
+1. Work out what's needed. Shawn's own tools are on his GitHub under bentsignal (gh repo list bentsignal; gh repo view bentsignal/<name> for the README); use those when the goal names one of his.
+2. Install and configure it so it works non-interactively from a plain command line (a CLI on PATH, or an absolute path to one). Prefer read-only access unless the goal needs more. Store secrets where the tool itself expects them, never in the skill file.
+3. Check that it works with a harmless, read-only command.
+4. Write the skill file ${file} (UTF-8), in exactly this shape:
+
+${example}
+"commands" lists the programs (names on PATH, or absolute paths) she may run for this skill, comma separated. She runs them without a shell, so no pipes, redirects or &&; if a task needs those, wrap it in a small script and list that script's runner (for example powershell with -File and the script's path in the body).
+5. If something only Shawn can do blocks you (a login in a browser, an API key, pressing a button on a device), still write the skill with what works so far plus a line "Needs Shawn:" saying exactly what he must do, and stop.
+
+Reply in two short sentences: what works now, and anything Shawn must do.`
+}
+
+function steerNote(assistant: Assistant): string {
+  return assistant.t3.mcpAccess === "full-access"
+    ? "T3 refused to let you steer that thread; it gets the message after its current turn."
+    : "your T3 session is only approval-required (try t3_access with retry), so it waits for the current turn."
+}
+
+/** runCli, but a program installed after Core started is found too (PATH is reread once). */
+async function runFresh(name: string, args: string[], opts: { input?: string; cwd?: string; timeoutMs?: number }): Promise<RunResult> {
+  try {
+    return await runCli(name, args, opts)
+  } catch (err) {
+    if (!/not found on PATH/.test((err as Error).message) || process.platform !== "win32") throw err
+    const r = await runCli("powershell", [
+      "-NoProfile",
+      "-Command",
+      "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')",
+    ]).catch(() => null)
+    const fresh = r?.stdout.trim()
+    if (!fresh) throw err
+    const seen = new Set<string>()
+    process.env.PATH = [...(process.env.PATH ?? "").split(";"), ...fresh.split(";")]
+      .filter((d) => d && !seen.has(d.toLowerCase()) && seen.add(d.toLowerCase()))
+      .join(";")
+    return runCli(name, args, opts)
+  }
+}
 
 /** Daemon side of the Assistant MCP tools (see src/mcp/defs.ts for the schemas). */
 export type ToolHandler = (assistant: Assistant, args: any) => Promise<string> | string
@@ -103,7 +174,16 @@ export const HANDLERS: Record<string, ToolHandler> = {
   },
 
   async t3_environments(assistant) {
-    return JSON.stringify(await assistant.t3.environments(), null, 1).slice(0, 4000)
+    const envs = await assistant.t3.environments()
+    return truncate(`Your T3 access here: ${assistant.t3.mcpAccess}. This machine is environment ${envs.environmentId}.
+${JSON.stringify(envs, null, 1)}`, 4000)
+  },
+
+  async t3_access(assistant, args) {
+    if (args?.retry) assistant.t3.forgetMcpSession()
+    await assistant.t3.environments().catch(() => {})
+    if (assistant.t3.mcpAccess === "full-access") return "Your T3 access is full-access: you can do anything Shawn can in T3 Code on this machine (and on linked machines, up to each link's access)."
+    return `Your T3 access is ${assistant.t3.mcpAccess}; getting full access failed: ${truncate(assistant.t3.mcpGrantError ?? "unknown", 300)}. Tell Shawn plainly in one sentence: T3 Code must be running here with its t3 command working; then he says "retry T3 access".`
   },
 
   async send_feedback(assistant, args) {
@@ -112,8 +192,10 @@ export const HANDLERS: Record<string, ToolHandler> = {
     try {
       const sent = await assistant.t3.send(target.threadId, message, { environmentId: target.environmentId })
       const how = sent.delivery === "steered" ? "steered into its running turn" : sent.delivery === "queued" ? "queued" : "sent"
-      return `Feedback ${how} to the orchestrator${sent.steerRefused ? " (T3 doesn't let you steer that thread yet, so it waits for its current turn)" : ""}. Confirm in a few words.`
+      return `Feedback ${how} to the orchestrator${sent.steerRefused ? ` (queued, not steered: ${steerNote(assistant)})` : ""}. Confirm in a few words.`
     } catch (err) {
+      const code = (err as any).code as string | undefined
+      if (code?.endsWith("_escalation_denied")) return t3Refusal(assistant, err as Error & { code?: string })
       // Not a fault of hers: she says so briefly, nothing chimes or turns red.
       return `Couldn't reach the orchestrator (${truncate((err as Error).message, 200)}). Tell Shawn so in one short sentence; don't retry.`
     }
@@ -161,15 +243,22 @@ export const HANDLERS: Record<string, ToolHandler> = {
   async t3_send(assistant, args) {
     const thread = need(args, "thread")
     const environmentId = typeof args.environment === "string" && args.environment ? args.environment : undefined
-    const sent = await assistant.t3.send(thread, need(args, "message"), { mode: args.queue === true ? "queue" : "steer", environmentId })
+    let sent
+    try {
+      sent = await assistant.t3.send(thread, need(args, "message"), { mode: args.queue === true ? "queue" : "steer", environmentId })
+    } catch (err) {
+      if (!(err as any).code) throw err
+      return t3Refusal(assistant, err as Error & { code?: string })
+    }
+    const note = sent.steerRefused ? ` Queued rather than steered: ${steerNote(assistant)}` : ""
     const how0 = sent.delivery === "steered" ? "Steered into its running turn" : sent.delivery === "queued" ? "Queued after its current turn" : "Sent"
     // Threads on another machine aren't watched (the watcher reads this one).
-    if (environmentId) return `${how0} (thread ${thread} on ${environmentId}).`
+    if (environmentId) return `${how0} (thread ${thread} on ${environmentId}).${note}`
     if (!assistant.watcher.watches.has(thread)) await assistant.watcher.add(thread).catch(() => {})
     else assistant.watcher.expectRun(thread)
     const how =
       sent.delivery === "steered" ? "Steered into its running turn" : sent.delivery === "queued" ? "Queued after its current turn" : "Sent"
-    return `${how} ("${await resolveThreadTitle(assistant, thread)}"); watching for the reply.`
+    return `${how} ("${await resolveThreadTitle(assistant, thread)}"); watching for the reply.${note}`
   },
 
   async t3_watch(assistant, args) {
@@ -177,6 +266,91 @@ export const HANDLERS: Record<string, ToolHandler> = {
     if (args.stop) return assistant.watcher.remove(thread) ? "Stopped watching." : "Wasn't watching that thread."
     const w = await assistant.watcher.add(thread)
     return `Watching "${w.title}" (now ${w.lastStatus}).`
+  },
+
+  async t3_tools(assistant, args) {
+    const tools = await assistant.t3.mcpList()
+    const one = typeof args?.name === "string" && args.name.trim() ? args.name.trim() : ""
+    if (one) {
+      const t = tools.find((x) => x.name === one)
+      if (!t) throw new Error(`T3 has no tool ${one}. It has: ${tools.map((x) => x.name).join(", ")}`)
+      return truncate(`${t.name}: ${t.description ?? ""}\n\nInput schema: ${JSON.stringify(t.inputSchema)}`, 6000)
+    }
+    return tools.map((t) => `${t.name}: ${truncate(oneLine(t.description ?? ""), 160)}`).join("\n")
+  },
+
+  async t3_tool(assistant, args) {
+    const name = need(args, "name")
+    let input = args.args ?? {}
+    if (typeof input === "string") input = input.trim() ? JSON.parse(input) : {}
+    if (typeof input !== "object" || Array.isArray(input)) throw new Error("args must be an object")
+    try {
+      return truncate(JSON.stringify(await assistant.t3.mcpTool(name, input)), 8000)
+    } catch (err) {
+      return t3Refusal(assistant, err as Error & { code?: string })
+    }
+  },
+
+  skill_list(assistant) {
+    const all = assistant.skills.list()
+    if (!all.length) return "No skills yet."
+    return all.map((s) => `${s.name}: ${s.description}${s.commands.length ? ` (runs ${s.commands.join(", ")})` : ""}`).join("\n")
+  },
+
+  skill_read(assistant, args) {
+    const s = assistant.skills.get(need(args, "name"))
+    if (!s) return `No skill called ${args.name}. Skills: ${assistant.skills.list().map((x) => x.name).join(", ") || "none"}.`
+    return `${s.name} (${s.file})\n${s.description}\ncommands: ${s.commands.join(", ") || "none"}\n\n${s.body}`
+  },
+
+  skill_save(assistant, args) {
+    const commands = Array.isArray(args.commands)
+      ? args.commands.map(String)
+      : typeof args.commands === "string"
+        ? args.commands.split(/[,\s]+/).filter(Boolean)
+        : undefined
+    const { skill, created } = assistant.skills.save({
+      name: need(args, "name"),
+      description: typeof args.description === "string" ? args.description : undefined,
+      body: typeof args.body === "string" ? args.body : undefined,
+      commands,
+    })
+    return `${created ? "Saved the new" : "Updated the"} skill ${skill.name}. It's in your prompt from the next turn${
+      skill.commands.length ? `, and run_command may run ${skill.commands.join(", ")} now` : ""
+    }. Confirm in a few words.`
+  },
+
+  skill_remove(assistant, args) {
+    const s = assistant.skills.remove(need(args, "name"))
+    return `Removed the skill ${s.name} (kept in skills/.removed). Confirm in a few words.`
+  },
+
+  skill_setup(assistant, args) {
+    const goal = need(args, "goal")
+    const slug = skillSlug(typeof args.name === "string" && args.name.trim() ? args.name : goal)
+    const file = join(assistant.skills.dir, `${slug}.md`)
+    const cwd = typeof args.cwd === "string" && args.cwd.trim() ? args.cwd : assistant.config.jobs.defaultCwd
+    const brief = setupBrief(goal, slug, file, typeof args.details === "string" ? args.details : "")
+    const job = assistant.jobs.start("claude", brief, cwd)
+    return `Started setup job ${job.id} for "${slug}". It installs and checks it, then writes the skill itself; Shawn gets a chime when it's done, and you have the skill from the next turn after. Say a few words ("On it, I'll set that up.") and stop.`
+  },
+
+  async run_command(assistant, args) {
+    const argv = Array.isArray(args.argv) ? args.argv.map(String) : splitCommand(need(args, "command"))
+    if (!argv.length) throw new Error("empty command")
+    const skill = assistant.skills.allowing(argv[0])
+    if (!skill) {
+      const known = assistant.skills
+        .list()
+        .flatMap((s) => s.commands)
+        .join(", ")
+      return `No skill lets you run ${argv[0]} (allowed: ${known || "none"}). If it's a program you set up, add it to that skill's commands with skill_save; otherwise delegate it (ask_claude).`
+    }
+    const timeoutMs = Math.min(Math.max(Number(args.timeout_seconds) || 60, 5), 300) * 1000
+    const cwd = typeof args.cwd === "string" && args.cwd.trim() ? args.cwd : undefined
+    const r = await runFresh(argv[0], argv.slice(1), { input: typeof args.stdin === "string" ? args.stdin : undefined, cwd, timeoutMs })
+    const head = r.timedOut ? `Timed out after ${timeoutMs / 1000}s` : `Exit ${r.code}`
+    return truncate(`${head} (${skill.name}).\n${r.stdout.trim() || "(no output)"}${r.stderr.trim() ? `\n[stderr]\n${r.stderr.trim()}` : ""}`, 8000)
   },
 
   read_system_prompt(assistant) {
@@ -267,5 +441,7 @@ export async function runTool(assistant: Assistant, name: string, args: unknown)
   if (!h) throw new Error(`unknown tool ${name}`)
   assistant.log(`tool ${name} ${truncate(oneLine(JSON.stringify(args ?? {})), 300)}`)
   assistant.currentTurn?.tools.push(name)
-  return h(assistant, args ?? {})
+  const result = await h(assistant, args ?? {})
+  if (name !== "speak") assistant.log(`tool ${name} -> ${truncate(oneLine(result), 240)}`)
+  return result
 }

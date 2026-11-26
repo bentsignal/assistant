@@ -182,6 +182,91 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "t3_tools",
+    description:
+      "List every T3 Code tool you can call with t3_tool (you have Shawn's full access: anything he can do in T3). With name, gives that tool's description and input schema; read it before the first call of a tool. Notable ones: t3_thread_launch (new thread: projectId, title, message, runtimeMode full-access, workspaceStrategy), t3_project_create / t3_project_clone (new projects), t3_thread_search, t3_thread_organize (settle, archive, pin, snooze), t3_thread_interrupt, t3_thread_wait, t3_pending_request (answer an agent's question), t3_thread_configure (model, modes), delegate_task, schedule_task, pull_request_*, create_issue.",
+    inputSchema: { type: "object", properties: { name: str("One tool's name, for its schema. Omit to list them all.") } },
+  },
+  {
+    name: "t3_tool",
+    description:
+      "Call any T3 Code tool by name (see t3_tools) with its arguments, with Shawn's full access. Pass environmentId in args to act on another machine (t3_environments lists them; Winserve is 573af78b-3442-4163-8b9b-bc5cb90eefde). A launch in a project with no default model needs modelSelection (orchestrator_capabilities lists providers and models; for Claude: {provider: claudeAgent, instanceId: claudeAgent, model: claude-sonnet-5-5}). Use it for whatever the simpler t3_* tools don't cover: launching threads with options, creating projects, settling or archiving threads, answering pending requests, PRs, issues. Confirm out loud before anything destructive or outward-facing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: str("The T3 tool, like t3_thread_launch or t3_thread_organize."),
+        args: { type: "object", description: "Its arguments, as its input schema says." },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "t3_access",
+    description:
+      "Check what access you have in T3 Code (it should be full-access). retry:true gets a fresh session first, for when T3 refused something for its access level or Shawn says 'retry T3 access'.",
+    inputSchema: { type: "object", properties: { retry: bool("Get a fresh T3 session first.") } },
+  },
+  {
+    name: "skill_list",
+    description: "List your skills (what you've set up and learned, saved for good). Your prompt already has them; use this to check after changes.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "skill_read",
+    description: "Read one skill in full: what it's for, its exact commands, where its config and auth live.",
+    inputSchema: { type: "object", properties: { name: str("The skill's name.") }, required: ["name"] },
+  },
+  {
+    name: "skill_save",
+    description:
+      "Save a skill (create, or update one: fields left out keep their values), so you remember a capability for good, across restarts, app updates and prompt edits. Use it when Shawn teaches you something to do or a preference ('remember that...', 'from now on, when I ask X, do Y'), after you've set something up and checked it works, or to fix a skill that's wrong. body: what it's for, the exact commands (one per line, with what they print), and where its config and auth live. commands: the programs run_command may run for it (names on PATH or absolute paths). Applies from the next turn; run_command may use new commands at once.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: str("Short name, like free-mail or hue-lights."),
+        description: str("One sentence: what it lets you do."),
+        body: str("Markdown: what it's for, exact commands, config and auth locations, anything to watch out for."),
+        commands: { type: "array", items: { type: "string" }, description: "Programs run_command may run for this skill, like ['freemail']." },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "skill_remove",
+    description: "Remove a skill when Shawn asks you to forget it (it's kept in skills/.removed, so it can be restored by hand). Confirm first.",
+    inputSchema: { type: "object", properties: { name: str("The skill's name.") }, required: ["name"] },
+  },
+  {
+    name: "skill_setup",
+    description:
+      "Set up a new capability that needs installing or configuring ('set up my Free Mail CLI so you can read my email', 'add control of my Hue lights'). Starts a background Claude Code job (full permissions) that installs and configures it, checks it works, and writes the skill file itself; Shawn gets a chime when it's done and you have the skill from the next turn. For something that's already installed and needs no setup, save it directly with skill_save instead. For a whole new software project, use a T3 thread (see the preferences skill).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        goal: str("What to set up and what you should be able to do with it, self-contained."),
+        name: str("Skill name, like free-mail."),
+        details: str("Anything Shawn said that helps: where it lives, accounts, which machine."),
+        cwd: str("Working folder for the job. Defaults to D:\\dev."),
+      },
+      required: ["goal"],
+    },
+  },
+  {
+    name: "run_command",
+    description:
+      "Run a program one of your skills declares (its commands), directly, no shell, and get its output: the fast way to use a skill (read mail, list lights, check a status). command is a plain command line (quotes group words; no pipes, redirects or &&). Waits up to timeout_seconds (default 60). Confirm out loud first if the command changes or sends anything. A program no skill declares is refused: add it to a skill with skill_save first, or delegate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        command: str("The command line, like: freemail list --unread --limit 10"),
+        cwd: str("Working folder (optional)."),
+        stdin: str("Text to pass on standard input (optional)."),
+        timeout_seconds: { type: "number", description: "Default 60, at most 300." },
+      },
+      required: ["command"],
+    },
+  },
+  {
     name: "read_system_prompt",
     description: "Read your own system prompt (~/.assistant/system-prompt.md).",
     inputSchema: { type: "object", properties: {} },

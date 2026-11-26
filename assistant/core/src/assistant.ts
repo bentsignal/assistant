@@ -6,6 +6,7 @@ import { BUNDLED, CORE_DIR, DEFAULT_NAME, loadConfig, paths, personasOf, saveCon
 import { gate, stripWakeWord, type GateResult } from "./gate.ts"
 import { Inbox, oneLine, truncate } from "./inbox.ts"
 import { SystemPrompt, renderPrompt } from "./prompt.ts"
+import { SkillStore } from "./skills.ts"
 import { Jobs, type Job } from "./jobs.ts"
 import { T3, T3Watcher, isBusy } from "./t3.ts"
 import { AppMouth, type AppEvent, type AppLink, type ChimeKind, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
@@ -104,6 +105,7 @@ export class Assistant {
   port: number
   inbox: Inbox
   prompt: SystemPrompt
+  skills: SkillStore
   jobs: Jobs
   t3: T3
   watcher: T3Watcher
@@ -172,6 +174,12 @@ export class Assistant {
     const upgrade = this.prompt.upgradeSeed(previousSeeds(), readFileSync(paths.seedPrompt, "utf8"))
     if (upgrade === "upgraded") this.log("system prompt: upgraded the stock prompt to the current one (revert_system_prompt undoes it)")
     if (upgrade === "custom") this.log("system prompt: customised, left as is (prompts/system.md has the current stock prompt)")
+    this.skills = new SkillStore(paths.skills)
+    for (const s of this.skills.seed()) this.log(`skills: seeded ${s}`)
+    this.skills.onChange(() => {
+      this.brainDirty = true
+      this.log("skills changed; brain restarts before the next turn")
+    })
     this.jobs = new Jobs(paths.jobs, () => this.config.jobs)
     this.t3 = new T3(paths.home, this.config.t3.cli)
     this.watcher = new T3Watcher(
@@ -406,6 +414,7 @@ export class Assistant {
   }
 
   async ensureBrain(): Promise<Brain> {
+    this.skills.check() // a setup job writes its skill file itself
     if (this.brain && !this.brainDirty) return this.brain
     const old = this.brain
     const harness = this.config.brain.harness
@@ -419,7 +428,7 @@ export class Assistant {
     const brain = createBrain(harness, {
       model: settings.model,
       effort: settings.effort,
-      systemPrompt: renderPrompt(this.prompt.read(), this.name, this.personas),
+      systemPrompt: renderPrompt(this.prompt.read(), this.name, this.personas, this.skills.render()),
       mcp: this.mcpLaunch(harness),
       cwd: paths.brainDir,
       stateDir: paths.brainDir,
