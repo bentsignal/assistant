@@ -7,6 +7,8 @@ import { gate, stripWakeWord, type GateResult } from "./gate.ts"
 import { Inbox, oneLine, truncate } from "./inbox.ts"
 import { SystemPrompt, renderPrompt } from "./prompt.ts"
 import { SkillStore } from "./skills.ts"
+import { McpStore, brainServers, type ResolvedServer } from "./mcp/config.ts"
+import { patchFor, SETTINGS } from "./settings.ts"
 import { Jobs, type Job } from "./jobs.ts"
 import { T3, T3Watcher, isBusy } from "./t3.ts"
 import { AppMouth, type AppEvent, type AppLink, type ChimeKind, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
@@ -107,6 +109,13 @@ export class Assistant {
   inbox: Inbox
   prompt: SystemPrompt
   skills: SkillStore
+  /** Her own MCP servers (~/.assistant/mcp.json). */
+  mcp: McpStore
+  /** Each of her servers' state as the brain last reported it (or why it was left out). */
+  mcpState = new Map<string, { status: string; error?: string }>()
+  /** Problems with her servers she hasn't told Shawn about yet (said once each). */
+  private mcpPending = new Map<string, string>()
+  private mcpSaid = new Set<string>()
   jobs: Jobs
   t3: T3
   watcher: T3Watcher
@@ -183,8 +192,15 @@ export class Assistant {
       this.brainDirty = true
       this.log("skills changed; brain restarts before the next turn")
     })
+    this.mcp = new McpStore(paths.mcp)
+    this.mcp.check()
+    this.mcp.onChange(() => {
+      this.brainDirty = true
+      this.mcpSaid.clear()
+      this.log("mcp.json changed; brain restarts before the next turn")
+    })
     this.jobs = new Jobs(paths.jobs, () => this.config.jobs)
-    this.t3 = new T3(paths.home, this.config.t3.cli)
+    this.t3 = new T3(paths.home, () => this.config.t3)
     this.watcher = new T3Watcher(
       this.t3,
       paths.watches,
@@ -458,6 +474,7 @@ export class Assistant {
 
   async ensureBrain(): Promise<Brain> {
     this.skills.check() // a setup job writes its skill file itself
+    this.mcp.check() // so does a job, or Shawn by hand
     if (this.brain && !this.brainDirty) return this.brain
     const old = this.brain
     const harness = this.config.brain.harness
@@ -468,11 +485,13 @@ export class Assistant {
       await old.close()
     }
     this.brainDirty = false
+    const servers = this.ownServers(harness)
     const brain = createBrain(harness, {
       model: settings.model,
       effort: settings.effort,
       systemPrompt: renderPrompt(this.prompt.read(), this.name, this.personas, this.skills.render()),
       mcp: this.mcpLaunch(harness),
+      servers,
       cwd: paths.brainDir,
       stateDir: paths.brainDir,
       log: (l) => this.log(l),
@@ -487,11 +506,64 @@ export class Assistant {
     brain.on("exit", () => {
       if (this.brain === brain && harness !== "claude-code") this.recapNext = true
     })
+    brain.on("tool", (t: { name?: string }) => {
+      // Her own servers' tools don't come through Core: note them in the log.
+      if (t?.name?.startsWith("mcp__") && !t.name.startsWith("mcp__assistant__")) this.log(`brain tool ${t.name}`)
+    })
+    brain.on("mcp", (states: { name: string; status: string; error?: string }[]) => {
+      for (const st of states) {
+        this.mcpState.set(st.name, { status: st.status, ...(st.error ? { error: st.error } : {}) })
+        if (/^(failed|needs-auth|missing)$/.test(st.status)) this.mcpProblem(st.name, st.error ? `failed to start: ${st.error}` : `is ${st.status}`)
+      }
+    })
     this.brain = brain
     this.log(`brain: ${brain.label}`)
     await brain.start()
     this.changed()
     return brain
+  }
+
+  /** Her enabled, usable servers for this harness; the rest are logged and told once. */
+  private ownServers(harness: BrainHarness): Record<string, ResolvedServer> {
+    const { servers, skipped } = brainServers(this.mcp.read())
+    this.mcpState.clear()
+    for (const sk of skipped) {
+      this.mcpState.set(sk.name, { status: "skipped", error: sk.reason })
+      this.mcpProblem(sk.name, `was left out: ${sk.reason}`)
+    }
+    if (harness === "codex") {
+      for (const [name, s] of Object.entries(servers)) {
+        if (s.type !== "sse") continue
+        delete servers[name]
+        this.mcpState.set(name, { status: "skipped", error: "Codex can't use SSE servers" })
+        this.mcpProblem(name, "was left out: Codex can't use SSE servers (switch to Claude, or use its HTTP url)")
+      }
+    }
+    for (const name of Object.keys(servers)) this.mcpState.set(name, { status: "starting" })
+    if (Object.keys(servers).length) this.log(`mcp: her servers ${Object.keys(servers).join(", ")}`)
+    return servers
+  }
+
+  /** One of her servers can't be used: logged, and said once in the next turn. */
+  mcpProblem(name: string, what: string) {
+    const key = `${name}: ${what}`
+    this.log(`mcp: ${key}`)
+    if (this.mcpSaid.has(key)) return
+    this.mcpPending.set(name, what)
+  }
+
+  /** Restart the brain before the next turn (a config change that the brain reads at start). */
+  restartBrainSoon(why: string) {
+    this.brainDirty = true
+    this.log(`${why}; brain restarts before the next turn`)
+  }
+
+  private takeMcpNote(): string | null {
+    if (!this.mcpPending.size) return null
+    const bits = [...this.mcpPending].map(([n, w]) => `${n} ${w}`)
+    for (const [n, w] of this.mcpPending) this.mcpSaid.add(`${n}: ${w}`)
+    this.mcpPending.clear()
+    return `[Your MCP servers: ${bits.join("; ")}. Everything else works. Tell Shawn once, in one short sentence, then answer him; mcp_list and mcp_test help if he wants it fixed.]`
   }
 
   // ---- utterances and turns -------------------------------------------------
@@ -669,6 +741,8 @@ export class Assistant {
     }
     const digest = this.inbox.takeDigest()
     if (digest) parts.push(digest)
+    const mcpNote = this.takeMcpNote()
+    if (mcpNote) parts.push(mcpNote)
     const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
     if (persona) parts.push(`[Shawn is talking to ${persona}]`)
     parts.push(`[${time}] Shawn: ${text}`)
@@ -1077,6 +1151,19 @@ export class Assistant {
     this.brainDirty = true
     const s = this.config.brain[harness]
     return `${harness} ${s.model ?? "default"}/${s.effort ?? "default"}`
+  }
+
+  /**
+   * Saves one allowlisted key (src/settings.ts checked it) and applies it
+   * where Core can: Core reads most keys live from `this.config`; a brain
+   * key restarts the brain before the next turn; the T3 poll restarts.
+   */
+  setConfigKey(key: string, value: unknown) {
+    this.config = saveConfigPatch(patchFor(key, value))
+    this.log(`config: ${key} = ${JSON.stringify(value)}`)
+    if (key.startsWith("brain.") && SETTINGS[key]?.applies === "brain") this.restartBrainSoon(`config ${key} changed`)
+    if (key === "t3.pollSeconds") this.watcher.start(this.config.t3.pollSeconds * 1000)
+    if (key === "t3.cliPath") this.t3.locate(true)
   }
 
   // ---- state: HUD, badge, snapshot ------------------------------------------

@@ -50,6 +50,11 @@ export function parseCmdShim(path: string): Launch | null {
   return null
 }
 
+/** Names a launch found another way (T3 Code's bundled CLI), so `spawnCli(name)` runs it. */
+export function registerCli(name: string, launch: Launch): void {
+  cache.set(name, launch)
+}
+
 export function resolveCli(name: string): Launch {
   const hit = cache.get(name)
   if (hit) return hit

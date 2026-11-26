@@ -45,6 +45,10 @@ export const paths = {
   get skills() {
     return join(assistantHome(), "skills")
   },
+  /** Her own MCP servers, Claude Code's `mcpServers` shape (src/mcp/config.ts). */
+  get mcp() {
+    return join(assistantHome(), "mcp.json")
+  },
   get brainDir() {
     return join(assistantHome(), "brain")
   },
@@ -141,7 +145,12 @@ export interface AssistantConfig {
     grok: BrainSettings
   }
   t3: {
-    /** Path to the t3 CLI (.cmd or .exe). Defaults to $T3CODE_CLI_PATH. */
+    /**
+     * Path to the t3 CLI (.cmd or .exe). Unset: $T3CODE_CLI_PATH, then `t3`
+     * on PATH, then T3 Code's usual install places (src/t3.ts `findT3Cli`).
+     */
+    cliPath?: string
+    /** The older name of `cliPath`. */
     cli?: string
     pollSeconds: number
     /**

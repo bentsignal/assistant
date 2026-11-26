@@ -18,6 +18,10 @@
 // The skill steps teach her a skill by voice (wrapping `hostname`), check she
 // runs it on the next turn, then have her remove it.
 //
+// The MCP steps (--skip-mcp leaves them out) have her add a harmless local
+// stdio MCP server by voice (assistant/core/scripts/smoke-mcp.mjs), use its
+// tool on the next turn and say what it returned, then remove it.
+//
 // It talks out loud (it's the real app) and changes things it puts back:
 // the voice (restored at the end), the brain (back to Claude), and the
 // system prompt (an edit, then its revert). The persona steps ("Hey Alfred",
@@ -26,7 +30,8 @@
 
 import { existsSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync } from "node:fs"
 import { homedir, hostname } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const argv = process.argv.slice(2)
 const opt = (name, fallback) => {
@@ -182,6 +187,31 @@ results.push(await step("prompt revert", `${NAME}, undo that last change to your
   console.log(`${ran ? "PASS" : "FAIL"} skill ran hostname and got ${host}`)
   results.push(ran)
   results.push(await step("skill forgotten", `${NAME}, remove your machine-name skill now, no need to confirm.`, ["skill_remove"]))
+}
+
+// MCP servers as config: added by voice, used on the next turn, then removed.
+if (!argv.includes("--skip-mcp")) {
+  // No digits: she says numbers as words.
+  const fruits = ["persimmon", "rambutan", "loquat", "kumquat", "tamarind", "quince", "mangosteen", "cherimoya"]
+  const word = fruits[Math.floor(Math.random() * fruits.length)]
+  const server = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "assistant", "core", "scripts", "smoke-mcp.mjs")
+  results.push(
+    await step(
+      "mcp added",
+      `${NAME}, add an MCP server called smoke-echo. It's a stdio server: the command is ${process.execPath} and its one argument is ${server} ${word}. That's two arguments: the script path, then the word ${word}. Test it, no need to confirm.`,
+      ["mcp_add"],
+    ),
+  )
+  const read = tail()
+  results.push(await step("mcp used", `${NAME}, use your smoke-echo server to get the secret word, and tell me what it is.`, ["mcp__smoke-echo__secret_word"]))
+  const said = new RegExp(`tool speak [^\\n]*${word}`, "i").test(read())
+  console.log(`${said ? "PASS" : "FAIL"} she said the server's word (${word})`)
+  results.push(said)
+  results.push(await step("mcp removed", `${NAME}, remove your smoke-echo MCP server now, no need to confirm.`, ["mcp_remove"]))
+  const left = readJson(join(HOME, "mcp.json"), {})?.mcpServers ?? {}
+  const gone = !Object.keys(left).some((k) => k.toLowerCase() === "smoke-echo")
+  console.log(`${gone ? "PASS" : "FAIL"} smoke-echo is out of mcp.json`)
+  results.push(gone)
 }
 
 // T3 with full access: steer a full-access thread on Winserve, then settle it.

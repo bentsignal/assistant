@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { resolveCli, runCli } from "./proc.ts"
+import { registerCli, resolveCli, runCli, which, type Launch } from "./proc.ts"
 
 /**
  * T3 Code through its own CLI plus one read-only HTTP endpoint.
@@ -58,29 +58,109 @@ export interface T3ThreadRow {
   lastError: string | null
 }
 
+/** Where the t3 CLI was found, or everywhere it was looked for. */
+export type T3CliFound = { ok: true; name: string; launch?: Launch; via: string } | { ok: false; looked: string[] }
+
+/**
+ * Finds T3 Code's `t3` CLI: config `t3.cliPath` (or the older `t3.cli`),
+ * then $T3CODE_CLI_PATH, then `t3` on PATH, then the launcher T3 Code
+ * writes (`<T3CODE_HOME or ~/.t3>/bin/t3.cmd`), then T3 Code's own app,
+ * run as Node the way that launcher runs it. Pure: everything it reads is
+ * passed in, for tests.
+ */
+export function findT3Cli(io: {
+  configured?: string
+  env: NodeJS.ProcessEnv
+  exists: (path: string) => boolean
+  which: (name: string) => string | null
+  home: string
+  platform: string
+}): T3CliFound {
+  const looked: string[] = []
+  const tryPath = (p: string | undefined, via: string): T3CliFound | null => {
+    if (!p?.trim()) return null
+    const path = p.trim().replace(/^"|"$/g, "")
+    if (io.exists(path)) return { ok: true, name: path, via }
+    looked.push(`${via} ${path} (missing)`)
+    return null
+  }
+  const win = io.platform === "win32"
+  const t3Home = io.env.T3CODE_HOME?.trim() || join(io.home, ".t3")
+  const onPath = (): T3CliFound | null => {
+    const p = io.which("t3")
+    if (p) return { ok: true, name: p, via: "PATH" }
+    looked.push("t3 on PATH")
+    return null
+  }
+  const hit =
+    tryPath(io.configured, "config t3.cliPath") ??
+    tryPath(io.env.T3CODE_CLI_PATH, "T3CODE_CLI_PATH") ??
+    onPath() ??
+    tryPath(join(t3Home, "bin", win ? "t3.cmd" : "t3"), "T3 Code's launcher")
+  if (hit) return hit
+  if (win) {
+    const programs = join(io.env.LOCALAPPDATA?.trim() || join(io.home, "AppData", "Local"), "Programs", "t3code")
+    const script = join(programs, "resources", "server.asar", "apps", "server", "dist", "bin.mjs")
+    for (const exe of ["T3 Code (Beta).exe", "T3 Code.exe"]) {
+      const file = join(programs, exe)
+      if (io.exists(file)) {
+        return {
+          ok: true,
+          name: file,
+          via: "the T3 Code app",
+          launch: { file, prefix: [script], env: { ELECTRON_RUN_AS_NODE: "1", T3CODE_DESKTOP_CLI_LAUNCHER: "1", T3CODE_HOME: t3Home } },
+        }
+      }
+      looked.push(file)
+    }
+  }
+  return { ok: false, looked }
+}
+
 const BUSY = new Set(["preparing", "queued", "starting", "running"])
 export const isBusy = (status: string) => BUSY.has(status)
 
 export class T3 {
   private tokenFile: string
-  private cliName: string
-  private home: string
+  private found: { key: string; result: T3CliFound } | null = null
 
-  constructor(assistantHome: string, cliPath?: string) {
+  constructor(
+    assistantHome: string,
+    private settings: () => { cliPath?: string; cli?: string } = () => ({}),
+  ) {
     this.tokenFile = join(assistantHome, "t3-token.json")
-    this.cliName = cliPath ?? process.env.T3CODE_CLI_PATH ?? "t3"
-    // The launcher .cmd sets T3CODE_HOME; read it from there when we can.
-    let home = process.env.T3CODE_HOME
-    if (!home) {
-      try {
-        home = resolveCli(this.cliName).env?.T3CODE_HOME
-      } catch {}
-    }
-    this.home = home ?? join(homedir(), ".t3")
+  }
+
+  /** Where the t3 CLI is (looked up again when config changes, or when `fresh`). */
+  locate(fresh = false): T3CliFound {
+    const s = this.settings()
+    const configured = s.cliPath ?? s.cli
+    const key = `${configured ?? ""}|${process.env.T3CODE_CLI_PATH ?? ""}`
+    if (!fresh && this.found?.key === key && this.found.result.ok) return this.found.result
+    const result = findT3Cli({ configured, env: process.env, exists: existsSync, which, home: homedir(), platform: process.platform })
+    if (result.ok && result.launch) registerCli(result.name, result.launch)
+    this.found = { key, result }
+    return result
+  }
+
+  private cliName(): string {
+    const f = this.locate()
+    if (f.ok) return f.name
+    throw new Error(`T3 Code's t3 command isn't on this machine: I looked at ${f.looked.join("; ")}. Setting config t3.cliPath to it fixes that.`)
+  }
+
+  /** T3 Code's home: $T3CODE_HOME, what its launcher sets, else ~/.t3. */
+  private get home(): string {
+    if (process.env.T3CODE_HOME) return process.env.T3CODE_HOME
+    try {
+      const home = resolveCli(this.cliName()).env?.T3CODE_HOME
+      if (home) return home
+    } catch {}
+    return join(homedir(), ".t3")
   }
 
   private cli(args: string[], input?: string, timeoutMs = 60_000) {
-    return runCli(this.cliName, args, { input, timeoutMs })
+    return runCli(this.cliName(), args, { input, timeoutMs })
   }
 
   private async cliJson(args: string[], input?: string, timeoutMs?: number): Promise<any> {
@@ -249,9 +329,36 @@ export class T3 {
   /** Drops the cached MCP session, so the next call gets (and grants) a new one. */
   forgetMcpSession(): void {
     try {
-      writeFileSync(this.mcpTokenFile(), "{}")
+      rmSync(this.mcpTokenFile(), { force: true })
     } catch {}
     this.mcpAccess = "unknown"
+    this.toolCache = null
+  }
+
+  /**
+   * "Fix your T3 access": finds the CLI again, drops the cached session,
+   * runs the full-access grant again (falling back to an approval-required
+   * session), and says what came of it.
+   */
+  async reauthorize(): Promise<{ access: "full-access" | "approval-required" | "none"; cli: string; error?: string }> {
+    const where = this.locate(true)
+    if (!where.ok) {
+      return { access: "none", cli: "", error: `T3 Code's t3 command isn't on this machine (I looked at ${where.looked.join("; ")})` }
+    }
+    const cli = `${where.name} (${where.via})`
+    try {
+      this.runtime()
+    } catch (err) {
+      return { access: "none", cli, error: (err as Error).message }
+    }
+    this.forgetMcpSession()
+    try {
+      await this.mcpToken(true)
+    } catch (err) {
+      return { access: "none", cli, error: (err as Error).message }
+    }
+    const access = this.mcpAccess === "full-access" ? "full-access" : "approval-required"
+    return { access, cli, ...(access !== "full-access" && this.mcpGrantError ? { error: this.mcpGrantError } : {}) }
   }
 
   /** The access the cached MCP session has: "full-access" once granted, else T3's default ceiling. */
@@ -271,14 +378,23 @@ export class T3 {
    */
   private async mcpToken(fresh = false): Promise<string> {
     const file = this.mcpTokenFile()
+    let cached: { token: string; grantTriedAt: number } | null = null
     if (!fresh && existsSync(file)) {
       try {
         const t = JSON.parse(readFileSync(file, "utf8"))
-        // A cached approval-required session (older Cores) is replaced once a grant works.
-        const retryGrant = t.access !== "full-access" && (t.grantTriedAt ?? 0) < Date.now() - 3600_000
-        if (t.token && t.expires > Date.now() + 3600_000 && !retryGrant) {
-          this.mcpAccess = t.access === "full-access" ? "full-access" : "approval-required"
-          return t.token
+        if (t.token && t.expires > Date.now() + 3600_000) {
+          if (t.access === "full-access") {
+            this.mcpAccess = "full-access"
+            return t.token
+          }
+          // Not marked full-access (a fallback, or an older Core's session):
+          // always replaced once a grant works. The grant is tried again on
+          // use, at most every ten minutes; meanwhile the old session serves.
+          cached = { token: t.token, grantTriedAt: Number(t.grantTriedAt ?? 0) }
+          if (cached.grantTriedAt > Date.now() - 600_000) {
+            this.mcpAccess = "approval-required"
+            return t.token
+          }
         }
       } catch {}
     }
@@ -291,6 +407,12 @@ export class T3 {
     } catch (err) {
       this.mcpGrantError = (err as Error).message
       console.error(`[t3] full-access grant failed, using an approval-required session: ${this.mcpGrantError}`)
+    }
+    if (cached) {
+      const t = JSON.parse(readFileSync(file, "utf8"))
+      writeFileSync(file, JSON.stringify({ ...t, access: "approval-required", grantTriedAt: Date.now() }), { mode: 0o600 })
+      this.mcpAccess = "approval-required"
+      return cached.token
     }
     const r = await this.cli([
       "auth", "session", "issue", "--token-only", "--label", "assistant", "--ttl", "30d",
@@ -306,6 +428,7 @@ export class T3 {
     this.mcpAccess = "approval-required"
     return token
   }
+
 
   /**
    * T3's MCP OAuth (register, approval, decision, token), approved by a

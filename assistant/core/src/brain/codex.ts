@@ -4,12 +4,36 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { ChildProcess } from "node:child_process"
 import { killTree, onLines, spawnCli } from "../proc.ts"
+import type { ResolvedServer } from "../mcp/config.ts"
 import type { Brain, BrainOptions, TurnResult } from "./types.ts"
 
 /** TOML literal string: no escapes, so Windows paths survive. */
 function tomlStr(s: string): string {
   if (!s.includes("'")) return `'${s}'`
   return JSON.stringify(s) // basic string with escapes
+}
+
+/** A TOML key: bare when it can be. */
+function tomlKey(k: string): string {
+  return /^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k)
+}
+
+function tomlTable(o: Record<string, string>): string {
+  return `{${Object.entries(o)
+    .map(([k, v]) => `${tomlKey(k)}=${tomlStr(v)}`)
+    .join(",")}}`
+}
+
+/**
+ * One of her MCP servers as a Codex `-c mcp_servers.<name>=…` value: stdio
+ * (command, args, env) or streamable HTTP (url, http_headers). Codex has no
+ * legacy SSE transport, so an SSE server is left out (null).
+ */
+export function codexServer(s: ResolvedServer): string | null {
+  const tail = `startup_timeout_sec=20,tool_timeout_sec=300,default_tools_approval_mode="approve"`
+  if (s.type === "stdio") return `{command=${tomlStr(s.command)},args=[${s.args.map(tomlStr).join(",")}],env=${tomlTable(s.env)},${tail}}`
+  if (s.type === "http") return `{url=${tomlStr(s.url)},http_headers=${tomlTable(s.headers)},${tail}}`
+  return null
 }
 
 /** Features that would give the brain tools beyond the Assistant MCP server and web search. */
@@ -95,8 +119,15 @@ export class CodexBrain extends EventEmitter implements Brain {
       "app-server",
       "-c",
       `mcp_servers.assistant=${assistant}`,
+      // Her own servers (~/.assistant/mcp.json).
+      ...Object.entries(opts.servers ?? {}).flatMap(([n, s]) => {
+        const v = codexServer(s)
+        return v ? ["-c", `mcp_servers.${tomlKey(n)}=${v}`] : []
+      }),
       // -c merges into the user's table, so switch their own servers off for the brain.
-      ...userMcpServers().flatMap((n) => ["-c", `mcp_servers.${/^[A-Za-z0-9_-]+$/.test(n) ? n : JSON.stringify(n)}.enabled=false`]),
+      ...userMcpServers()
+        .filter((n) => !(n in (opts.servers ?? {})))
+        .flatMap((n) => ["-c", `mcp_servers.${tomlKey(n)}.enabled=false`]),
       ...(opts.effort ? ["-c", `model_reasoning_effort="${opts.effort}"`] : []),
       "-c",
       'web_search="live"',
@@ -217,7 +248,10 @@ export class CodexBrain extends EventEmitter implements Brain {
         }
         break
       case "item/started":
-        if (p.item?.type === "mcpToolCall") this.emit("tool", { name: p.item.tool, input: p.item.arguments })
+        if (p.item?.type === "mcpToolCall") {
+          const own = p.item.server && p.item.server !== "assistant"
+          this.emit("tool", { name: own ? `mcp__${p.item.server}__${p.item.tool}` : p.item.tool, input: p.item.arguments })
+        }
         else if (p.item?.type === "webSearch") this.emit("tool", { name: "web_search", input: p.item.query })
         break
       case "turn/completed": {

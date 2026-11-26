@@ -1,6 +1,9 @@
 import { join } from "node:path"
 import { availableBrains } from "./brain/index.ts"
-import type { BrainHarness } from "./config.ts"
+import { CORE_DIR, paths, type BrainHarness } from "./config.ts"
+import { probeServer, redactSpec, redactValue, resolveSpec, transportOf } from "./mcp/config.ts"
+import { appliesNote, checkValue, describeSettings, getKey, SETTINGS } from "./settings.ts"
+import { installCommandLine, installOf, readCheck, startDetached, updateArgs } from "./updates.ts"
 import { oneLine, truncate } from "./inbox.ts"
 import type { Job, JobAgent } from "./jobs.ts"
 import type { Assistant } from "./assistant.ts"
@@ -291,6 +294,145 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
     }
   },
 
+  async t3_reauthorize(assistant) {
+    const r = await assistant.t3.reauthorize()
+    if (r.access === "full-access") return `T3 access repaired: full-access (t3 command: ${r.cli}). Confirm in a few words.`
+    if (r.access === "approval-required") {
+      return `Your T3 access is only approval-required now: the full-access grant failed (${truncate(r.error ?? "unknown", 300)}). Tell Shawn that in one plain sentence.`
+    }
+    return `T3 access couldn't be repaired: ${truncate(r.error ?? "unknown", 400)}. Tell Shawn exactly that in one plain sentence${
+      /isn't on this machine/.test(r.error ?? "") ? " (he can tell you where t3.cmd is, and you set config t3.cliPath)" : ""
+    }.`
+  },
+
+  mcp_list(assistant) {
+    const all = assistant.mcp.list()
+    if (!all.length) return "You have no MCP servers of your own yet (mcp.json is empty). mcp_add adds one."
+    return all
+      .map(({ name, spec, error }) => {
+        if (!spec) return `${name}: broken entry (${error})`
+        const what = spec.url ? `${transportOf(spec)} ${spec.url}` : `stdio ${[spec.command, ...(spec.args ?? [])].join(" ")}`
+        const state = assistant.mcpState.get(name)
+        const extras = [
+          spec.env ? `env ${JSON.stringify(redactSpec(spec).env)}` : "",
+          spec.headers ? `headers ${JSON.stringify(redactSpec(spec).headers)}` : "",
+        ].filter(Boolean)
+        return `${name}${spec.disabled ? " (disabled)" : ""}: ${truncate(what, 200)}${extras.length ? `, ${extras.join(", ")}` : ""}${
+          spec.description ? ` — ${spec.description}` : ""
+        }${state && !spec.disabled ? ` [${state.status}${state.error ? `: ${truncate(state.error, 160)}` : ""}]` : ""}`
+      })
+      .join("\n")
+  },
+
+  mcp_add(assistant, args) {
+    const spec: Record<string, unknown> = {}
+    for (const k of ["type", "command", "args", "env", "url", "headers", "description"]) if (args[k] !== undefined && args[k] !== null) spec[k] = args[k]
+    if (typeof spec.args === "string") spec.args = splitCommand(spec.args)
+    for (const k of ["env", "headers"]) if (typeof spec[k] === "string") spec[k] = JSON.parse(spec[k] as string)
+    const { name, created } = assistant.mcp.add(need(args, "name"), spec)
+    return `${created ? "Added" : "Replaced"} the MCP server ${name}. Its tools are yours from your next turn (as mcp__${name}__<tool>). Test it now with mcp_test, then save a skill saying what it's for. Confirm in a few words.`
+  },
+
+  mcp_remove(assistant, args) {
+    assistant.mcp.remove(need(args, "name"))
+    assistant.mcpState.delete(args.name)
+    return `Removed the MCP server ${args.name}; its tools go from your next turn. If a skill mentions it, update or remove that skill. Confirm in a few words.`
+  },
+
+  mcp_enable(assistant, args) {
+    const r = assistant.mcp.setEnabled(need(args, "name"), true)
+    return r.changed ? `${r.name} is on again from your next turn.` : `${r.name} was already on.`
+  },
+
+  mcp_disable(assistant, args) {
+    const r = assistant.mcp.setEnabled(need(args, "name"), false)
+    return r.changed ? `${r.name} is off from your next turn (kept in mcp.json).` : `${r.name} was already off.`
+  },
+
+  async mcp_test(assistant, args) {
+    const name = need(args, "name")
+    const spec = assistant.mcp.get(name)
+    if (!spec) return `No MCP server called ${name}. Yours: ${assistant.mcp.list().map((s) => s.name).join(", ") || "none"}.`
+    let server
+    try {
+      server = resolveSpec(spec)
+    } catch (err) {
+      return `${name} can't start: ${(err as Error).message}. Tell Shawn in one sentence what's needed.`
+    }
+    const r = await probeServer(server)
+    if (!r.ok) {
+      return `${name} failed: ${truncate(r.error ?? "unknown", 300)}${r.stderr ? `\nIt printed:\n${truncate(r.stderr, 600)}` : ""}`
+    }
+    const tools = r.tools.map((t) => `- ${t.name}${t.description ? `: ${truncate(oneLine(t.description), 120)}` : ""}`).join("\n")
+    return `${name} works${spec.disabled ? " (but it's disabled: mcp_enable turns it on)" : ""}: ${r.tools.length} tool(s)${r.error ? ` (${r.error})` : ""}. From your next turn they're mcp__${name}__<tool>.\n${tools}`
+  },
+
+  config_get(assistant, args) {
+    const key = typeof args?.key === "string" ? args.key.trim() : ""
+    if (!key) return describeSettings(assistant.config)
+    const def = SETTINGS[key]
+    if (!def) return `${key} isn't one of your settings. They are:\n${describeSettings(assistant.config)}`
+    return `${key} = ${JSON.stringify(getKey(assistant.config, key) ?? null)} (${def.about}) ${appliesNote(def.applies)}`
+  },
+
+  config_set(assistant, args) {
+    const key = need(args, "key").trim()
+    const value = checkValue(key, args.value)
+    const before = getKey(assistant.config, key)
+    if (JSON.stringify(before ?? null) === JSON.stringify(value)) return `${key} is already ${JSON.stringify(value)}.`
+    assistant.setConfigKey(key, value)
+    return `Set ${key} to ${JSON.stringify(value)} (was ${JSON.stringify(before ?? null)}). ${appliesNote(SETTINGS[key].applies)}`
+  },
+
+  update_status(assistant) {
+    const inst = installOf(CORE_DIR)
+    if (!inst.installed) return `Updates aren't available here: ${inst.why}. Say so in one sentence.`
+    const configured = getKey(assistant.config, "app.updates.channel")
+    const channel = configured === "stable" || configured === "nightly" ? configured : inst.channel
+    return `Running Assistant ${inst.label} (${inst.channel} build), updating from ${channel === "nightly" ? "Nightly" : "Stable"}${
+      configured ? "" : " (the build's own channel)"
+    }. Say the version the way a person would, briefly.`
+  },
+
+  async update_check(_assistant, args) {
+    const inst = installOf(CORE_DIR)
+    if (!inst.installed) return `Updates aren't available here: ${inst.why}. Say so in one sentence.`
+    const r = await runCli(inst.launcher, updateArgs({ channel: args?.channel }), { timeoutMs: 60_000 })
+    const out = `${r.stdout}\n${r.stderr}`.trim()
+    if (r.code !== 0) return `The check failed (exit ${r.code}): ${truncate(oneLine(out), 400)}`
+    const c = readCheck(out)
+    if (c.none) return "That channel has no release yet."
+    if (c.upToDate) return `Up to date: ${inst.label} is the newest${args?.channel ? ` on ${args.channel}` : ""}.`
+    if (c.available) return `An update is available: ${c.latest} (running ${inst.label}). update_install installs it, restarting you; ask Shawn first if he didn't ask to install.`
+    return truncate(out, 1000)
+  },
+
+  async update_install(assistant, args) {
+    const inst = installOf(CORE_DIR)
+    if (!inst.installed) return `Updates aren't available here: ${inst.why}. Say so in one sentence.`
+    const channel = typeof args?.channel === "string" && args.channel ? args.channel : null
+    if (channel) assistant.setConfigKey("app.updates.channel", checkValue("app.updates.channel", channel))
+    const check = await runCli(inst.launcher, updateArgs({ channel }), { timeoutMs: 60_000 })
+    const c = readCheck(`${check.stdout}\n${check.stderr}`)
+    if (c.upToDate) return `Nothing to install: ${inst.label} is already the newest. Say so.`
+    if (c.none) return "That channel has no release yet. Say so."
+    const log = join(paths.logs, "update-voice.log")
+    await startDetached(installCommandLine(inst.launcher, updateArgs({ install: true, channel }), log))
+    assistant.log(`update: installing ${c.latest ?? "the update"} (log ${log})`)
+    return `Installing ${c.latest ?? "the update"}: it downloads, then Assistant restarts into it (about a minute). If you haven't said so yet, speak one short line now; then stop.`
+  },
+
+  async update_channel(assistant, args) {
+    const inst = installOf(CORE_DIR)
+    const channel = checkValue("app.updates.channel", need(args, "channel")) as string
+    assistant.setConfigKey("app.updates.channel", channel)
+    if (!inst.installed) return `Saved the channel as ${channel}, but updates aren't available here: ${inst.why}.`
+    const r = await runCli(inst.launcher, updateArgs({ channel }), { timeoutMs: 60_000 }).catch(() => null)
+    const c = r ? readCheck(`${r.stdout}\n${r.stderr}`) : null
+    const news = c?.upToDate ? " It's already on its newest release." : c?.available ? ` ${c.latest} is available there: update_install installs it.` : ""
+    return `Updates now follow ${channel === "nightly" ? "Nightly" : "Stable"}.${news} Confirm in a few words.`
+  },
+
   skill_list(assistant) {
     const all = assistant.skills.list()
     if (!all.length) return "No skills yet."
@@ -436,10 +578,20 @@ ${personaLines}${override ? `\n\nOverride on: every persona speaks as ${override
   },
 }
 
+/** A tool's args as the log shows them: an MCP server's env and header values that aren't references are hidden. */
+export function logged(name: string, args: any): unknown {
+  if (name === "mcp_add" && args && typeof args === "object") {
+    const hide = (o: unknown) =>
+      o && typeof o === "object" ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, redactValue(String(v))])) : o === undefined ? undefined : "‹hidden›"
+    return { ...args, ...(args.env !== undefined ? { env: hide(args.env) } : {}), ...(args.headers !== undefined ? { headers: hide(args.headers) } : {}) }
+  }
+  return args
+}
+
 export async function runTool(assistant: Assistant, name: string, args: unknown): Promise<string> {
   const h = HANDLERS[name]
   if (!h) throw new Error(`unknown tool ${name}`)
-  assistant.log(`tool ${name} ${truncate(oneLine(JSON.stringify(args ?? {})), 300)}`)
+  assistant.log(`tool ${name} ${truncate(oneLine(JSON.stringify(logged(name, args ?? {}))), 300)}`)
   assistant.currentTurn?.tools.push(name)
   const result = await h(assistant, args ?? {})
   if (name !== "speak") assistant.log(`tool ${name} -> ${truncate(oneLine(result), 240)}`)

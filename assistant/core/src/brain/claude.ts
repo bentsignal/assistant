@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { ChildProcess } from "node:child_process"
 import { killTree, onLines, spawnCli } from "../proc.ts"
+import { claudeMcpConfig } from "../mcp/config.ts"
 import type { Brain, BrainOptions, TurnResult } from "./types.ts"
 
 /** The MCP server name. Claude names its tools `mcp__<server>__<tool>`, so the allowlist must use the same name. */
@@ -13,8 +14,9 @@ export const MCP_SERVER = "assistant"
  * Claude Code brain: one persistent `claude -p` with stream-json in and out.
  *
  * - Built-in tools are cut to WebSearch and WebFetch (`--tools`); the only
- *   other tools are the Vera MCP server's (`--mcp-config --strict-mcp-config`),
- *   allowed without prompts. Nothing can prompt (`--permission-prompts none`).
+ *   other tools are the Vera MCP server's and her own servers' from
+ *   ~/.assistant/mcp.json (`--mcp-config --strict-mcp-config`), allowed
+ *   without prompts. Nothing can prompt (`--permission-prompts none`).
  * - User settings, hooks, plugins and slash commands are skipped
  *   (`--setting-sources "" --disable-slash-commands`).
  * - The system prompt comes from a file and is not snapshotted, so a restart
@@ -51,7 +53,9 @@ export class ClaudeBrain extends EventEmitter implements Brain {
   private async spawn(): Promise<void> {
     const { opts } = this
     const mcpFile = join(opts.stateDir, "mcp-claude.json")
-    writeFileSync(mcpFile, JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: "stdio", ...opts.mcp } } }, null, 2))
+    const servers = opts.servers ?? {}
+    // Resolved secrets are in this file: owner-only, never logged.
+    writeFileSync(mcpFile, JSON.stringify(claudeMcpConfig(opts.mcp, servers), null, 2), { mode: 0o600 })
     const promptFile = join(opts.stateDir, "system-prompt.claude.md")
     writeFileSync(promptFile, opts.systemPrompt)
     const args = [
@@ -68,7 +72,7 @@ export class ClaudeBrain extends EventEmitter implements Brain {
       "--tools",
       "WebSearch,WebFetch",
       "--allowedTools",
-      `mcp__${MCP_SERVER},WebSearch,WebFetch`,
+      [`mcp__${MCP_SERVER}`, ...Object.keys(servers).map((n) => `mcp__${n}`), "WebSearch", "WebFetch"].join(","),
       "--permission-prompts",
       "none",
       "--mcp-config",
@@ -114,7 +118,22 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     }
     if (ev.type === "system" && ev.subtype === "init") {
       const assistant = (ev.mcp_servers ?? []).find((s: any) => s.name === "assistant")
-      this.opts.log(`[claude] session ${ev.session_id} model ${ev.model} assistant-mcp=${assistant?.status ?? "missing"} tools=${(ev.tools ?? []).length}`)
+      const own = (ev.mcp_servers ?? []).filter((s: any) => s.name !== MCP_SERVER)
+      this.opts.log(
+        `[claude] session ${ev.session_id} model ${ev.model} assistant-mcp=${assistant?.status ?? "missing"} tools=${(ev.tools ?? []).length}${
+          own.length ? ` servers=${own.map((s: any) => `${s.name}:${s.status}`).join(",")}` : ""
+        }`,
+      )
+      const expected = Object.keys(this.opts.servers ?? {})
+      if (expected.length) {
+        this.emit(
+          "mcp",
+          expected.map((name) => {
+            const s = own.find((x: any) => x.name === name)
+            return { name, status: s?.status ?? "missing", ...(s?.error ? { error: String(s.error) } : {}) }
+          }),
+        )
+      }
       return
     }
     if (ev.type === "assistant" && this.current) {

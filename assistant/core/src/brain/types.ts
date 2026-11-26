@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events"
 import type { BrainHarness } from "../config.ts"
+import type { ResolvedServer } from "../mcp/config.ts"
 
 /** How the brain harness launches the Assistant MCP server. */
 export interface McpLaunch {
@@ -14,6 +15,8 @@ export interface BrainOptions {
   /** System prompt text (read fresh from ~/.assistant/system-prompt.md at each start). */
   systemPrompt: string
   mcp: McpLaunch
+  /** Her own MCP servers from ~/.assistant/mcp.json (enabled, resolved), beside the Assistant server. */
+  servers?: Record<string, ResolvedServer>
   /** Working directory for the harness (~/.assistant/brain). Holds nothing; the brain doesn't touch files. */
   cwd: string
   /** Where adapters may write their own small config files. */
@@ -36,6 +39,7 @@ export interface TurnResult {
  *  - "text"  (chunk: string)              plain output as it streams
  *  - "tool"  ({name, input})              a tool call started (Vera tools come back through MCP anyway)
  *  - "exit"  (code)                       the harness process died
+ *  - "mcp"   ([{name, status, error?}])   her own MCP servers' state once the harness connected them
  */
 export interface Brain extends EventEmitter {
   readonly harness: BrainHarness

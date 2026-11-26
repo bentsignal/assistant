@@ -207,6 +207,98 @@ export const TOOLS: ToolDef[] = [
     inputSchema: { type: "object", properties: { retry: bool("Get a fresh T3 session first.") } },
   },
   {
+    name: "t3_reauthorize",
+    description:
+      "Repair your T3 access: finds T3 Code's t3 command again (config t3.cliPath, T3CODE_CLI_PATH, PATH, T3 Code's install), drops your cached T3 session, gets full access again through T3's own approval, and says the access you now have. Use it when Shawn says 'fix your T3 access', or when T3 tools keep failing for access or sign-in. If it can't find the t3 command or T3 Code isn't running, it says exactly that: tell Shawn in one sentence.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "mcp_list",
+    description:
+      "List your own MCP servers (~/.assistant/mcp.json): each one's transport, command or url, whether it's enabled, and whether it connected when your brain last started. Secrets are never shown.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "mcp_add",
+    description:
+      "Give yourself a new capability by adding (or replacing) an MCP server, with no app update: stdio (command + args, optional env) or http (url, optional headers). Its tools are yours from your next turn (your brain restarts, keeping the conversation), named mcp__<name>__<tool>. Run mcp_test on it first or right after. For a secret (an API key or token), never put the value in: use ${VAR} for an environment variable or ${file:C:\\path\\token.txt} for a file, and ask Shawn to set it if it isn't. On Windows, npx and other .cmd commands work as is. Then save a skill (skill_save) saying what it's for. Confirm in a few words.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: str("Short server name: letters, digits, - or _ (not 'assistant')."),
+        type: { type: "string", enum: ["stdio", "http", "sse"], description: "Transport; default stdio, or http when a url is given." },
+        command: str("stdio: the program, like npx, uvx, node, or an absolute path."),
+        args: { type: "array", items: { type: "string" }, description: "stdio: its arguments." },
+        env: { type: "object", description: "stdio: environment variables, values as ${VAR} or ${file:path} for secrets." },
+        url: str("http/sse: the server's URL."),
+        headers: { type: "object", description: "http/sse: request headers, like {Authorization: 'Bearer ${MY_TOKEN}'}." },
+        description: str("One line: what it gives you."),
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "mcp_remove",
+    description: "Remove one of your MCP servers when Shawn asks (its tools go from your next turn). Confirm in a few words.",
+    inputSchema: { type: "object", properties: { name: str("The server's name.") }, required: ["name"] },
+  },
+  {
+    name: "mcp_enable",
+    description: "Turn one of your MCP servers back on (kept in mcp.json while off). Applies from your next turn.",
+    inputSchema: { type: "object", properties: { name: str("The server's name.") }, required: ["name"] },
+  },
+  {
+    name: "mcp_disable",
+    description: "Turn one of your MCP servers off without removing it (for a broken or unwanted one). Applies from your next turn.",
+    inputSchema: { type: "object", properties: { name: str("The server's name.") }, required: ["name"] },
+  },
+  {
+    name: "mcp_test",
+    description:
+      "Test one of your MCP servers: starts it on its own, lists its tools, stops it, and reports what happened (its tools, or exactly why it failed: command not found, a missing secret, an error it printed). Use after mcp_add and when one is reported broken.",
+    inputSchema: { type: "object", properties: { name: str("The server's name.") }, required: ["name"] },
+  },
+  {
+    name: "config_get",
+    description:
+      "Read your own settings (~/.assistant/config.json). Without key, lists every setting you may change, its value now, and when a change applies. With key (dotted, like t3.cliPath or wake.followUpSeconds), that one.",
+    inputSchema: { type: "object", properties: { key: str("A dotted key; omit to list them all.") } },
+  },
+  {
+    name: "config_set",
+    description:
+      "Change one of your own settings when Shawn asks ('wait longer before answering', 'use this path for T3', 'give me twenty seconds for follow-ups'). Only the keys config_get lists; the value is checked first, so a bad one is refused with why. The result says when it applies (now, your next turn, or after Assistant restarts): say that in a few words. A null or 'default' value clears a key that allows it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        key: str("The dotted key, like t3.cliPath."),
+        value: { description: "The new value: a number, true/false, text, or a list of words." },
+      },
+      required: ["key", "value"],
+    },
+  },
+  {
+    name: "update_status",
+    description: "Which version of Assistant (you) is running and which channel (Stable or Nightly) it updates from. In a development build, says updates aren't available there.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "update_check",
+    description: "Check for an update to Assistant (you) on its channel, or on another channel. Says the newest release and whether it's this one.",
+    inputSchema: { type: "object", properties: { channel: { type: "string", enum: ["stable", "nightly"], description: "Check this channel instead of the configured one." } } },
+  },
+  {
+    name: "update_install",
+    description:
+      "Install the update to Assistant (you), when Shawn asks. It downloads, verifies, and restarts you, so FIRST speak a short line saying you'll restart to update and be back in a minute or so, then call this. Only when update_check says one is available. channel installs that channel's release (and switches to it).",
+    inputSchema: { type: "object", properties: { channel: { type: "string", enum: ["stable", "nightly"], description: "Install from this channel (also switches to it)." } } },
+  },
+  {
+    name: "update_channel",
+    description: "Switch the channel Assistant (you) updates from: stable (tested releases) or nightly (every change). Saved; then checks it.",
+    inputSchema: { type: "object", properties: { channel: { type: "string", enum: ["stable", "nightly"], description: "The channel." } }, required: ["channel"] },
+  },
+  {
     name: "skill_list",
     description: "List your skills (what you've set up and learned, saved for good). Your prompt already has them; use this to check after changes.",
     inputSchema: { type: "object", properties: {} },

@@ -256,7 +256,11 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   follow-up window after Vera speaks, or a barge-in.
 - **Thin brain.** The brain doesn't edit files and has no shell; it
   delegates. It runs programs only through its skills (`run_command`: a
-  program some skill lists, no shell, bounded time and output).
+  program some skill lists, no shell, bounded time and output) and uses the
+  tools of the MCP servers she added herself.
+- **Capabilities are config, never a rebuild.** Skills (CLIs), MCP servers
+  (`mcp.json`) and her settings (`config.json`'s allowlisted keys) are all
+  hers to add, remove and check by voice at runtime.
 - **Never touches system settings** such as master volume unless explicitly
   asked to change that system setting.
 
@@ -291,9 +295,15 @@ Core runs that approval itself as Shawn: a five-minute session from his own
 `/token`), as Approve on T3's agent sign-in page would. The session is cached
 in `~/.assistant/t3-mcp-token.json` (30 days) and shows under Authorized
 clients in T3's Settings › Sharing & access. If the grant fails, Core falls
-back to an approval-required session, retries hourly, and every refusal
-tells her the one thing that fixes it (`t3_access retry`, or re-linking a
-machine with `--access full-access`), which she says plainly. Work on a
+back to an approval-required session; a cached session not marked
+full-access is always replaced once a grant works (tried again on use, at
+most every ten minutes). Every refusal tells her the one thing that fixes it
+(`t3_reauthorize`, or re-linking a machine with `--access full-access`),
+which she says plainly. `t3_reauthorize` ("fix your T3 access") finds the
+`t3` CLI again (config `t3.cliPath`, `$T3CODE_CLI_PATH`, PATH, T3 Code's
+`~/.t3/bin/t3.cmd`, then T3 Code's own app run as Node), drops the cached
+session, re-runs the grant, and reports the access level, or exactly what's
+missing. Work on a
 linked machine is also capped by that link's access.
 
 ## Skills
@@ -310,9 +320,38 @@ skill file itself), and `run_command`. Core seeds `shawns-preferences` once
 (where projects, coding, computer use and searches go); a removed seed stays
 removed.
 
+## MCP servers, settings and updates by voice
+
+Her own MCP servers are `~/.assistant/mcp.json`, Claude Code's `mcpServers`
+shape (stdio `command`/`args`/`env`, or `http`/`sse` `url`/`headers`, plus
+`disabled` and `description`), merged after the Assistant server into the
+brain's MCP config: Claude's `--mcp-config` (each one allowed by
+`--allowedTools mcp__<name>`) and Codex's `-c mcp_servers.<name>=…` (no SSE
+there). Secrets are references, `${VAR}` or `${file:path}`, resolved only
+into the brain's owner-only config file, never shown or logged. A change
+(hers, a job's, or by hand) restarts the brain before the next turn, keeping
+the conversation. A server that's malformed, whose command isn't found, or
+whose secret doesn't resolve is left out, and one the harness reports failed
+is noted; either way she tells Shawn once. Tools: `mcp_list`, `mcp_add`,
+`mcp_remove`, `mcp_enable`, `mcp_disable`, `mcp_test` (starts it, lists its
+tools, stops it).
+
+`config_get` / `config_set` read and change `config.json` keys from an
+allowlist with a schema each (`src/settings.ts`): wake, turn, timeouts, job
+models, `t3.*`, `app.updates.*`. The port, harness, names, voice and every
+argv are refused. Each key says when it applies: now, at the brain's next
+start, or when the App restarts.
+
+Updates go through the installed launcher's CLI (`assistant update`,
+`--install`, `--channel`): `update_status`, `update_check`, `update_channel`
+(saves `app.updates.channel`), and `update_install`, which she announces
+first because it restarts her. The install is started through WMI so it
+outlives the App's job when the App quits; its output is
+`logs/update-voice.log`. A repo build has no install and says so.
+
 ## User state (`~/.assistant/`, never in the repo)
 
-`config.json`, `skills/`, `t3-mcp-token.json`, `system-prompt.md` (+ `prompt-history/`; Settings › General ›
+`config.json`, `mcp.json`, `skills/`, `t3-mcp-token.json`, `system-prompt.md` (+ `prompt-history/`; Settings › General ›
 Personality edits it in place, with Save and Revert to default, and Core picks
 up the change from the next turn), `logs/`, `jobs/`,
 `models/`, `ears/`.
