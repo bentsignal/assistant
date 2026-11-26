@@ -2,9 +2,15 @@
  * Harness acknowledgements: no dead air while she works.
  *
  * When a turn's first brain action is a slow tool call (anything but
- * `speak` and a few instant ones), or nothing has been spoken
- * `ACK_AFTER_MS` after Shawn stopped talking, Core says a short line in the
- * current persona's voice and manner ("One sec.", "Checking."). The voice
+ * `speak` and a few instant ones) and she still hasn't said anything
+ * `ACK_AFTER_MS` after it started, Core says a short line in the current
+ * persona's voice and manner ("One sec.", "Checking."). A plain answer, a
+ * quick tool, or a remark that needs no reply never gets one: Shawn found
+ * acknowledgements on silence alone (before every slow-ish answer) worse
+ * than none. Both are OFF by default (`turn.acknowledgeMs`,
+ * `turn.silenceAckMs` are 0): her system prompt decides when she says
+ * "on it" herself, so Shawn tunes it there. This is only a fallback he can
+ * turn on in config. The voice
  * service keeps these rendered (Core warms them at start and when personas
  * change), so they play at once. Turns meant to end silently ("thanks",
  * "okay") never get one, nor does one she answers quickly. Once Core has
@@ -13,8 +19,8 @@
  */
 import type { Persona } from "./config.ts"
 
-/** How long after his turn ended silence counts as dead air. */
-export const ACK_AFTER_MS = 1200
+/** How long a slow first tool may run with her silent before Core acknowledges. */
+export const ACK_AFTER_MS = 1500
 
 /** Tools that answer at once: calling one first isn't a reason to acknowledge. */
 export const QUICK_TOOLS = new Set([

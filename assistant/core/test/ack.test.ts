@@ -38,18 +38,63 @@ test("instant tools don't call for one; slow ones (hers too) do", () => {
 })
 
 const speaks = (cmds: Cmd[]) => cmds.filter((c) => c.cmd === "speak").map((c) => c.text as string)
-const ackConfig = () => testConfig({ turn: { acknowledgeMs: 1200 } })
+const ackConfig = () => testConfig({ turn: { acknowledgeMs: 500, silenceAckMs: 1200 } })
 
-test("a slow first tool gets an acknowledgement at once, before the tool; her own 'checking' is then dropped and she's told", async () => {
+test("by default Core never acknowledges: her prompt decides", async () => {
+  const script = [
+    { match: "summarize", steps: [{ tool: "ask_claude", args: { task: "summarize the repo" } }, { sleep: 1500 }, { tool: "speak", args: { text: "It's a voice assistant." } }] },
+  ]
+  const app = await FakeApp.start({ config: testConfig({}), script })
+  try {
+    app.send({ type: "ready", mic: "m" })
+    const m = app.mark
+    await app.say("Vera, summarize the repo.")
+    await app.waitFor((c) => c.cmd === "speak" && /voice assistant/.test(c.text as string), 10_000, m)
+    assert.deepEqual(speaks(app.since(m)), ["It's a voice assistant."])
+    assert.doesNotMatch(app.stderr, /acknowledged "/)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("by default a slow plain answer gets none either", async () => {
+  const script = [{ match: "slow question", steps: [{ sleep: 2000 }, { tool: "speak", args: { text: "Here it is." } }] }]
+  const app = await FakeApp.start({ config: testConfig({}), script })
+  try {
+    app.send({ type: "ready", mic: "m" })
+    const m = app.mark
+    await app.say("Vera, slow question.")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "Here it is.", 10_000, m)
+    assert.deepEqual(speaks(app.since(m)), ["Here it is."])
+    assert.doesNotMatch(app.stderr, /acknowledged "/)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("turned on, a quick first tool she answers right after gets none", async () => {
+  const script = [{ match: "status", steps: [{ tool: "ask_claude", args: { task: "status" } }, { sleep: 150 }, { tool: "speak", args: { text: "All good." } }] }]
+  const app = await FakeApp.start({ config: testConfig({ turn: { acknowledgeMs: 1500 } }), script })
+  try {
+    app.send({ type: "ready", mic: "m" })
+    const m = app.mark
+    await app.say("Vera, what's the status?")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "All good.", 10_000, m)
+    await sleep(1800)
+    assert.deepEqual(speaks(app.since(m)), ["All good."])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("turned on, a slow first tool gets one while it runs; her own 'checking' is then dropped and she's told", async () => {
   const script = [
     {
       match: "summarize",
-      steps: [{ tool: "ask_claude", args: { task: "summarize the repo" } }, { sleep: 300 }, { tool: "speak", args: { text: "Checking. It's a voice assistant." } }],
+      steps: [{ tool: "ask_claude", args: { task: "summarize the repo" } }, { sleep: 1500 }, { tool: "speak", args: { text: "Checking. It's a voice assistant." } }],
     },
   ]
-  // A long dead-air threshold, so a slow runner reaching the tool after 1.2 s
-  // still tests the before-the-tool acknowledgement, not the silence one.
-  const app = await FakeApp.start({ config: testConfig({ turn: { acknowledgeMs: 8000 } }), script })
+  const app = await FakeApp.start({ config: testConfig({ turn: { acknowledgeMs: 500 } }), script })
   try {
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
@@ -59,9 +104,8 @@ test("a slow first tool gets an acknowledgement at once, before the tool; her ow
     assert.equal(said.length, 2, `got ${JSON.stringify(said)}`)
     assert.ok(["One sec.", "Checking.", "On it.", "Give me a second."].includes(said[0]), said[0])
     assert.equal(said[1], "It's a voice assistant.")
-    // The acknowledgement went out before the tool ran (the tool's log line follows it).
-    const ackAt = app.stderr.indexOf(`acknowledged "${said[0]}" (before ask_claude`)
-    assert.ok(ackAt >= 0 && ackAt < app.stderr.indexOf("tool ask_claude {"), "acknowledged before the tool")
+    // The acknowledgement went out while the tool ran.
+    assert.ok(app.stderr.includes(`acknowledged "${said[0]}" (during ask_claude`), "acknowledged during the tool")
     for (let i = 0; i < 30 && !/turn \d+ done/.test(app.stderr); i++) await sleep(100)
     const state = await app.state()
     const turn = (state.turns ?? []).at(-1)

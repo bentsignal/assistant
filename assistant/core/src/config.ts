@@ -134,8 +134,10 @@ export interface AssistantConfig {
     maxMs: number
     mergeSeconds: number
     bargeMergeSeconds: number
-    /** Silence after his turn before Core says "One sec." for her (`ack.ts`); 0 turns acknowledgements off. */
+    /** How long a slow first tool runs, with her silent, before Core says "One sec." for her (`ack.ts`); 0 turns acknowledgements off. */
     acknowledgeMs: number
+    /** Silence after his turn alone (no tool) before Core acknowledges; 0 (the default) is off. */
+    silenceAckMs?: number
   }
   jobs: {
     /** Default working directory for ask_* jobs. */
@@ -241,7 +243,7 @@ export const DEFAULT_CONFIG: AssistantConfig = {
     script: {},
   },
   wake: { words: [], soft: true, warmSeconds: 120, followUpSeconds: 8, maxLeadingWords: 3 },
-  turn: { finishedMs: 700, pauseMs: 1200, unfinishedMs: 5000, maxMs: 8000, mergeSeconds: 12, bargeMergeSeconds: 2, acknowledgeMs: 1200 },
+  turn: { finishedMs: 700, pauseMs: 1200, unfinishedMs: 5000, maxMs: 8000, mergeSeconds: 12, bargeMergeSeconds: 2, acknowledgeMs: 0, silenceAckMs: 0 },
   jobs: {
     defaultCwd: "D:\\dev",
     waitTimeoutSeconds: 90,

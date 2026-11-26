@@ -803,11 +803,11 @@ export class Assistant {
 
   // ---- acknowledgements (ack.ts) -------------------------------------------
 
-  /** Starts the dead-air clock: nothing spoken `ACK_AFTER_MS` after he stopped talking, and Core acknowledges. */
+  /** The dead-air clock on silence alone (`turn.silenceAckMs`, off by default). */
   private armAck(rec: TurnRecord) {
     if (this.ackTimer) clearTimeout(this.ackTimer)
     this.ackTimer = null
-    const after = this.config.turn?.acknowledgeMs ?? ACK_AFTER_MS
+    const after = this.config.turn?.silenceAckMs ?? 0
     if (!after || endsSilently(rec.text)) return
     const now = Date.now()
     const end = rec.heardEndAt && rec.heardEndAt <= now && now - rec.heardEndAt < 10_000 ? rec.heardEndAt : now
@@ -820,19 +820,26 @@ export class Assistant {
 
   /**
    * The brain is calling `tool` (through Core, or one of her own MCP
-   * servers): the turn's first action, if it's a slow tool, gets an
-   * acknowledgement at once.
+   * servers): if it's the turn's first action and a slow tool, Core
+   * acknowledges once it has run `turn.acknowledgeMs` with her still silent
+   * (a quick tool she answers right after gets none).
    */
   beforeTool(tool: string) {
     const rec = this.current
     if (!rec || rec.acted) return
     rec.acted = true
-    if (slowTool(tool)) this.acknowledge(rec, `before ${tool.replace(/^mcp__assistant__/, "")}`)
+    const after = this.config.turn?.acknowledgeMs ?? ACK_AFTER_MS
+    if (!after || !slowTool(tool)) return
+    if (this.ackTimer) clearTimeout(this.ackTimer)
+    this.ackTimer = setTimeout(() => {
+      this.ackTimer = null
+      if (this.current === rec) this.acknowledge(rec, `during ${tool.replace(/^mcp__assistant__/, "")}`)
+    }, after)
+    this.ackTimer.unref()
   }
 
   /** Says a short acknowledgement for `rec` in its persona's voice, once, if it's still owed one. */
   private acknowledge(rec: TurnRecord, why: string) {
-    if (!(this.config.turn?.acknowledgeMs ?? ACK_AFTER_MS)) return
     if (rec.ack || rec.muted || rec.firstSpeakMs !== undefined || rec.durationMs !== undefined || endsSilently(rec.text)) return
     if (this.ackTimer) clearTimeout(this.ackTimer)
     this.ackTimer = null
