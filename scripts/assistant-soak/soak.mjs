@@ -710,19 +710,29 @@ class Run {
       })
       this.check(["failed", "interrupted", "finished"].includes(ended.msg.state), `the line ended (${ended.msg.state})`)
       await this.surfaced(killedAt, "the voice service dying")
-      // While it's down (it's back in about 13 s): a turn ends at once with
-      // the error chime, never a silent wait.
+      // While it's down (it's back in about 10 s): the App holds her answer
+      // and plays it once the voice is back (he'd rather hear it late), or,
+      // if it doesn't come back, fails it with the error chime. Never lost
+      // silently.
       const hear = await this.say("hear")
       await this.heard(hear)
       this.addressed++
       const speakCmd = await this.trace.waitFor(isFrom("speak", (m) => m.text === "Yes, I hear you."), { after: hear.at, within: 6000, what: "Core to answer" })
-      const failed = await this.trace.waitFor(isTo("playback", (m) => m.speak_id === speakCmd.msg.speak_id && m.state !== "started"), {
+      const answered = await this.trace.waitFor(isTo("playback", (m) => m.speak_id === speakCmd.msg.speak_id && m.state !== "started"), {
         after: speakCmd.t,
-        within: 15_000,
-        what: "the answer to fail while the voice is down",
+        within: 25_000,
+        what: "the answer to play after the restart, or fail",
       })
-      this.check(failed.msg.state === "failed" && failed.t - speakCmd.t < 3000, `the answer failed quickly (${failed.msg.state} after ${failed.t - speakCmd.t} ms)`)
-      await this.surfaced(hear.at, "speaking while the voice is down")
+      const late = answered.t - speakCmd.t
+      if (answered.msg.state === "finished") {
+        const back = this.trace.find((e) => e.kind === "voice" && e.ready, killedAt + 1000)[0]
+        this.check(!!back && answered.t >= back.t, "the held answer played only once the voice was back")
+        this.check(!back || answered.t - back.t < 15_000, `the held answer played within 15 s of the restart (${back ? answered.t - back.t : "?"} ms)`)
+      } else {
+        this.check(answered.msg.state === "failed", `the answer either played after the restart or failed (${answered.msg.state} after ${late} ms)`)
+        await this.surfaced(hear.at, "speaking while the voice is down")
+      }
+      this.log(`answer while the voice was down: ${answered.msg.state} after ${late} ms`)
       await this.hidden(20_000)
       // It comes back by itself.
       await this.trace.waitFor((e) => e.kind === "voice" && e.ready, { after: killedAt + 1000, within: 120_000, what: "the voice service to come back" })
