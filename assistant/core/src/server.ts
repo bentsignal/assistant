@@ -26,7 +26,7 @@ async function readBody(req: IncomingMessage, limit = 1_000_000): Promise<any> {
 /**
  * Core's loopback HTTP server. It serves no pages. The brain's MCP server
  * calls tools through POST /api/tool; the rest are debug and test hooks
- * (/api/state, /api/utterance, /api/say, /api/chime, /api/notify, /api/t3-tool,
+ * (/api/state, /api/utterance, /api/barge, /api/say, /api/chime, /api/notify, /api/t3-tool,
  * /api/brain).
  *
  * Every POST must be JSON (which a cross-site page can't send without a CORS
@@ -91,6 +91,9 @@ function listen(assistant: Assistant, wantPort: number): Promise<{ close: () => 
           if (body.wait && r.turnId) return json(res, 200, { gate: r, turn: await assistant.waitTurn(r.turnId) })
           return json(res, 200, { gate: r })
         }
+        case "/api/barge": // he talks over her, as the App's barge_in (tests and brain checks)
+          assistant.bargeInNow("api")
+          return json(res, 200, { ok: true })
         case "/api/brain": // switch the brain harness, as set_brain does
           return json(res, 200, { brain: assistant.setBrain(body.harness as BrainHarness, body.model, body.effort) })
         case "/api/say": // have the App say a line, without the brain

@@ -20,6 +20,20 @@ import { backLine, failedLine, rolledBackLine, UPDATE_TIMEOUT_MS, type UpdateAct
 
 export type Status = HudState
 
+/** A turn whose tools have run this long can be timed out after all (a hung tool). */
+const TOOL_CEILING_MS = 15 * 60_000
+
+/** Core's own tools, as the brain names them (`mcp__assistant__x`, or `x` from Codex). */
+function isCoreTool(name: string): boolean {
+  return !name.startsWith("mcp__") || name.startsWith("mcp__assistant__")
+}
+
+/** Tools his talking waits for: everything but speak and the ask_* jobs (they report through the inbox). */
+function holdsTalk(name: string): boolean {
+  const base = name.replace(/^mcp__assistant__/, "")
+  return base !== "speak" && !/^ask_/.test(base)
+}
+
 export interface Card {
   id: string
   title: string
@@ -67,6 +81,10 @@ export interface TurnRecord {
   acted?: boolean
   /** She's been told about the acknowledgement. */
   ackNoted?: boolean
+  /** He talked over it while a tool ran: it goes on, quiet until his words are in (or don't come). */
+  toolBarge?: boolean
+  /** His later words went into this turn while it ran (`Brain.steer`), instead of stopping it. */
+  steered?: boolean
 }
 
 export interface UtteranceInput {
@@ -193,10 +211,18 @@ export class Assistant {
   /** Core tools the brain is running now (speak aside): his talking waits for them instead of cancelling them. */
   private toolsInFlight = new Map<number, string>()
   private toolCallSeq = 0
+  /**
+   * Every tool call in the brain's own stream (its id, from `tool_use` to its
+   * result), whatever server it's on: her own MCP servers' tools never come
+   * through Core, so this is how his talking knows to wait for them too.
+   */
+  private brainTools = new Map<string, string>()
+  /** When the last running tool returned (deadlines count from then). */
+  private lastToolEndAt = 0
   /** The brain is to be interrupted once its running tools have returned (why). */
   private interruptWhenIdle: string | null = null
   /** What tools returned while he was talking over her: the next turn's message says so. */
-  private heldResults: { tool: string; result: string }[] = []
+  private heldResults: { tool: string; result: string; for?: string }[] = []
 
   constructor(link: AppLink) {
     this.link = link
@@ -334,6 +360,7 @@ export class Assistant {
         }
         if (this.bargePending) {
           // Talked over Vera, then nothing usable: keep listening a normal follow-up window.
+          this.noWordsAfterBarge("nothing usable")
           this.bargePending = false
           this.openFollowUp()
         }
@@ -581,6 +608,7 @@ export class Assistant {
     // If no final ever comes, stop showing "listening" once the window would have closed.
     if (this.bargeTimer) clearTimeout(this.bargeTimer)
     this.bargeTimer = setTimeout(() => {
+      if (this.bargePending) this.noWordsAfterBarge("no words came")
       this.bargePending = false
       this.changed()
     }, Math.max(20, this.config.wake.followUpSeconds) * 1000 + 50)
@@ -608,10 +636,21 @@ export class Assistant {
       }
       if (this.current?.id === turnId) {
         this.current.muted = true
-        this.interruptBrain("barge-in")
+        if (this.toolRunning && this.brain?.steer) {
+          // Her speech stops; the brain and its tools don't. His words go into the turn.
+          this.current.toolBarge = true
+          this.log(`turn ${turnId}: talked over while ${this.runningTools().join(", ")} runs; her speech stops, the tools go on`)
+        } else this.interruptBrain("barge-in")
       }
     }
     this.changed()
+  }
+
+  /** He talks over her now (`POST /api/barge`): as the App's barge_in on whatever is playing. */
+  bargeInNow(why: string) {
+    const id = this.mouth.playing?.id
+    if (id) this.mouth.onPlayback(id, "interrupted")
+    this.bargeIn(id, why)
   }
 
   // ---- brain ----------------------------------------------------------------
@@ -663,13 +702,28 @@ export class Assistant {
       this.changed()
     })
     brain.on("exit", () => {
-      if (this.brain === brain && harness !== "claude-code") this.recapNext = true
+      if (this.brain !== brain) return
+      if (harness !== "claude-code") this.recapNext = true
+      this.brainTools.clear()
     })
-    brain.on("tool", (t: { name?: string }) => {
+    brain.on("tool", (t: { id?: string; name?: string }) => {
+      if (this.brain !== brain || !t?.name) return
+      const core = isCoreTool(t.name)
       // Her own servers' tools don't come through Core: note them in the log.
-      if (t?.name?.startsWith("mcp__") && !t.name.startsWith("mcp__assistant__")) this.log(`brain tool ${t.name}`)
+      if (!core) this.log(`brain tool ${t.name}${t.id ? ` (${t.id})` : ""}`)
+      if (t.id && holdsTalk(t.name)) this.brainTools.set(t.id, t.name)
       // Any MCP tool (hers or Core's) is an action; the harness's own (ToolSearch and such) aren't.
-      if (this.brain === brain && t?.name?.startsWith("mcp__")) this.beforeTool(t.name)
+      if (t.name.startsWith("mcp__")) this.beforeTool(t.name)
+    })
+    brain.on("tool_done", (t: { id?: string; result?: string }) => {
+      if (this.brain !== brain || !t?.id) return
+      const name = this.brainTools.get(t.id)
+      if (!name) return
+      this.brainTools.delete(t.id)
+      const core = isCoreTool(name)
+      if (!core) this.log(`brain tool ${name} (${t.id}) -> ${truncate(oneLine(t.result ?? ""), 200)}`)
+      // Core's own tools hold their results themselves (toolEnded).
+      this.toolFinished(name, t.result ?? "", !core)
     })
     brain.on("mcp", (states: { name: string; status: string; error?: string }[]) => {
       for (const st of states) {
@@ -748,6 +802,7 @@ export class Assistant {
     if (resume && continues(resume, g, now) && g.action === "turn") return this.resumeTurn(resume, g.text, input)
     // Not a continuation: whatever happens next, her held answer isn't held any more.
     if (resume) queueMicrotask(() => this.mouth.release())
+    if (wasBarge && g.action !== "turn" && g.action !== "stop") this.noWordsAfterBarge(g.action === "ignore" ? `ignored: ${g.reason}` : "just her name")
     switch (g.action) {
       case "ignore":
         this.log(`ignored (${g.reason}): ${input.text}`)
@@ -765,6 +820,10 @@ export class Assistant {
       case "turn": {
         this.lines.push({ who: "shawn", text: g.text, at: now })
         this.trimLines()
+        if (this.current && this.steer(this.current, g.text, wasBarge)) {
+          this.changed()
+          return { ...g, turnId: this.current.id }
+        }
         if (this.current) {
           // Shawn spoke again before Vera answered: what she was going to
           // say is stale. Cut it, stop the brain, and answer this instead
@@ -789,6 +848,10 @@ export class Assistant {
     if (first) first.muted = true
     this.log(`turn ${resume.turnId} continued (${resume.why}): ${truncate(whole, 160)}`)
     const note = resumeNote(resume.why)
+    if (this.current && this.steer(this.current, text, resume.why === "barge")) {
+      this.changed()
+      return { action: "turn", text: whole, via: "followup", turnId: this.current.id }
+    }
     if (this.current) {
       // Still thinking: cut it; the queue starts the whole message once it winds down.
       this.queue.push({ ...input, text: whole })
@@ -857,9 +920,9 @@ export class Assistant {
    * in the queue meanwhile and become the next message, as they would have.
    */
   private interruptBrain(why: string) {
-    if (this.toolsInFlight.size) {
+    if (this.toolRunning) {
       if (!this.interruptWhenIdle) {
-        this.log(`turn ${this.current?.id ?? "-"}: ${why}; ${[...this.toolsInFlight.values()].join(", ")} still running, so the brain stops once it returns`)
+        this.log(`turn ${this.current?.id ?? "-"}: ${why}; ${this.runningTools().join(", ")} still running, so the brain stops once it returns`)
       }
       this.interruptWhenIdle = why
       return
@@ -884,28 +947,94 @@ export class Assistant {
     const name = this.toolsInFlight.get(id)
     if (!name) return
     this.toolsInFlight.delete(id)
+    this.toolFinished(name, result, true)
+  }
+
+  /** A tool returned (Core's, or one in the brain's stream); `hold` keeps its result for the next turn's message. */
+  private toolFinished(name: string, result: string, hold: boolean) {
+    if (!this.toolRunning) this.lastToolEndAt = Date.now()
     if (!this.interruptWhenIdle) return
-    this.heldResults.push({ tool: name, result })
-    if (this.toolsInFlight.size) return
+    if (hold) this.heldResults.push({ tool: name.replace(/^mcp__assistant__/, ""), result, for: this.current?.text })
+    if (this.toolRunning) return
     const turn = this.current
     setTimeout(() => {
       // Another tool may have started meanwhile: wait for that one too.
-      if (this.toolsInFlight.size || !this.interruptWhenIdle || this.current !== turn) return
+      if (this.toolRunning || !this.interruptWhenIdle || this.current !== turn) return
       this.log(`turn ${turn?.id ?? "-"}: ${name} returned; stopping the brain now (${this.interruptWhenIdle})`)
       this.interruptWhenIdle = null
       void this.brain?.interrupt()
     }, 300).unref()
   }
 
-  /** Whether a Core tool (other than speak) is running for the brain now. */
+  /** Whether a tool (other than speak), from Core or any of her servers, is running for the brain now. */
   get toolRunning(): boolean {
-    return this.toolsInFlight.size > 0
+    return this.toolsInFlight.size > 0 || this.brainTools.size > 0
+  }
+
+  /** The running tools' names, each once (a Core tool shows in both lists). */
+  private runningTools(): string[] {
+    const names = [...this.toolsInFlight.values(), ...[...this.brainTools.values()].map((n) => n.replace(/^mcp__assistant__/, ""))]
+    return [...new Set(names)]
+  }
+
+  /**
+   * His words `text` go into the running turn `rec` instead of stopping it
+   * (`Brain.steer`): while a tool runs, or once he talked over it during
+   * one. The harness gives them to the model when the tools return, and she
+   * answers his first request and these together. False when the brain
+   * can't take them (Codex): the caller then supersedes the turn, which
+   * waits for the tools before it stops the brain.
+   */
+  private steer(rec: TurnRecord, text: string, talkedOver: boolean): boolean {
+    const brain = this.brain
+    if (!brain?.steer || rec.durationMs !== undefined || this.current !== rec) return false
+    if (!this.toolRunning && !rec.toolBarge && !rec.steered) return false
+    const running = this.runningTools()
+    const i = this.interruption
+    const heard = i && i.said.length ? ` He'd heard: "${truncate(i.said.join(" "), 200)}".` : ""
+    const cut = i?.cut ? ` You were cut off ${heardPrefix(i.cut.text, i.cut.playedMs)}.` : ""
+    const work = running.length ? `while ${running.join(", ")} ${running.length > 1 ? "were" : "was"} still running` : "while you were working"
+    const persona = rec.persona ? `
+[Shawn is talking to ${rec.persona}]` : ""
+    const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    const msg =
+      `[Shawn ${talkedOver ? "talked over you" : "went on"} ${work}. Your speech stopped; your tools didn't, and their results are still yours.${heard}${cut} ` +
+      `When you have what you were waiting for, answer his earlier request ("${truncate(oneLine(rec.text), 300)}") and what he says now, together, in one answer. Don't start that work again.]${persona}
+
+[${time}] Shawn: ${text}`
+    if (!brain.steer(msg)) return false
+    this.interruption = null
+    const { cut: c, dropped } = this.mouth.cut(true)
+    if (c || dropped.length) this.log(`turn ${rec.id}: cut ${[c, ...dropped].filter(Boolean).map((x) => x!.id).join(", ")}`)
+    rec.steered = true
+    rec.muted = false
+    rec.text = `${rec.text} … ${text}`
+    this.interruptWhenIdle = null
+    this.log(`turn ${rec.id}: his words go into the running turn${running.length ? ` (${running.join(", ")} still running)` : ""}: ${truncate(text, 120)}`)
+    return true
+  }
+
+  /** He talked over her and then said nothing usable: a turn kept quiet for his words speaks again. */
+  private noWordsAfterBarge(why: string) {
+    const rec = this.current
+    if (!rec) return
+    if (rec.toolBarge && rec.muted) {
+      rec.muted = false
+      this.log(`turn ${rec.id}: he didn't go on (${why}); she answers once the tools return`)
+    }
+    if (this.interruptWhenIdle === "barge-in") {
+      this.interruptWhenIdle = null
+      rec.muted = false
+      this.log(`turn ${rec.id}: he didn't go on (${why}); the brain isn't stopped after all`)
+    }
   }
 
   private takeHeldResults(): string | null {
     const held = this.heldResults.splice(0)
     if (!held.length) return null
-    return `[While he was talking, ${held.map((h) => `${h.tool} finished and returned: "${truncate(oneLine(h.result), 600)}"`).join("; ")}. That work is done; don't run it again unless he asks.]`
+    const was = held.find((h) => h.for)?.for
+    const answer = was ? ` They were for his previous request ("${truncate(oneLine(was), 300)}"): answer that with them, and what he says now, together.` : ""
+    return `[While he was talking, ${held.map((h) => `${h.tool} finished and returned: "${truncate(oneLine(h.result), 600)}"`).join("; ")}. That work is done; don't run it again unless he asks.${answer}]`
   }
 
   // ---- acknowledgements (ack.ts) -------------------------------------------
@@ -1018,6 +1147,7 @@ export class Assistant {
     if (!timedOut && !result.ok && !result.interrupted) this.alert("brain", result.error ?? "the brain failed")
     this.current = null
     this.interruptWhenIdle = null
+    this.brainTools.clear()
     if (this.ackTimer) clearTimeout(this.ackTimer)
     this.ackTimer = null
     // A turn that ended without a word from her (a tool, nothing to say):
@@ -1109,10 +1239,13 @@ export class Assistant {
         resolve(r)
       }
       const watch = setInterval(() => {
-        const waited = Date.now() - rec.startedAt
+        // A running tool is never cut short (it has its own timeout in the
+        // harness); her patience counts from when the last one returned.
+        if (this.toolRunning && Date.now() - rec.startedAt < TOOL_CEILING_MS) return
+        const waited = Date.now() - Math.max(rec.startedAt, this.lastToolEndAt)
         let why: string | null = null
         if (rec.firstSpeakMs === undefined && !rec.muted && waited >= firstMs) why = `no answer after ${Math.round(waited / 1000)} s`
-        else if (waited >= totalMs) why = `the turn ran ${Math.round(waited / 1000)} s`
+        else if (waited >= totalMs) why = `the turn ran ${Math.round((Date.now() - rec.startedAt) / 1000)} s`
         if (!why || forced) return
         this.log(`turn ${rec.id}: ${why}; interrupting the brain`)
         onTimeout(why)

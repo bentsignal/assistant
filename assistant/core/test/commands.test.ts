@@ -66,8 +66,9 @@ function nodeSkill(home: string) {
 }
 const sleeper = (ms: number, word: string) => ({ argv: [process.execPath, "-e", `setTimeout(() => console.log(${JSON.stringify(word)}), ${ms})`] })
 
-test("barge-in during a running tool stops her speech, not the tool: it finishes and his words are the next message", async () => {
-  const script = [
+test("barge-in during a running tool stops her speech, not the tool: it finishes and his words are the next message (a brain that can't steer)", async () => {
+  // A Claude-style brain takes his words into the running turn instead (bargetools.test.ts).
+  const rules = [
     { match: "While he was talking", steps: [{ tool: "speak", args: { text: "Got both." } }] },
     {
       match: "slow thing",
@@ -78,6 +79,7 @@ test("barge-in during a running tool stops her speech, not the tool: it finishes
       ],
     },
   ]
+  const script = { steer: false, rules }
   const app = await FakeApp.start({ config: testConfig(), script, msPerChar: 60 })
   try {
     nodeSkill(app.home)

@@ -37,7 +37,8 @@ export interface TurnResult {
 /**
  * One persistent brain session. Adapters emit:
  *  - "text"  (chunk: string)              plain output as it streams
- *  - "tool"  ({name, input})              a tool call started (Vera tools come back through MCP anyway)
+ *  - "tool"  ({id, name, input})          a tool call started, from any server (Core's tools come back through MCP too)
+ *  - "tool_done" ({id, name, result})     that call's result reached the brain (completed, failed, or cancelled)
  *  - "exit"  (code)                       the harness process died
  *  - "mcp"   ([{name, status, error?}])   her own MCP servers' state once the harness connected them
  */
@@ -49,8 +50,16 @@ export interface Brain extends EventEmitter {
   start(): Promise<void>
   /** Run one user turn to completion. Only one turn at a time. */
   turn(text: string): Promise<TurnResult>
-  /** Stop the turn in flight, if any. */
+  /** Stop the turn in flight, if any. Cancels whatever tool it is running: Core never calls it while one runs. */
   interrupt(): Promise<void>
+  /**
+   * Adds a user message to the turn in flight without stopping it: the
+   * harness hands it to the model at its next step (after the running tools
+   * return), and `turn()` resolves only once the model has had it. False
+   * when there's no turn, or the adapter can't (Core then waits for the
+   * tools and interrupts after).
+   */
+  steer?(text: string): boolean
   close(): Promise<void>
 }
 

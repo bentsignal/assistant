@@ -25,7 +25,7 @@ export interface FakeAppOptions {
   /** config.json for the throwaway ASSISTANT_HOME (merged over Core's defaults). */
   config?: Record<string, unknown>
   /** Rules for the scripted brain (src/brain/script.ts). */
-  script?: unknown[]
+  script?: unknown[] | { steer?: boolean; rules: unknown[] }
   /** Reuse a home folder instead of a fresh temp one. */
   home?: string
   /** Simulated playback timing. */

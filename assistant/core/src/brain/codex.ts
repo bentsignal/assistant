@@ -59,6 +59,12 @@ const DISABLED_FEATURES = [
   // Vera's tools skip it (omit_tools_from) so `speak` is a direct call.
 ]
 
+/** Core's name for a Codex MCP tool call: hers are `mcp__<server>__<tool>`, like Claude's. */
+function codexToolName(item: any): string {
+  const own = item.server && item.server !== "assistant"
+  return own ? `mcp__${item.server}__${item.tool}` : item.tool
+}
+
 /** Names of the MCP servers in the user's Codex config, so the brain can switch them off. */
 export function userMcpServers(): string[] {
   const file = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml")
@@ -249,10 +255,16 @@ export class CodexBrain extends EventEmitter implements Brain {
         break
       case "item/started":
         if (p.item?.type === "mcpToolCall") {
-          const own = p.item.server && p.item.server !== "assistant"
-          this.emit("tool", { name: own ? `mcp__${p.item.server}__${p.item.tool}` : p.item.tool, input: p.item.arguments })
+          this.emit("tool", { id: p.item.id, name: codexToolName(p.item), input: p.item.arguments })
         }
-        else if (p.item?.type === "webSearch") this.emit("tool", { name: "web_search", input: p.item.query })
+        else if (p.item?.type === "webSearch") this.emit("tool", { id: p.item.id, name: "web_search", input: p.item.query })
+        break
+      case "item/completed":
+        if (p.item?.type === "mcpToolCall" || p.item?.type === "webSearch") {
+          const r = p.item.result
+          const text = p.item.error?.message ?? (Array.isArray(r?.content) ? r.content.map((c: any) => (c?.type === "text" ? c.text : "")).join("\n") : "")
+          this.emit("tool_done", { id: p.item.id, result: String(text ?? ""), error: !!p.item.error })
+        }
         break
       case "turn/completed": {
         const status = p.turn?.status

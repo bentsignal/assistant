@@ -31,6 +31,9 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     resolve: (r: TurnResult) => void
     text: string
     interrupted: boolean
+    /** User messages written for this turn (its own and steered ones), and how many the harness has taken. */
+    sent: number
+    taken: number
   } | null = null
   private ready: Promise<void> | null = null
 
@@ -65,6 +68,9 @@ export class ClaudeBrain extends EventEmitter implements Brain {
       "--output-format",
       "stream-json",
       "--verbose",
+      // Each user message is echoed when the model takes it: a message steered
+      // into a running turn (steer()) is known to be in that turn, or the next.
+      "--replay-user-messages",
       "--system-prompt-file",
       promptFile,
       "--system-prompt-snapshot",
@@ -141,11 +147,37 @@ export class ClaudeBrain extends EventEmitter implements Brain {
         if (c.type === "text" && c.text) {
           this.current.text += c.text
           this.emit("text", c.text)
-        } else if (c.type === "tool_use") this.emit("tool", { name: c.name, input: c.input })
+        } else if (c.type === "tool_use") this.emit("tool", { id: c.id, name: c.name, input: c.input })
+      }
+      return
+    }
+    if (ev.type === "user") {
+      const content = ev.message?.content
+      if (ev.isReplay) {
+        if (this.current) this.current.taken++
+        return
+      }
+      for (const c of Array.isArray(content) ? content : []) {
+        if (c.type === "tool_result") this.emit("tool_done", { id: c.tool_use_id, result: toolResultText(c.content), error: !!c.is_error })
       }
       return
     }
     if (ev.type === "result") {
+      // A message steered in after the model's last step starts one more turn
+      // in the harness: this turn goes on until the model has had it.
+      const cur = this.current
+      if (cur && cur.sent > 1 && !cur.interrupted && cur.taken < cur.sent) {
+        this.opts.log(`[claude] turn result with ${cur.sent - cur.taken} steered message(s) still to come; the turn goes on`)
+        // Backstop: if the harness never takes it, don't hang the conversation.
+        const taken = cur.taken
+        setTimeout(() => {
+          if (this.current === cur && cur.taken === taken) {
+            this.opts.log("[claude] a steered message was never taken; ending the turn")
+            this.finish({ ok: true, text: cur.text })
+          }
+        }, 15_000).unref()
+        return
+      }
       const interrupted = this.current?.interrupted ?? false
       this.finish({
         ok: !ev.is_error || interrupted,
@@ -166,10 +198,28 @@ export class ClaudeBrain extends EventEmitter implements Brain {
     if (this.current) throw new Error("a turn is already in flight")
     await this.start()
     return new Promise<TurnResult>((resolve) => {
-      this.current = { resolve, text: "", interrupted: false }
-      const msg = { type: "user", message: { role: "user", content: [{ type: "text", text }] } }
-      this.child!.stdin!.write(JSON.stringify(msg) + "\n")
+      this.current = { resolve, text: "", interrupted: false, sent: 1, taken: 0 }
+      this.writeUser(text)
     })
+  }
+
+  private writeUser(text: string) {
+    const msg = { type: "user", message: { role: "user", content: [{ type: "text", text }] } }
+    this.child!.stdin!.write(JSON.stringify(msg) + "\n")
+  }
+
+  /**
+   * Claude Code takes a user message written mid-turn at its next step:
+   * after the running tools return (they're never cancelled), or as one
+   * more harness turn right after this one. Either way this `turn()` covers
+   * it: it resolves once the model has had every message (the replay echo
+   * from `--replay-user-messages` says when).
+   */
+  steer(text: string): boolean {
+    if (!this.current || this.current.interrupted || !this.child) return false
+    this.current.sent++
+    this.writeUser(text)
+    return true
   }
 
   async interrupt(): Promise<void> {
@@ -202,4 +252,14 @@ export class ClaudeBrain extends EventEmitter implements Brain {
       })
     }
   }
+}
+
+/** A tool_result's content as text (a string, or text blocks). */
+export function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((c: any) => (c?.type === "text" ? String(c.text ?? "") : c?.type ? `[${c.type}]` : ""))
+    .filter(Boolean)
+    .join("\n")
 }

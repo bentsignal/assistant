@@ -282,9 +282,16 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   ends silently ("thanks"); her own opening "checking" is then dropped and the
   next tool result tells her. Barge-in cuts it like any line.
 - **His talking never breaks running work.** Barge-in (or new words while
-  she thinks) stops her speech at once; if a tool she called through Core is
-  still running, the brain is stopped only after it returns, and his words,
-  with what the tool returned, are the next message. `run_command`'s
+  she thinks) stops her speech at once and nothing else while any tool runs:
+  Core tracks every tool call in the brain's stream (`tool_use` to its
+  result), Core's and her own MCP servers' alike. With Claude, his words go
+  into the running turn (a stream-json user message, which Claude Code takes
+  once the tools return; `--replay-user-messages` says when), and she answers
+  his first request and his new words together; nothing interrupts the
+  brain. Codex can't take them, so its brain is stopped only after the tools
+  return, and his words, with what they returned, are the next message. The
+  turn deadlines never fire while a tool runs and count from its return.
+  Only "Vera, stop" (and a tool still running after 15 minutes) stops a tool. `run_command`'s
   programs belong to Core (`assistant/core/src/commands.ts`): one still
   running after `jobs.commandDetachSeconds`, or one its skill marks
   `interactive` (a browser login), goes on in the background, and its result,

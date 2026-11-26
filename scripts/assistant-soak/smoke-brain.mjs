@@ -270,6 +270,66 @@ async function talkOverStep() {
   return out
 }
 
+// Talking over a slow tool on her own MCP server never cancels it.
+if (!argv.includes("--skip-mcp")) results.push(...(await slowToolStep()))
+
+/**
+ * Gives her a local stdio server whose slow_word tool takes 6 s
+ * (assistant/core/scripts/slow-mcp.mjs, through mcp.json), has her call it,
+ * and talks over her twice while it runs (POST /api/barge, then his words).
+ * The tool must finish (never cancelled: no "doesn't want to proceed"), and
+ * one answer must carry its word and both of his additions.
+ */
+async function slowToolStep() {
+  const fruits = ["persimmon", "rambutan", "loquat", "kumquat", "tamarind", "quince", "mangosteen", "cherimoya"]
+  const word = fruits[Math.floor(Math.random() * fruits.length)]
+  const mcpFile = join(HOME, "mcp.json")
+  const before = existsSync(mcpFile) ? readFileSync(mcpFile, "utf8") : null
+  const slowLog = join(HOME, "slow-mcp.log")
+  rmSync(slowLog, { force: true })
+  const server = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "assistant", "core", "scripts", "slow-mcp.mjs")
+  const file = readJson(mcpFile, {}) ?? {}
+  file.mcpServers = { ...(file.mcpServers ?? {}), slowbox: { command: process.execPath, args: [server, word, "6000"], env: { SLOW_MCP_LOG: slowLog } } }
+  writeFileSync(mcpFile, JSON.stringify(file, null, 2))
+  const out = []
+  const check = (ok, what) => {
+    console.log(`${ok ? "PASS" : "FAIL"} ${what}`)
+    out.push(!!ok)
+  }
+  try {
+    await sleep(1500) // the mcp.json change restarts the brain before the next turn
+    const read = tail()
+    const first = post("/api/utterance", { text: `Hey ${NAME}, use your slowbox server's slow_word tool to look up the slow word, and tell me what it is.`, wait: true }).catch(
+      (err) => ({ error: err.message }),
+    )
+    const running = await waitLog(read, /brain tool mcp__slowbox__slow_word/, TIMEOUT_MS)
+    if (!running) {
+      check(false, "she called the slow tool")
+      return out
+    }
+    await sleep(1000)
+    await post("/api/barge", {})
+    await post("/api/utterance", { text: "and after that, say the word kiwi" })
+    await sleep(1500)
+    await post("/api/barge", {})
+    await post("/api/utterance", { text: "and the word mango too" })
+    const finished = await waitLog(() => (existsSync(slowLog) ? readFileSync(slowLog, "utf8") : ""), /finished/, 20_000)
+    check(finished && !/cancelled/.test(readFileSync(slowLog, "utf8")), "the slow tool finished, never cancelled, although he talked over it twice")
+    const spoken = () => [...read().matchAll(/\btool speak [^\n]*/g)].map((m) => m[0]).join("\n")
+    const answered = await waitLog(spoken, new RegExp(`^(?=[\\s\\S]*${word})(?=[\\s\\S]*kiwi)(?=[\\s\\S]*mango)`, "i"), TIMEOUT_MS)
+    check(answered, `she answered with the word (${word}), kiwi and mango`)
+    await Promise.race([first, sleep(30_000)])
+    const log = read()
+    check(!/doesn't want to proceed/.test(log), "no tool call was denied or cancelled")
+    check(/his words go into the running turn/.test(log) || /still running, so the brain stops once it returns/.test(log), "his words waited for the tool")
+  } finally {
+    if (before === null) rmSync(mcpFile, { force: true })
+    else writeFileSync(mcpFile, before)
+    rmSync(slowLog, { force: true })
+  }
+  return out
+}
+
 // No dead air: a line plays before the first slow tool.
 if (!argv.includes("--skip-t3")) results.push(await ackStep())
 
