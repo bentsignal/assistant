@@ -32,6 +32,7 @@ SILENCE_DB = -50.0
 SENTENCE_GAP_S = 0.22   # pause between sentences
 LEAD_S = 0.015          # silence kept before the first word
 RESTART_GAP_S = 0.3     # pause before a degenerate sentence is said again
+RETRIES = 2             # same-voice retries of a degenerate sentence before it is skipped
 
 
 class SilenceShaper:
@@ -221,35 +222,29 @@ class Synth:
         if timing is not None:
             timing["total_ms"] = 1000 * (time.perf_counter() - t0)
 
-    def base_voice(self, v: Voice) -> Voice | None:
-        """The voice a sentence falls back to when `v` keeps degenerating."""
-        want = v.base or ("isla" if v.gender == "female" else "eli")
-        b = self.voices.get(want)
-        if b is None or b.id == v.id or not self.available(b):
-            return None
-        return b
-
-    def _attempts(self, v: Voice):
-        yield v, SAMPLING, 0
-        yield v, SAFE_SAMPLING, 1
-        b = self.base_voice(v)
-        if b is not None:
-            yield b, SAMPLING, 0
+    def _attempts(self):
+        """A degenerate take is said again in the same voice, never another: a reply
+        keeps one voice from its first word to its last. Each retry uses safer sampling
+        and its own seed; after the last, the sentence is skipped."""
+        yield SAMPLING, 0
+        for seed in range(1, RETRIES + 1):
+            yield SAFE_SAMPLING, seed
 
     def _sentence(self, s: str, v: Voice, stop: threading.Event, chain: dsp.Chain,
                   hold: guard.Holdback, trim_lead: bool, timing: dict | None = None) -> Iterator[np.ndarray]:
         """One sentence through the guard: the newest audio is held back (as far as the
         client's buffer allows) while `SentenceWatch` checks it; a degenerate take is
-        dropped and the sentence said again with safer sampling, then in the base voice."""
+        dropped and the sentence said again in the same voice with safer sampling and a
+        new seed (`RETRIES` times), then skipped."""
         released = False
-        for n, (voice, sampling, seed) in enumerate(self._attempts(v)):
+        for n, (sampling, seed) in enumerate(self._attempts()):
             shaper = SilenceShaper(SAMPLE_RATE, trim_lead=trim_lead or n > 0)
             watch = guard.SentenceWatch(s, SAMPLE_RATE)
             held: list[np.ndarray] = []
             held_n = 0
             bad = None
-            gen = self.engines.get(voice.engine).stream(
-                s, voice, stop, sampling=sampling, seed=seed, max_frames=watch.limit, tokens=watch.tokens)
+            gen = self.engines.get(v.engine).stream(
+                s, v, stop, sampling=sampling, seed=seed, max_frames=watch.limit, tokens=watch.tokens)
             try:
                 for raw in gen:
                     if stop.is_set():
@@ -280,16 +275,15 @@ class Synth:
                     if len(y):
                         yield y
                 return
-            nxt = ("safer sampling" if n == 0 else
-                   "the base voice" if n == 1 and self.base_voice(v) is not None else "nothing (skipping it)")
+            nxt = (f"safer sampling, seed {n + 1}" if n < RETRIES else "nothing (skipping it)")
             log.warning("degenerate speech caught (voice %s, attempt %d, %.1fs generated, %s played): %s; "
-                        "retrying with %s. Sentence: %r", voice.id, n + 1, watch.samples / SAMPLE_RATE,
+                        "retrying with %s. Sentence: %r", v.id, n + 1, watch.samples / SAMPLE_RATE,
                         "some" if released else "none", bad, nxt, s)
             if timing is not None:
                 timing["regenerated"] = timing.get("regenerated", 0) + 1
             if released:
                 yield chain.process(np.zeros(int(RESTART_GAP_S * SAMPLE_RATE), np.float32))
-        log.error("skipped a sentence: every attempt degenerated: %r", s)
+        log.error("skipped a sentence (voice %s): all %d takes degenerated: %r", v.id, RETRIES + 1, s)
 
     def render(self, text: str, voice: str | None = None, preset: str | None = None) -> np.ndarray:
         chunks = list(self.stream(text, voice, preset))

@@ -84,9 +84,10 @@ $py = "$HOME\.assistant\voice\venv\Scripts\python.exe"
   2 s). The newest audio of each sentence is held back from the client, up to half of
   what the client already has buffered (2.5 s at most), so the first audio still goes
   out at once and a caught sentence usually never reaches the speaker. A caught sentence
-  is dropped and said again with safer sampling (temperature 0.45, top-k 20, top-p 0.85,
-  repetition penalty 1.1, another seed), then in the voice's base voice (`base` in
-  `voice.json`, else Eli or Isla by gender), then skipped. If some of it had already
+  is dropped and said again in the same voice with safer sampling (temperature 0.45,
+  top-k 20, top-p 0.85, repetition penalty 1.1), up to twice, each with a new seed, then
+  skipped (an `ERROR` in `voice.log`). A reply never changes voice: there is no fallback
+  to another voice. If some of it had already
   played, it restarts after a 300 ms pause. Every catch is a `WARNING` in `voice.log`
   ("degenerate speech caught …" with the reason and the sentence), and the request's
   `spoke …` line counts the sentences regenerated. Nothing chimes.

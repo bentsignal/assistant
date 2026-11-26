@@ -123,5 +123,49 @@ class LevelerTests(unittest.TestCase):
         self.assertLessEqual(gain, dsp.LEVEL_BOOST_DB + dsp.LEVEL_MAKEUP_DB + 0.1)
 
 
+class FakeEngine:
+    """Says every take with `stuck` tokens until `good_seed`, which comes out clean."""
+
+    def __init__(self, good_seed=None):
+        self.good_seed, self.calls = good_seed, []
+
+    def stream(self, text, voice, stop, sampling=None, seed=0, max_frames=0, tokens=None):
+        self.calls.append((voice.id, seed, dict(sampling)))
+        rng = np.random.default_rng(seed)
+        for i in range(12):
+            tokens.extend([7] * 6 if seed != self.good_seed else rng.integers(0, 2048, 6).tolist())
+            yield voiced(0.48, seed=i)
+            if seed == self.good_seed and i == 3:
+                return
+
+
+class RetryTests(unittest.TestCase):
+    def run_sentence(self, good_seed):
+        from assistant_voice import synth as sy
+        from assistant_voice.engines import Voice
+        s = object.__new__(sy.Synth)
+        eng = FakeEngine(good_seed)
+        s.engines = type("E", (), {"get": lambda self, name: eng})()
+        saul = Voice(id="saul", engine="qwen", name="Saul", description="", gender="male", accent="American")
+        chain = dsp.Chain(SR, dsp.PRESETS["raw"], 1.0)
+        out = list(s._sentence("A sentence of about this length, give or take.", saul,
+                               __import__("threading").Event(), chain, guard.Holdback(SR), trim_lead=True))
+        return eng.calls, out
+
+    def test_a_degenerate_sentence_is_retried_in_the_same_voice(self):
+        calls, out = self.run_sentence(good_seed=2)
+        self.assertEqual([c[:2] for c in calls], [("saul", 0), ("saul", 1), ("saul", 2)])
+        self.assertLess(calls[1][2]["temperature"], calls[0][2]["temperature"])
+        self.assertGreater(sum(len(y) for y in out), SR)
+
+    def test_a_sentence_that_never_comes_out_clean_is_skipped_never_revoiced(self):
+        from assistant_voice import synth as sy
+        with self.assertLogs("assistant.voice", "ERROR"):
+            calls, out = self.run_sentence(good_seed=None)
+        self.assertEqual({c[0] for c in calls}, {"saul"})
+        self.assertEqual(len(calls), sy.RETRIES + 1)
+        self.assertFalse(hasattr(sy.Synth, "base_voice"))
+
+
 if __name__ == "__main__":
     unittest.main()

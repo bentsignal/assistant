@@ -45,7 +45,6 @@ class Voice:
     preset: str = ""     # this voice's own effects preset; empty uses the service default
     user: bool = False   # made with add-voice; overrides a built-in voice with the same id
     clip_sha: str = ""   # user voices: the reference clip's hash, so calibration follows the clip
-    base: str = ""       # the voice a degenerate sentence falls back to (default: eli or isla by gender)
 
     @property
     def cal_id(self) -> str:
@@ -53,7 +52,7 @@ class Voice:
 
     def public(self) -> dict:
         d = asdict(self)
-        d.pop("ref"); d.pop("clip_sha"); d.pop("base")
+        d.pop("ref"); d.pop("clip_sha")
         return d
 
 
