@@ -41,7 +41,7 @@ jobs:
           fetch-depth: 0
 
       - name: Channel
-        run: scripts/assistant-ci-env.sh >> "$GITHUB_ENV"
+        run: bash scripts/assistant-ci-env.sh >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -102,11 +102,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          scripts/assistant-notes.sh "$ASSISTANT_CHANNEL" "$RUNNER_TEMP/notes.md"
+          bash scripts/assistant-notes.sh "$ASSISTANT_CHANNEL" "$RUNNER_TEMP/notes.md"
           echo "ASSISTANT_NOTES_FILE=$RUNNER_TEMP/notes.md" >> "$GITHUB_ENV"
 
       - name: Package
-        run: scripts/assistant-package.sh
+        run: bash scripts/assistant-package.sh
 
       - name: Smoke test
         run: |
@@ -142,4 +142,4 @@ jobs:
           name: assistant-windows
           path: artifacts
       - name: Publish
-        run: scripts/assistant-publish.sh artifacts
+        run: bash scripts/assistant-publish.sh artifacts

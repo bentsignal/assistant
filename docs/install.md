@@ -102,6 +102,9 @@ What Update does (`src/assistant/update/`):
    was launched twice without confirming. A missing version folder falls back on
    `previous`.
 
+Quitting the new version yourself in its first 150 s counts as a failed start
+(it rolls back; Update again to retry).
+
 Nothing ever deletes the version that's running or the one before it, so there's
 always a working copy. Logs: `~/.assistant/logs/updater.log` (the launcher, the
 supervisor, downloads) and `assistant-app.log`.
