@@ -3,7 +3,12 @@ import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
-/** Root of the @assistant/core package (assistant/core). */
+declare const __ASSISTANT_BUNDLED__: boolean | undefined
+
+/** Whether this is the bundled Core an install runs (dist/main.mjs, scripts/bundle.mjs). */
+export const BUNDLED = typeof __ASSISTANT_BUNDLED__ !== "undefined" && __ASSISTANT_BUNDLED__
+
+/** Root of the @assistant/core package (assistant/core): src/.. or dist/.. alike. */
 export const CORE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 /** ~/.assistant, or $ASSISTANT_HOME (tests and benches point this elsewhere). */

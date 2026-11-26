@@ -338,6 +338,13 @@ impl Supervisor {
         })
     }
 
+    /// How long the child has been running, if it is.
+    pub(crate) fn running_for(&self) -> Option<Duration> {
+        self.running
+            .as_ref()
+            .map(|running| running.started.elapsed())
+    }
+
     /// Writes one line to the child's stdin; false when it isn't running.
     pub(crate) fn send_line(&mut self, line: &str) -> bool {
         let Some(running) = &mut self.running else {

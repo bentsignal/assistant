@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto"
 import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
-import { CORE_DIR, DEFAULT_NAME, loadConfig, paths, personasOf, saveConfigPatch, validName, type BrainHarness, type AssistantConfig, type Persona } from "./config.ts"
+import { BUNDLED, CORE_DIR, DEFAULT_NAME, loadConfig, paths, personasOf, saveConfigPatch, validName, type BrainHarness, type AssistantConfig, type Persona } from "./config.ts"
 import { gate, stripWakeWord, type GateResult } from "./gate.ts"
 import { Inbox, oneLine, truncate } from "./inbox.ts"
 import { SystemPrompt, renderPrompt } from "./prompt.ts"
@@ -388,11 +388,16 @@ export class Assistant {
   // ---- brain ----------------------------------------------------------------
 
   private mcpLaunch(harness: BrainHarness) {
-    // node --import tsx runs the TypeScript server in one process (tsx's CLI would add a second).
+    // An installed Core is bundled (scripts/bundle.mjs): the server is dist/mcp-server.mjs
+    // beside it. From the repo, node --import tsx runs the TypeScript server in one process
+    // (tsx's CLI would add a second).
     const tsx = pathToFileURL(join(CORE_DIR, "node_modules", "tsx", "dist", "loader.mjs")).href
+    const args = BUNDLED
+      ? [join(CORE_DIR, "dist", "mcp-server.mjs")]
+      : ["--import", tsx, join(CORE_DIR, "src", "mcp", "server.ts")]
     return {
       command: process.execPath,
-      args: ["--import", tsx, join(CORE_DIR, "src", "mcp", "server.ts")],
+      args,
       env: { ASSISTANT_URL: `http://127.0.0.1:${this.port}`, ASSISTANT_TOKEN: this.token, ASSISTANT_BRAIN: harness, ASSISTANT_NAME: this.name },
     }
   }

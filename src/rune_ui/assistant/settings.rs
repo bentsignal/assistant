@@ -15,8 +15,9 @@ use super::super::controls::{
     pressable_row, row_switch, section, status_dot,
 };
 use super::super::{Paint, icons, lists, scroll_body};
-use super::{Actions, Recent, SettingsView, Status, Tone, UiAction, send};
+use super::{Actions, Recent, SettingsView, Status, Tone, UiAction, UpdateButton, send};
 use crate::assistant::config::{Brain, Persona, Wake};
+use crate::assistant::update::Channel;
 
 /// The window: Hex's settings pane, without the sidebar.
 pub(crate) const SIZE: (f32, f32) = (600.0, 760.0);
@@ -265,6 +266,12 @@ pub(crate) fn fixture_view() -> SettingsView {
                 when: "1 min ago".into(),
             },
         ],
+        updates: super::UpdatesView {
+            current: "2.0.0 \u{00b7} Nightly 1a2b3c4".into(),
+            channel: Channel::Nightly,
+            line: "Up to date \u{00b7} checked 2 min ago".into(),
+            ..super::UpdatesView::default()
+        },
     }
 }
 
@@ -298,6 +305,24 @@ pub(crate) const SCENES: &[Scene] = &[
         };
     }),
     ("settings-voice-menu", |ui| ui.open = Some(Open::Voice)),
+    ("settings-update", |ui| {
+        ui.view.updates.line = "Nightly 9f8e7d6 is available (2026-11-26) \u{00b7} 128 MB".into();
+        ui.view.updates.button = Some(("Update".into(), UpdateButton::Install));
+        ui.view.updates.notes = vec![
+            "Settings: Updates, with Stable and Nightly".into(),
+            "Barge-in: no duck when it can't be her echo".into(),
+        ];
+    }),
+    ("settings-update-stable", |ui| {
+        ui.view.updates.channel = Channel::Stable;
+        ui.view.updates.line = "Stable 2.0.0 is available (2026-11-20) \u{00b7} 126 MB".into();
+        ui.view.updates.button = Some(("Switch to Stable 2.0.0".into(), UpdateButton::Install));
+    }),
+    ("settings-update-downloading", |ui| {
+        ui.view.updates.line = "Downloading Nightly 9f8e7d6 \u{00b7} 45% of 128 MB".into();
+        ui.view.updates.button = None;
+        ui.view.updates.progress = Some(0.45);
+    }),
     ("settings-personality", |ui| ui.toggle_prompt()),
     ("settings-problem", |ui| {
         ui.view.status = Status {
@@ -364,6 +389,7 @@ pub(crate) fn view(ui: &AssistantUi, cx: &mut Cx<AssistantUi>) -> El {
             "General",
             vec![login_row(ui, p), personality_row(ui, p), hotkey_row(ui, p)],
         ))
+        .child(section(p, "updates", "Updates", update_rows(ui, p)))
         .children(personality_editor(ui, p))
         .children(recent(ui, p))
         .child(footer(ui, p));
@@ -1011,6 +1037,101 @@ fn recent(ui: &AssistantUi, p: Paint) -> Option<El> {
     Some(section(p, "recent", "Recent", rows))
 }
 
+/// Updates: this build and the channel to follow, then what the channel
+/// offers and the one button for it, then what's new.
+fn update_rows(ui: &AssistantUi, p: Paint) -> Vec<El> {
+    let updates = &ui.view.updates;
+    let selected = usize::from(updates.channel == Channel::Nightly);
+    let channel = SegmentedControl::new(&["Stable", "Nightly"], Some(selected))
+        .fit()
+        .on_pick(|ui: &mut AssistantUi, index: usize, _: &mut Tx| {
+            let channel = if index == 1 {
+                Channel::Nightly
+            } else {
+                Channel::Stable
+            };
+            if channel != ui.view.updates.channel {
+                ui.view.updates.channel = channel;
+                ui.act(UiAction::SetUpdateChannel(channel));
+            }
+        })
+        .build(p.k)
+        .key("update-channel")
+        .role("segmented");
+    let mut rows = vec![icon_row(
+        p,
+        "version-row",
+        &icons::PANEL,
+        "Version",
+        Some(&updates.current),
+        channel,
+    )];
+    let control = match &updates.button {
+        Some((label, button)) => {
+            let button = *button;
+            Button::new(label.clone())
+                .variant(match button {
+                    UpdateButton::Install => ButtonVariant::Submit,
+                    UpdateButton::Check => ButtonVariant::Neutral,
+                })
+                .on_press_tx(move |ui: &mut AssistantUi, _: &mut Tx| {
+                    ui.view.updates.button = None;
+                    ui.act(match button {
+                        UpdateButton::Install => UiAction::InstallUpdate,
+                        UpdateButton::Check => UiAction::CheckForUpdates,
+                    });
+                })
+                .build_push(p.k)
+                .key("update-action")
+        }
+        None => text(
+            updates
+                .progress
+                .map_or_else(String::new, |done| format!("{:.0}%", done * 100.0)),
+        )
+        .key("update-progress")
+        .font(p.meta())
+        .color(p.muted()),
+    };
+    let color = if updates.problem {
+        p.danger()
+    } else {
+        p.muted()
+    };
+    rows.push(icon_described_row(
+        p,
+        "update-row",
+        &icons::REFRESH,
+        "Updates",
+        Some((updates.line.clone(), color)),
+        control,
+    ));
+    if !updates.notes.is_empty() {
+        let lines = updates.notes.iter().enumerate().map(|(i, line)| {
+            text(format!("\u{2022} {line}"))
+                .key(format!("note-{i}"))
+                .font(DESCRIPTION)
+                .color(p.muted())
+                .wrap()
+        });
+        rows.push(
+            col()
+                .key("update-notes")
+                .px(METRICS.row_px)
+                .py(8.0)
+                .gap(3.0)
+                .child(
+                    text("What's new")
+                        .key("notes-title")
+                        .font(p.meta())
+                        .color(p.faint()),
+                )
+                .children(lines),
+        );
+    }
+    rows
+}
+
 fn footer(ui: &AssistantUi, p: Paint) -> El {
     row()
         .key("footer")
@@ -1019,10 +1140,13 @@ fn footer(ui: &AssistantUi, p: Paint) -> El {
         .center_y()
         .justify_between()
         .child(
-            text(format!("Assistant {}", crate::VERSION))
-                .key("version")
-                .font(p.meta())
-                .color(p.faint()),
+            text(format!(
+                "Assistant {}",
+                crate::assistant::update::stamp::describe()
+            ))
+            .key("version")
+            .font(p.meta())
+            .color(p.faint()),
         )
         .child(
             el().key("quit")

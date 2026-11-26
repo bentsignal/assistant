@@ -61,11 +61,15 @@ pub(crate) fn spec(config: &Config) -> Result<Spec, String> {
             env,
         });
     }
-    let python = super::paths::home()
-        .join("voice")
-        .join("venv")
-        .join("Scripts")
-        .join("pythonw.exe");
+    let package = super::update::install::layout().package_dir();
+    // A package runs its own copy of the service in the venv made for its
+    // lock (`update::voice_env`); a repo build runs the repo's in `venv`.
+    let python = match package {
+        Some(package) => super::update::voice_env::pythonw(package),
+        None => super::update::voice_env::legacy()
+            .join("Scripts")
+            .join("pythonw.exe"),
+    };
     if !python.is_file() {
         return Err(format!(
             "the voice service isn't set up (no {}); run vera\\voice\\scripts\\setup.ps1",
@@ -73,6 +77,9 @@ pub(crate) fn spec(config: &Config) -> Result<Spec, String> {
         ));
     }
     let cwd = config.voice_service.cwd.clone().or_else(|| {
+        if let Some(package) = package {
+            return Some(package.join("voice"));
+        }
         config
             .repo()
             .map(|repo| repo.join("assistant").join("voice"))

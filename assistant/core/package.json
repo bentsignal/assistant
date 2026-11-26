@@ -13,13 +13,15 @@
     "mcp": "tsx src/mcp/server.ts",
     "fake-app": "tsx scripts/fake-app.ts",
     "test": "node --import tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bundle": "node scripts/bundle.mjs"
   },
   "dependencies": {
     "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "esbuild": "0.28.2"
   }
 }

@@ -91,6 +91,10 @@ pub(crate) enum Msg {
     StopHotkey,
     OpenSettings,
     Voice(super::voice::Status),
+    /// The updater's state changed.
+    Update,
+    /// An update is unpacked and ready: hand over and quit.
+    UpdateReady(super::update::Offer),
     /// Rune's loop ended (logoff, or Quit already handled).
     Shutdown,
 }
@@ -301,6 +305,10 @@ struct Controller {
     published_at: Instant,
     traced_tray: Option<TrayState>,
     watched: Instant,
+    updates: super::update::Updater,
+    /// This version was just switched to and hasn't yet confirmed it starts
+    /// cleanly (`update::apply::confirm`).
+    unconfirmed: bool,
 }
 
 impl Controller {
@@ -355,6 +363,29 @@ impl Controller {
             }
         };
         let microphones = crate::audio::input_device_names().unwrap_or_default();
+        let updates = {
+            let messages = messages.clone();
+            super::update::Updater::new(
+                config
+                    .updates
+                    .channel
+                    .unwrap_or_else(super::update::default_channel),
+                config.updates.repo.clone(),
+                config.updates.check,
+                move || {
+                    let _ = messages.send(Msg::Update);
+                },
+            )
+        };
+        let unconfirmed = match super::update::install::layout() {
+            super::update::install::Layout::Installed { root, label, .. } => {
+                super::update::install::State::load(root)
+                    .ok()
+                    .and_then(|state| state.pending)
+                    .is_some_and(|pending| pending.label == *label)
+            }
+            _ => false,
+        };
         let mut controller = Self {
             config,
             messages,
@@ -400,6 +431,8 @@ impl Controller {
             published_at: Instant::now(),
             traced_tray: None,
             watched: Instant::now(),
+            updates,
+            unconfirmed,
         };
         controller.start_audio();
         controller
@@ -436,6 +469,7 @@ impl Controller {
     fn shutdown(&mut self) {
         tracing::info!("Assistant stopping");
         self.voice_probe.store(true, Ordering::Relaxed);
+        self.updates.cancel();
         self.card.hide(None);
         self.hud.send(HudEvent::Assistant(AssistantLook::Idle));
         self.stop_audio("quitting");
@@ -633,6 +667,8 @@ impl Controller {
             Msg::StopHotkey => self.stop_talking(),
             Msg::OpenSettings => self.open_settings(),
             Msg::Voice(status) => self.voice_status(status),
+            Msg::Update => self.publish(true),
+            Msg::UpdateReady(offer) => return self.hand_over(&offer),
             Msg::Shutdown => return true,
         }
         false
@@ -969,6 +1005,8 @@ impl Controller {
 
     fn tick(&mut self) {
         self.watch_children();
+        self.updates.tick();
+        self.confirm_update();
         self.release_held();
         if self.audio.is_none() && self.audio_restart_at.is_some_and(|at| Instant::now() >= at) {
             tracing::info!("starting the audio engine again");
@@ -1071,6 +1109,56 @@ impl Controller {
                 "{name}'s voice stopped",
                 "The voice service stopped; starting it again (about 20 s)",
             );
+        }
+    }
+
+    /// A version just updated to says it started cleanly once Core and the
+    /// voice service are up (the voice ready, or at least running a while:
+    /// a GPU-less PC never gets ready). Until then the supervisor that
+    /// started it rolls back if it exits.
+    fn confirm_update(&mut self) {
+        if !self.unconfirmed {
+            return;
+        }
+        let core = self
+            .core
+            .running_for()
+            .is_some_and(|up| up >= Duration::from_secs(8));
+        let voice = self.voice.ready
+            || self
+                .voice_service
+                .running_for()
+                .is_some_and(|up| up >= Duration::from_secs(25));
+        if core && voice {
+            self.unconfirmed = false;
+            match super::update::apply::confirm() {
+                Ok(_) => tracing::info!(version = super::update::stamp::LABEL, "update confirmed"),
+                Err(error) => {
+                    tracing::error!(error = %format!("{error:#}"), "could not confirm the update")
+                }
+            }
+            // Start at login follows the launcher.
+            apply_start_at_login(&self.config);
+            self.publish(true);
+        }
+    }
+
+    /// Starts the supervisor that switches to `offer` and quits; on failure
+    /// keeps running and says why in Settings.
+    fn hand_over(&mut self, offer: &super::update::Offer) -> bool {
+        let Some(root) = super::update::install::layout().root() else {
+            return false;
+        };
+        match super::update::apply::hand_over(root, &offer.label) {
+            Ok(()) => {
+                tracing::info!(to = offer.label, "updating: quitting for the switch");
+                true
+            }
+            Err(error) => {
+                tracing::error!(error = %format!("{error:#}"), "could not start the update");
+                self.problem("Couldn't update", &format!("{error:#}"));
+                false
+            }
         }
     }
 

@@ -10,7 +10,8 @@
 //!   "startAtLogin": true, "stopHotkey": "Ctrl+Alt+Space", "hud": "bottom",
 //!   "repo": null,
 //!   "core": { "command": null, "entry": "assistant/core/src/main.ts", "args": ["--stdio"] },
-//!   "voiceService": { "command": null, "cwd": null, "port": 7314 }
+//!   "voiceService": { "command": null, "cwd": null, "port": 7314 },
+//!   "updates": { "channel": null, "check": true, "trayBadge": true, "repo": "bentsignal/assistant" }
 //! }
 //! ```
 
@@ -112,6 +113,28 @@ impl Wake {
     }
 }
 
+/// `app.updates`: which channel to follow (`None`: the build's own), whether
+/// to check by itself (at launch and every few hours), and whether an
+/// available update puts a quiet dot on the tray icon.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Updates {
+    pub(crate) channel: Option<crate::assistant::update::Channel>,
+    pub(crate) check: bool,
+    pub(crate) tray_badge: bool,
+    pub(crate) repo: String,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self {
+            channel: None,
+            check: true,
+            tray_badge: true,
+            repo: crate::assistant::update::feed::DEFAULT_REPO.into(),
+        }
+    }
+}
+
 /// How to start a child: an explicit argv, else found in the repo.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Launch {
@@ -147,6 +170,7 @@ pub(crate) struct Config {
     pub(crate) personas: Vec<Persona>,
     /// `assistant.personas` was in the file (else `personas` are defaults).
     pub(crate) has_personas: bool,
+    pub(crate) updates: Updates,
 }
 
 /// One of her names and the voice it speaks in.
@@ -189,7 +213,11 @@ pub(crate) fn default_personas(name: &str) -> Vec<Persona> {
         ("Optimus", "optimus", "a calm, noble commander of few words"),
         ("Buzz", "buzz", "an earnest, upbeat space ranger"),
         ("Saul", "saul", "a quick, persuasive fixer with a wink"),
-        ("Tony", "tony", "a quick, confident inventor with a wry edge"),
+        (
+            "Tony",
+            "tony",
+            "a quick, confident inventor with a wry edge",
+        ),
     ] {
         if !list.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
             list.push(Persona::new(name, voice, Some(style)));
@@ -219,6 +247,7 @@ impl Default for Config {
             name: DEFAULT_NAME.into(),
             personas: default_personas(DEFAULT_NAME),
             has_personas: false,
+            updates: Updates::default(),
         }
     }
 }
@@ -280,6 +309,19 @@ impl Config {
         config.voice_service.cwd = string(&app["voiceService"]["cwd"]).map(PathBuf::from);
         if let Some(port) = app["voiceService"]["port"].as_u64() {
             config.voice_port = u16::try_from(port).unwrap_or(DEFAULT_VOICE_PORT);
+        }
+        let updates = &app["updates"];
+        config.updates.channel = updates["channel"]
+            .as_str()
+            .and_then(crate::assistant::update::Channel::parse);
+        if let Some(check) = updates["check"].as_bool() {
+            config.updates.check = check;
+        }
+        if let Some(badge) = updates["trayBadge"].as_bool() {
+            config.updates.tray_badge = badge;
+        }
+        if let Some(repo) = string(&updates["repo"]).filter(|repo| repo.contains('/')) {
+            config.updates.repo = repo;
         }
         config.brain = Brain::parse(root["brain"]["harness"].as_str().unwrap_or_default());
         config.model = string(&root["brain"][config.brain.key()]["model"]);
@@ -419,6 +461,18 @@ mod tests {
         assert_eq!(config.voice_port, 9000);
         assert_eq!(config.voice_service.command.as_ref().unwrap().len(), 2);
         assert_eq!(Config::from_value(&json!({})), Config::default());
+    }
+
+    #[test]
+    fn reads_the_update_settings() {
+        use crate::assistant::update::Channel;
+        let config = Config::from_value(&json!({ "app": { "updates": {
+            "channel": "stable", "check": false, "trayBadge": false } } }));
+        assert_eq!(config.updates.channel, Some(Channel::Stable));
+        assert!(!config.updates.check && !config.updates.tray_badge);
+        assert_eq!(config.updates.repo, "bentsignal/assistant");
+        let config = Config::from_value(&json!({ "app": { "updates": { "channel": "beta" } } }));
+        assert_eq!(config.updates.channel, None);
     }
 
     #[test]

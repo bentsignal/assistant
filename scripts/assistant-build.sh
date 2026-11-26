@@ -8,7 +8,12 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 profile=release
 [ "${1:-}" = "--dev" ] && profile=ears-dev
-: "${VULKAN_SDK:=D:/dev/tools/VulkanSDK}"
+if [ -z "${VULKAN_SDK:-}" ]; then
+  for sdk in S:/dev/tools/VulkanSDK D:/dev/tools/VulkanSDK $(ls -d C:/VulkanSDK/* 2>/dev/null | sort -r); do
+    if [ -f "$sdk/Lib/vulkan-1.lib" ]; then VULKAN_SDK=$sdk; break; fi
+  done
+fi
+: "${VULKAN_SDK:?set VULKAN_SDK to the Vulkan SDK (docs/dev-setup.md)}"
 export VULKAN_SDK
 PATH="$(cygpath -u "$VULKAN_SDK")/Bin:$PATH"
 if ! command -v cmake >/dev/null 2>&1; then

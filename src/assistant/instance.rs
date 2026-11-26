@@ -70,6 +70,21 @@ pub(crate) fn signal_quit() -> bool {
     true
 }
 
+/// Whether an app for this `ASSISTANT_HOME` is running (its instance event
+/// exists).
+pub(crate) fn is_running() -> bool {
+    use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW};
+    let name = wide(&name("App"));
+    // SAFETY: a NUL-terminated name that outlives the call.
+    let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
+    if event.is_null() {
+        return false;
+    }
+    // SAFETY: a valid handle we own.
+    unsafe { CloseHandle(event) };
+    true
+}
+
 /// Calls `on_quit` when `vera quit` signals this Vera.
 pub(crate) fn forward_quit(on_quit: impl Fn() + Send + 'static) {
     let name = wide(&name("Quit"));

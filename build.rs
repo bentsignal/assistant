@@ -7,6 +7,7 @@ fn main() {
     let version = build_version();
     println!("cargo:rustc-env=HEX_BUILD_VERSION={version}");
     build_commit(&version);
+    assistant_build();
     // `hex_dev_onboarding`: the first run's replay strip and its swearing
     // jokes, in debug and `HEX_TEST_BUILD=1` builds only.
     println!("cargo::rustc-check-cfg=cfg(hex_dev_onboarding)");
@@ -243,6 +244,53 @@ fn build_version() -> String {
     version
 }
 
+/// Assistant's own build stamp (`src/assistant/build.rs`): its version from
+/// `assistant/VERSION` (a `vX.Y.Z` tag must match it), the channel it was
+/// published on (`ASSISTANT_CHANNEL`: `stable`, `nightly`, else `dev`), the
+/// full commit (`ASSISTANT_COMMIT`, else git's HEAD at the last build-script
+/// run), and the build date (`ASSISTANT_BUILD_DATE`, UTC ISO 8601). Packaging
+/// (`scripts/assistant-package.sh`) sets all three; a plain cargo build is
+/// `dev` and never offered as an update.
+fn assistant_build() {
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let file = manifest_dir.join("assistant").join("VERSION");
+    println!("cargo:rerun-if-changed={}", file.display());
+    for name in [
+        "ASSISTANT_CHANNEL",
+        "ASSISTANT_COMMIT",
+        "ASSISTANT_BUILD_DATE",
+        "ASSISTANT_LABEL",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let version = std::fs::read_to_string(&file)
+        .map(|text| text.trim().to_owned())
+        .unwrap_or_else(|_| "0.0.0".into());
+    let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let channel = env("ASSISTANT_CHANNEL").unwrap_or_else(|| "dev".into());
+    let commit = env("ASSISTANT_COMMIT")
+        .or_else(|| {
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        })
+        .unwrap_or_default();
+    // The release's name and its folder under `versions\`: `2.0.0` (stable),
+    // `2.0.0-nightly.20261125.abcdef12` (nightly), set by packaging.
+    let label = env("ASSISTANT_LABEL").unwrap_or_else(|| format!("{version}-dev"));
+    println!("cargo:rustc-env=ASSISTANT_BUILD_LABEL={label}");
+    println!("cargo:rustc-env=ASSISTANT_BUILD_VERSION={version}");
+    println!("cargo:rustc-env=ASSISTANT_BUILD_CHANNEL={channel}");
+    println!("cargo:rustc-env=ASSISTANT_BUILD_COMMIT={commit}");
+    println!(
+        "cargo:rustc-env=ASSISTANT_BUILD_DATE={}",
+        env("ASSISTANT_BUILD_DATE").unwrap_or_default()
+    );
+}
+
 /// Test builds keep their short badge label; local builds can identify the
 /// exact checkout without starting the app (`hex --version`).
 fn build_commit(version: &str) {
@@ -351,7 +399,30 @@ END
     // own icon and names, so Explorer and Task Manager never show it as Hex.
     let assistant_icon = manifest_dir.join("resources/windows/assistant.ico");
     println!("cargo:rerun-if-changed={}", assistant_icon.display());
+    let assistant_version = std::fs::read_to_string(manifest_dir.join("assistant/VERSION"))
+        .map(|text| text.trim().to_owned())
+        .unwrap_or_else(|_| "0.0.0".into());
+    let assistant_numeric = assistant_version
+        .split(['.', '-'])
+        .take(3)
+        .map(|part| part.parse::<u16>().unwrap_or(0).to_string())
+        .chain(std::iter::repeat("0".to_string()))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(",");
     let assistant = script
+        .replace(
+            &format!("FILEVERSION {numeric}"),
+            &format!("FILEVERSION {assistant_numeric}"),
+        )
+        .replace(
+            &format!("PRODUCTVERSION {numeric}"),
+            &format!("PRODUCTVERSION {assistant_numeric}"),
+        )
+        .replace(
+            &format!("\"{version}\""),
+            &format!("\"{assistant_version}\""),
+        )
         .replace(
             &icon.display().to_string().replace('\\', "/"),
             &assistant_icon.display().to_string().replace('\\', "/"),

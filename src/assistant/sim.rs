@@ -108,6 +108,17 @@ fn command(line: &str, messages: &Sender<Msg>) -> Result<String, String> {
         }
         "microphone" => ui(messages, UiAction::SetMicrophone(named(rest))),
         "mute" => ui(messages, UiAction::SetMuted(rest == "on")),
+        // What Settings › Updates does: `update check`, `update install`,
+        // `update channel stable|nightly`.
+        "update" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
+            ["check"] => ui(messages, UiAction::CheckForUpdates),
+            ["install"] => ui(messages, UiAction::InstallUpdate),
+            ["channel", channel] => match crate::assistant::update::Channel::parse(channel) {
+                Some(channel) => ui(messages, UiAction::SetUpdateChannel(channel)),
+                None => Err(format!("unknown channel {channel:?}")),
+            },
+            _ => Err("update check|install|channel <stable|nightly>".into()),
+        },
         "stop" => messages
             .send(Msg::StopHotkey)
             .map(|()| String::new())

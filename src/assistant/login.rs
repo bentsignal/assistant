@@ -28,10 +28,20 @@ pub(crate) fn registered() -> Option<String> {
         .ok()
 }
 
+/// What start at login runs: an installed version's launcher (so it follows
+/// updates), else this executable.
+fn target() -> Option<std::path::PathBuf> {
+    match super::update::install::layout().root() {
+        Some(root) => Some(root.join(super::update::install::EXE)),
+        None => std::env::current_exe().ok(),
+    }
+}
+
 /// Registers this executable, or removes the registration.
 pub(crate) fn set_enabled(enabled: bool) -> Result<()> {
     if enabled {
-        let executable = std::env::current_exe().wrap_err("could not find assistant.exe")?;
+        let executable =
+            target().ok_or_else(|| color_eyre::eyre::eyre!("could not find assistant.exe"))?;
         let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
             .create_subkey(RUN_KEY)
             .wrap_err("could not open Windows startup applications")?;
@@ -82,7 +92,7 @@ fn remove_legacy() {
 /// Makes the registration match `enabled`, pointing at this executable.
 pub(crate) fn apply(enabled: bool) -> Result<()> {
     remove_legacy();
-    let wanted = std::env::current_exe().ok().map(|exe| command(&exe));
+    let wanted = target().map(|exe| command(&exe));
     match (enabled, registered()) {
         (true, Some(current)) if Some(&current) == wanted.as_ref() => Ok(()),
         (true, _) => set_enabled(true),

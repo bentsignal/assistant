@@ -39,6 +39,27 @@ pub(super) fn core_spec(config: &Config) -> Result<Spec, String> {
             env,
         });
     }
+    // An installed (or unpacked) package runs its own Core with its own
+    // Node, never a repo checkout's.
+    if let Some(package) = super::super::update::install::layout().package_dir() {
+        let core_dir = package.join("core");
+        let entry = core_dir.join("dist").join("main.mjs");
+        let node = package.join("node").join("node.exe");
+        if !entry.is_file() || !node.is_file() {
+            return Err(format!(
+                "this install is missing Core ({})",
+                entry.display()
+            ));
+        }
+        let mut args: Vec<std::ffi::OsString> = vec![entry.into_os_string()];
+        args.extend(config.core_args.iter().map(Into::into));
+        return Ok(Spec {
+            program: node,
+            args,
+            cwd: Some(core_dir),
+            env,
+        });
+    }
     let repo = repo.ok_or("Vera's repo wasn't found; set app.repo in ~/.assistant/config.json")?;
     let core_dir = repo.join("assistant").join("core");
     let entry = repo.join(&config.core_entry);

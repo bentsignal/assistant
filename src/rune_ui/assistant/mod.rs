@@ -11,6 +11,7 @@ pub(crate) mod shots;
 use std::sync::mpsc::Sender;
 
 use crate::assistant::config::{Brain, Persona, Wake};
+use crate::assistant::update::Channel;
 
 /// What the Settings window and the card ask of the runtime.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +35,11 @@ pub(crate) enum UiAction {
     SetWake(Wake),
     SetStartAtLogin(bool),
     SetMuted(bool),
+    /// Settings › Updates: the channel to follow (checks it at once).
+    SetUpdateChannel(Channel),
+    CheckForUpdates,
+    /// Download, verify, and switch to the offered release.
+    InstallUpdate,
     /// The card's close button: the card it showed.
     CardClosed(Option<String>),
     Quit,
@@ -74,6 +80,46 @@ pub(crate) struct MicrophoneNote {
     pub(crate) text: String,
 }
 
+/// What Settings › Updates offers to do now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UpdateButton {
+    Check,
+    Install,
+}
+
+/// Settings › Updates.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct UpdatesView {
+    /// This build: "2.0.0 · Nightly abc1234".
+    pub(crate) current: String,
+    pub(crate) channel: Channel,
+    /// "Up to date · checked 2 min ago", "Nightly abc1234 is available",
+    /// "Downloading 45%", …
+    pub(crate) line: String,
+    /// The line is a failure (its colour).
+    pub(crate) problem: bool,
+    /// What the button does; `None` while busy.
+    pub(crate) button: Option<(String, UpdateButton)>,
+    /// Download progress, 0 to 1.
+    pub(crate) progress: Option<f32>,
+    /// What's new in the offered release: a few short lines.
+    pub(crate) notes: Vec<String>,
+}
+
+impl Default for UpdatesView {
+    fn default() -> Self {
+        Self {
+            current: "2.0.0".into(),
+            channel: Channel::Stable,
+            line: "Not checked yet".into(),
+            problem: false,
+            button: Some(("Check for updates".into(), UpdateButton::Check)),
+            progress: None,
+            notes: Vec::new(),
+        }
+    }
+}
+
 /// Everything Settings shows, as the runtime last published it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SettingsView {
@@ -98,6 +144,7 @@ pub(crate) struct SettingsView {
     /// Why the hotkey isn't registered, if it isn't.
     pub(crate) stop_hotkey_note: Option<String>,
     pub(crate) recent: Vec<Recent>,
+    pub(crate) updates: UpdatesView,
 }
 
 impl Default for SettingsView {
@@ -126,6 +173,7 @@ impl Default for SettingsView {
             stop_hotkey: crate::assistant::config::DEFAULT_STOP_HOTKEY.into(),
             stop_hotkey_note: None,
             recent: Vec::new(),
+            updates: UpdatesView::default(),
         }
     }
 }

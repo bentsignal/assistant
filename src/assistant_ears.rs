@@ -257,6 +257,37 @@ pub(crate) fn apply_vocabulary(settings: &EarsSettings) {
     crate::dictation::vocabulary::apply(&terms, settings.vocabulary_boost);
 }
 
+/// Downloads the speech model (and the speech detector) when it isn't in
+/// the models folder yet, so a PC without Hex installed gets one: Assistant
+/// keeps them in `~/.assistant/models/stt` then (`assistant::paths::isolate`).
+pub(crate) fn ensure_model(settings: &EarsSettings) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    let selection = settings.selection()?;
+    let model = crate::transcription::models::definition(selection.model);
+    if crate::transcription::models::is_installed(&model, &selection.language) {
+        return Ok(());
+    }
+    tracing::info!(
+        model = selection.model.as_str(),
+        "downloading the speech model"
+    );
+    let started = Instant::now();
+    let path = crate::transcription::models::download_with_progress(
+        &model,
+        &AtomicBool::new(false),
+        &AtomicU64::new(0),
+    )?;
+    tracing::info!(
+        path = %path.display(),
+        seconds = started.elapsed().as_secs(),
+        "speech model downloaded"
+    );
+    if !crate::transcription::models::speech_detector_installed() {
+        let _ = crate::transcription::models::download_speech_detector(&AtomicBool::new(false));
+    }
+    Ok(())
+}
+
 impl Stt {
     pub(crate) fn load(settings: &EarsSettings) -> Result<Self> {
         let selection = settings.selection()?;

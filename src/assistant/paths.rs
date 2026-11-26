@@ -89,12 +89,37 @@ pub(crate) fn system_prompt() -> PathBuf {
     home().join("system-prompt.md")
 }
 
+/// Where speech-to-text models are read from: `ASSISTANT_STT_MODELS`, else
+/// the installed Hex's models folder when it has any, else Assistant's own
+/// `~/.assistant/models/stt` (the engine downloads into it when it's empty).
+fn stt_models() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ASSISTANT_STT_MODELS") {
+        return Some(PathBuf::from(dir));
+    }
+    // The installed Hex's folder, worked out here: asking `app_paths` would
+    // pin its models folder before this picks one.
+    let hex = std::env::var_os("LOCALAPPDATA")
+        .filter(|local| !local.is_empty())
+        .map(|local| PathBuf::from(local).join("hex").join("models"));
+    let has_models = |dir: &Path| {
+        std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "gguf"))
+        })
+    };
+    match hex {
+        Some(hex) if has_models(&hex) => Some(hex),
+        _ => Some(home().join("models").join("stt")),
+    }
+}
+
 /// Gives Hex code running inside Vera Vera's own data folder, keeping the
 /// installed Hex's speech models, before any thread reads either. Called
 /// first thing in `assistant::main`.
 pub(crate) fn isolate() {
     if std::env::var_os("HEX_APPLICATION_SUPPORT_DIR").is_none() {
-        if let Ok(models) = crate::app_paths::models_dir() {
+        if let Some(models) = stt_models() {
             crate::app_paths::use_models_dir(models);
         }
         let data = home().join("app").join("hex");
@@ -130,7 +155,13 @@ pub(crate) fn init_logging() {
         .with_target(false)
         .with_writer(LogFile(std::sync::Arc::new(Mutex::new(file))))
         .try_init();
-    tracing::info!(version = crate::VERSION, home = %home().display(), "Assistant starting");
+    tracing::info!(
+        version = super::update::stamp::LABEL,
+        commit = super::update::stamp::COMMIT,
+        layout = ?super::update::install::layout(),
+        home = %home().display(),
+        "Assistant starting"
+    );
     if let Some(note) = MIGRATION
         .lock()
         .unwrap_or_else(|error| error.into_inner())

@@ -28,6 +28,22 @@ impl Controller {
     pub(super) fn ui_action(&mut self, action: UiAction) -> bool {
         trace::record("ui", json!({"action": format!("{action:?}")}));
         match action {
+            UiAction::SetUpdateChannel(channel) => {
+                if self.config.updates.channel != Some(channel) {
+                    self.save(|root| {
+                        *config::slot(root, &["app", "updates", "channel"]) = json!(channel.key())
+                    });
+                }
+                self.updates.set_channel(channel);
+                self.publish(true);
+            }
+            UiAction::CheckForUpdates => self.updates.check(),
+            UiAction::InstallUpdate => {
+                let messages = self.messages.clone();
+                self.updates.install(move |offer| {
+                    let _ = messages.send(super::Msg::UpdateReady(offer));
+                });
+            }
             UiAction::SetMicrophone(microphone) => {
                 if microphone != self.config.microphone {
                     self.save(|root| {

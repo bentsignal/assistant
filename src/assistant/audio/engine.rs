@@ -137,7 +137,8 @@ pub(super) fn run(
     let _ = std::thread::Builder::new()
         .name("assistant-stt-load".into())
         .spawn(move || {
-            let _ = stt_sender.send(Stt::load(&ears).map_err(|error| format!("{error:#}")));
+            let loaded = crate::assistant_ears::ensure_model(&ears).and_then(|()| Stt::load(&ears));
+            let _ = stt_sender.send(loaded.map_err(|error| format!("{error:#}")));
         });
     let (results, transcribed) = mpsc::channel::<Finished>();
     let mut engine = Engine {

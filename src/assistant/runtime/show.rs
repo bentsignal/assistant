@@ -6,7 +6,10 @@ use super::super::child::State;
 use super::super::protocol::HudState;
 use super::super::tray::TrayState;
 use super::Controller;
-use crate::rune_ui::assistant::{MicrophoneNote, Recent, SettingsView, Status, Tone};
+use crate::assistant::update::{self, Phase, Snapshot};
+use crate::rune_ui::assistant::{
+    MicrophoneNote, Recent, SettingsView, Status, Tone, UpdateButton, UpdatesView,
+};
 
 fn ago(at: Instant) -> String {
     let seconds = at.elapsed().as_secs();
@@ -15,6 +18,148 @@ fn ago(at: Instant) -> String {
         45..3600 => format!("{} min ago", (seconds + 30) / 60),
         _ => format!("{} h ago", seconds / 3600),
     }
+}
+
+fn ago_system(at: std::time::SystemTime) -> String {
+    let seconds = at.elapsed().map_or(0, |d| d.as_secs());
+    match seconds {
+        0..45 => "just now".into(),
+        45..3600 => format!("{} min ago", (seconds + 30) / 60),
+        3600..86_400 => format!("{} h ago", seconds / 3600),
+        _ => format!("{} d ago", seconds / 86_400),
+    }
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+}
+
+/// What's new, as a few short lines: the notes' first non-heading lines.
+fn note_lines(notes: &str) -> Vec<String> {
+    notes
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.trim_start_matches(['-', '*', ' ']).trim().to_string())
+        .filter(|line| !line.is_empty())
+        .take(5)
+        .map(|line| {
+            if line.chars().count() > 96 {
+                let cut: String = line.chars().take(95).collect();
+                format!("{}\u{2026}", cut.trim_end())
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
+/// Settings › Updates, from the updater's state. `can_apply`: this is an
+/// installed copy (a development build can check but not switch).
+pub(super) fn updates_view(snapshot: &Snapshot, can_apply: bool) -> UpdatesView {
+    let check = Some(("Check for updates".to_string(), UpdateButton::Check));
+    let mut view = UpdatesView {
+        current: update::stamp::describe(),
+        channel: snapshot.channel,
+        line: String::new(),
+        problem: false,
+        button: check.clone(),
+        progress: None,
+        notes: Vec::new(),
+    };
+    let checked = snapshot
+        .checked_at
+        .map(|at| format!(" \u{00b7} checked {}", ago_system(at)))
+        .unwrap_or_default();
+    match &snapshot.phase {
+        Phase::Idle => view.line = "Not checked yet".into(),
+        Phase::Checking => {
+            view.line = "Checking\u{2026}".into();
+            view.button = None;
+        }
+        Phase::UpToDate => view.line = format!("Up to date{checked}"),
+        Phase::NoRelease => {
+            view.line = format!("No {} release yet{checked}", snapshot.channel.name());
+        }
+        Phase::Available(offer) => {
+            let day = update::stamp::day(&offer.date)
+                .map(|day| format!(" ({day})"))
+                .unwrap_or_default();
+            let switching = offer.channel != update::stamp::CHANNEL;
+            view.line = format!(
+                "{} is available{day} \u{00b7} {}",
+                offer.title(),
+                megabytes(offer.size)
+            );
+            view.notes = note_lines(&offer.notes);
+            if can_apply {
+                let label = if switching && offer.channel == "stable" {
+                    format!("Switch to {}", offer.title())
+                } else {
+                    "Update".to_string()
+                };
+                view.button = Some((label, UpdateButton::Install));
+            } else {
+                view.line
+                    .push_str(" \u{00b7} a development build doesn't update itself");
+            }
+        }
+        Phase::Downloading { offer, got, total } => {
+            let fraction = if *total > 0 {
+                (*got as f32 / *total as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            view.line = format!(
+                "Downloading {} \u{00b7} {:.0}% of {}",
+                offer.title(),
+                fraction * 100.0,
+                megabytes(*total)
+            );
+            view.progress = Some(fraction);
+            view.notes = note_lines(&offer.notes);
+            view.button = None;
+        }
+        Phase::Preparing { offer, what } => {
+            view.line = format!("{} \u{00b7} {what}\u{2026}", offer.title());
+            view.notes = note_lines(&offer.notes);
+            view.button = None;
+        }
+        Phase::Ready(offer) => {
+            view.line = format!("Restarting into {}\u{2026}", offer.title());
+            view.button = None;
+        }
+        Phase::Failed { message, offer } => {
+            view.problem = true;
+            match offer {
+                Some(offer) => {
+                    view.line = format!("Couldn't update to {}: {message}", offer.title());
+                    if can_apply {
+                        view.button = Some(("Try again".to_string(), UpdateButton::Install));
+                    }
+                }
+                None => view.line = format!("Couldn't check for updates: {message}"),
+            }
+        }
+    }
+    // A switch that was rolled back in the last day, said while it's quiet.
+    if let Some(failed) = &snapshot.rolled_back
+        && matches!(
+            snapshot.phase,
+            Phase::Idle | Phase::UpToDate | Phase::NoRelease | Phase::Available(_)
+        )
+        && update::install::now().saturating_sub(failed.at) < 86_400
+        && failed.label != update::stamp::LABEL
+    {
+        view.notes.insert(
+            0,
+            format!(
+                "{} didn't start ({}), so this version stayed",
+                failed.label, failed.reason
+            ),
+        );
+    }
+    view
 }
 
 impl Controller {
@@ -165,6 +310,7 @@ impl Controller {
                     when: ago(*at),
                 })
                 .collect(),
+            updates: updates_view(&self.updates.snapshot(), update::can_apply()),
         }
     }
 
@@ -211,7 +357,17 @@ impl Controller {
         if self.badge > 0 {
             tooltip.push_str(&format!(" \u{00b7} {} new", self.badge));
         }
+        let snapshot = self.updates.snapshot();
+        let update = match &snapshot.phase {
+            Phase::Available(offer) if update::can_apply() => Some(offer.title()),
+            _ => None,
+        };
+        if let Some(title) = &update {
+            tooltip.push_str(&format!(" \u{00b7} {title} available"));
+        }
         TrayState {
+            update_dot: update.is_some() && self.config.updates.tray_badge,
+            update,
             muted: self.muted,
             speaking: self.speaking.is_some(),
             badge: self.badge,

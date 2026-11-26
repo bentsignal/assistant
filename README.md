@@ -36,8 +36,13 @@ June, Eli), volume, agent and model, start at login, and Edit personality
 (her system prompt). Everything lives in `~/.assistant/` (`config.json`, `logs/`).
 
 **Quit:** tray → Quit Vera, or `assistant quit`. That stops Core, the brain, and
-the voice service (and frees its GPU memory). Start it again from
-`target\release\assistant.exe` (or log in again).
+the voice service (and frees its GPU memory). Start it again from the Start
+Menu (Assistant), or log in again.
+
+**Updates:** Settings › Updates shows the version and a Stable / Nightly
+switch; Update downloads the channel's release, checks it, and restarts into
+it, keeping the previous version and going back to it if the new one doesn't
+start. Installing and releases: [`docs/install.md`](docs/install.md).
 
 **Known limits**
 
@@ -56,10 +61,10 @@ the voice service (and frees its GPU memory). Start it again from
 - A Claude Code sign-in expires now and then; run `claude auth login`.
 - Windows only.
 
-**Rebuilding:** quit Vera first (the exe is locked), then
-`sh scripts/assistant-build.sh` (Git Bash). Setup on a fresh machine:
-`cd assistant && pnpm install`, `assistant\voice\scripts\setup.ps1`, and the installed
-Hex's speech models. Details: [`docs/assistant-app.md`](docs/assistant-app.md),
+**Developing:** on Winserve only ([`docs/dev-setup.md`](docs/dev-setup.md)):
+`sh scripts/assistant-build.sh` (Git Bash), `cd assistant && pnpm install`,
+`assistant\voice\scripts\setup.ps1`. Every push to `main` publishes Nightly; a
+`vX.Y.Z` tag publishes Stable. Details: [`docs/assistant-app.md`](docs/assistant-app.md),
 [`docs/assistant-audio.md`](docs/assistant-audio.md),
 [`assistant/core/README.md`](assistant/core/README.md),
 [`assistant/voice/README.md`](assistant/voice/README.md).

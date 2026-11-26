@@ -1,0 +1,145 @@
+# Assistant's Windows build (docs/install.md): tests, the release package, and publishing.
+#   push to main  -> Nightly: the rolling "nightly" prerelease, replaced each time
+#   tag vX.Y.Z    -> Stable: release vX.Y.Z (the tag must match assistant/VERSION)
+#   pull request  -> built and tested, never published
+# The runner is GitHub's windows-latest unless the repository variable ASSISTANT_RUNNER
+# names another (a JSON string or label list, e.g. ["self-hosted","windows"]).
+name: assistant
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["docs/**", "**/*.md", "site/**", "ios/**", "android/**", "macos/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: assistant-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  VULKAN_SDK_VERSION: 1.4.363.1
+
+jobs:
+  windows:
+    name: Windows package
+    runs-on: ${{ fromJSON(vars.ASSISTANT_RUNNER || '"windows-latest"') }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Channel
+        run: scripts/assistant-ci-env.sh >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: assistant-windows
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Cache the Vulkan SDK
+        id: vulkan
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/VulkanSDK
+          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-windows-x64
+
+      - name: Vulkan SDK
+        run: |
+          sdk="$RUNNER_TEMP/VulkanSDK"
+          if [ "${{ steps.vulkan.outputs.cache-hit }}" != true ]; then
+            python scripts/assistant-vulkan-sdk.py "$VULKAN_SDK_VERSION" "$sdk" --cache "$RUNNER_TEMP"
+          fi
+          echo "VULKAN_SDK=$(cygpath -m "$sdk")" >> "$GITHUB_ENV"
+          echo "$sdk/Bin" >> "$GITHUB_PATH"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: assistant/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: assistant/pnpm-lock.yaml
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Cache Node and uv for the package
+        uses: actions/cache@v4
+        with:
+          path: .cache/package
+          key: assistant-package-${{ hashFiles('scripts/assistant-package.sh') }}
+
+      - name: Core tests
+        working-directory: assistant
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -r test
+
+      - name: Voice tests (model-free)
+        working-directory: assistant/voice
+        run: uv run --no-project --python 3.12 --with numpy==2.5.5 --with scipy==1.18.1 python -m unittest discover -s tests
+
+      - name: Rust tests
+        run: cargo test --release --locked --bin assistant assistant
+
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/assistant-notes.sh "$ASSISTANT_CHANNEL" "$RUNNER_TEMP/notes.md"
+          echo "ASSISTANT_NOTES_FILE=$RUNNER_TEMP/notes.md" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: scripts/assistant-package.sh
+
+      - name: Smoke test
+        run: |
+          stage=dist/stage
+          "$stage/assistant.exe" --version
+          home=$(mktemp -d)
+          out=$( (echo '{"type":"ready","mic":"ci","engine":"none","volume":0.7}'; sleep 6) \
+            | ASSISTANT_HOME="$home" "$stage/node/node.exe" "$stage/core/dist/main.mjs" --stdio 2>"$home/core.err" || true)
+          echo "$out" | head -3
+          echo "$out" | grep -q '"cmd":"hud"' || { cat "$home/core.err"; echo "the bundled Core didn't answer"; exit 1; }
+          test -f "$home/system-prompt.md"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: assistant-windows
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+            dist/manifest.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [windows]
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: assistant-windows
+          path: artifacts
+      - name: Publish
+        run: scripts/assistant-publish.sh artifacts

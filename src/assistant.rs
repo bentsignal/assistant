@@ -31,6 +31,7 @@ mod shots;
 mod sim;
 pub(crate) mod trace;
 mod tray;
+pub(crate) mod update;
 mod voice;
 
 use std::path::PathBuf;
@@ -59,7 +60,7 @@ const fn same(a: &str, b: &str) -> bool {
 #[derive(Parser)]
 #[command(
     name = "assistant",
-    version = crate::VERSION,
+    version = update::stamp::LABEL,
     about = "Assistant: a hands-free voice for your coding agents"
 )]
 struct Cli {
@@ -74,6 +75,34 @@ struct Cli {
 enum Command {
     /// Quit the running Vera (and every process it started).
     Quit,
+    /// Check for (or install) the update channel's current release.
+    Update {
+        /// Download, verify, and switch to it (restarts the app).
+        #[arg(long)]
+        install: bool,
+        /// `stable` or `nightly` (default: the channel in Settings).
+        #[arg(long)]
+        channel: Option<String>,
+        /// Another `owner/repo` to read releases from.
+        #[arg(long, hide = true)]
+        repo: Option<String>,
+    },
+    /// Make this unpacked version the installed one (the bootstrap installer).
+    #[command(hide = true)]
+    InstallSelf,
+    /// The update supervisor: switch to a version once the app quits, and
+    /// roll back if it doesn't start cleanly.
+    #[command(hide = true)]
+    UpdateApply {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        wait_pid: Option<u32>,
+    },
     /// Draw Vera's screens (HUD looks, card, Settings) into a folder as PNGs.
     #[command(hide = true)]
     Shots {
@@ -94,6 +123,12 @@ pub(crate) fn main(dll_search: std::io::Result<()>) -> Result<()> {
         eprintln!("assistant: SetDefaultDllDirectories failed: {error}");
     }
     color_eyre::install()?;
+    // `<install>ssistant.exe` is the launcher: it starts the current
+    // version (rolling back one that keeps failing) and gets out of the way.
+    if let update::install::Layout::Launcher { root } = update::install::layout() {
+        let code = update::install::launch(root, std::env::args_os().skip(1).collect());
+        std::process::exit(code);
+    }
     let cli = Cli::parse();
     // Before any thread starts: the data folder moves from its old name
     // (`~/.vera`) on the app's first launch, Hex internals that keep files
@@ -104,6 +139,24 @@ pub(crate) fn main(dll_search: std::io::Result<()>) -> Result<()> {
     paths::isolate();
     match cli.command {
         Some(Command::Shots { dir, tray }) => shots::run(&dir, tray),
+        Some(Command::Update {
+            install,
+            channel,
+            repo,
+        }) => update::cli(install, channel, repo),
+        Some(Command::InstallSelf) => update::apply::install_self(),
+        Some(Command::UpdateApply {
+            root,
+            to,
+            from,
+            wait_pid,
+        }) => {
+            let result = update::apply::supervise(&root, &to, &from, wait_pid);
+            if let Err(error) = &result {
+                update::install::note(&format!("update supervisor: {error:#}"));
+            }
+            result
+        }
         Some(Command::Quit) => {
             if !instance::signal_quit() {
                 eprintln!("Assistant isn't running");

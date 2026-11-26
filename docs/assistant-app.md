@@ -43,6 +43,7 @@ console and never flash one.
   `~/.assistant/app/hex` (`HEX_APPLICATION_SUPPORT_DIR`); speech models are read
   from the installed Hex's folder. Hex's settings and data are never written.
 - Start at login: HKCU `Run` value `Assistant` = `"<assistant.exe>" --hidden`
+  (an installed copy registers its launcher, `…\Programs\Assistant\assistant.exe`)
   (the old `Vera` value is removed whenever it's applied). On by
   default, except that a cargo build (an exe under `target\`) doesn't
   register itself until Settings or `app.startAtLogin: true` asks.
@@ -63,7 +64,13 @@ to `~/.assistant/logs/core.log` and `voice-service.log` (the services keep their
 own logs too: `core-<date>.log`, `voice.log`); the app logs to
 `~/.assistant/logs/assistant-app.log`.
 
-- **Core**: `app.core.command` if set (argv), else
+- **Installed** (`%LOCALAPPDATA%\Programs\Assistant\versions\<label>`, or any
+  unpacked package: an `assistant-package.json` beside the exe): Core is the
+  package's `node\node.exe core\dist\main.mjs --stdio` and the voice service runs
+  from the package's `voice\` in the venv made for its `uv.lock`
+  (`src/assistant/update/voice_env.rs`); the repo is never used. `app.core.command`
+  and `app.voiceService.command` still win. Updates: [`install.md`](install.md).
+- **Core** (repo builds): `app.core.command` if set (argv), else
   `node --import tsx <repo>/assistant/core/src/main.ts --stdio` in
   `<repo>/assistant/core` (`app.core.entry`, `app.core.args` adjust it). Node is
   found on PATH; Core's packages must be installed (`pnpm install` in

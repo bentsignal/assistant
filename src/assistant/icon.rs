@@ -12,6 +12,8 @@ pub(crate) enum Dot {
     Inbox,
     /// Something is wrong: Hex's coral failed colour.
     Problem,
+    /// An update is available: a quiet grey.
+    Update,
 }
 
 /// The mark as straight RGBA, `size` pixels square. `dot` adds one in the
@@ -26,6 +28,7 @@ pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, dot: Dot, dim: bool) -> 
         Dot::None => BADGE,
         Dot::Inbox => BADGE,
         Dot::Problem => PROBLEM,
+        Dot::Update => UPDATE,
     };
     let dot = (dot != Dot::None).then(|| {
         let radius = size as f32 * 0.17;
@@ -59,6 +62,8 @@ pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, dot: Dot, dim: bool) -> 
 const BADGE: [u8; 3] = [0x5b, 0x9c, 0xff];
 /// A problem's: the coral of Hex's failed look.
 const PROBLEM: [u8; 3] = [0xff, 0x6b, 0x5a];
+/// An available update: a soft green, quieter than the others.
+const UPDATE: [u8; 3] = [0x5f, 0xb8, 0x8a];
 
 /// The mark's coverage, 0–1 per pixel, row by row.
 fn mark_coverage(size: u32) -> Vec<f32> {

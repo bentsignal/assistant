@@ -47,6 +47,7 @@ const ID_SETTINGS: u16 = 1;
 const ID_MUTE: u16 = 2;
 const ID_STOP: u16 = 3;
 const ID_QUIT: u16 = 4;
+const ID_UPDATE: u16 = 5;
 
 /// What the tray shows.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -58,6 +59,11 @@ pub(crate) struct TrayState {
     /// Something is wrong (Settings' status is red): a coral dot, over
     /// the inbox's blue one.
     pub(crate) problem: bool,
+    /// An update this install can switch to ("Nightly abc1234"): a menu
+    /// item that opens Settings.
+    pub(crate) update: Option<String>,
+    /// A quiet dot for it (`app.updates.trayBadge`), under the others.
+    pub(crate) update_dot: bool,
     /// The assistant's name, for the menu.
     pub(crate) name: String,
     pub(crate) tooltip: String,
@@ -137,6 +143,8 @@ fn refresh_icon(context: &Context, state: &TrayState) -> HICON {
         super::icon::Dot::Problem
     } else if state.badge > 0 {
         super::icon::Dot::Inbox
+    } else if state.update_dot {
+        super::icon::Dot::Update
     } else {
         super::icon::Dot::None
     };
@@ -233,6 +241,9 @@ fn menu(state: &TrayState) -> HMENU {
             if state.speaking { 0 } else { MF_GRAYED },
         );
         AppendMenuW(popup, MF_SEPARATOR, 0, ptr::null());
+        if let Some(update) = &state.update {
+            item(ID_UPDATE, &format!("Update to {update}\u{2026}"), 0);
+        }
         item(ID_QUIT, &format!("Quit {}", display_name(state)), 0);
         SetMenuDefaultItem(popup, u32::from(ID_SETTINGS), 0);
         popup
@@ -258,7 +269,7 @@ fn pick(hwnd: HWND, context: &Context, at: POINT) -> Option<TrayEvent> {
         picked
     };
     match u16::try_from(picked).ok()? {
-        ID_SETTINGS => Some(TrayEvent::Settings),
+        ID_SETTINGS | ID_UPDATE => Some(TrayEvent::Settings),
         ID_MUTE => Some(TrayEvent::ToggleMute),
         ID_STOP => Some(TrayEvent::StopTalking),
         ID_QUIT => Some(TrayEvent::Quit),
