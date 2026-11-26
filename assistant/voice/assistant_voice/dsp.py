@@ -1,5 +1,6 @@
 """Vera's character effects: a gentle plate reverb, a subtle synthetic tint, de-essing,
-loudness normalization (about -20 LUFS) and a peak limiter (under -3 dBFS).
+loudness normalization (about -20 LUFS), a short-window leveler and a peak limiter
+(under -3 dBFS).
 
 `Chain` is causal and stateful, so audio can be fed in any chunk sizes (sub-sentence
 streaming) and the result is the same as processing it in one piece, apart from the
@@ -155,13 +156,85 @@ def loudness_lufs(x: np.ndarray, sr: int) -> float:
     return float(-0.691 + 10 * np.log10(np.mean(y ** 2) + 1e-12))
 
 
+# Leveler: evens out loudness within a line and across its streamed sentences. The short
+# level is a gated ~300 ms power average; the reference is the mean short level (dB) of
+# all the speech so far in this utterance, so the line's overall loudness (set by the
+# voice's calibration) is kept and only its swings are evened out. Frames well under the
+# reference (pauses, breaths, room noise) move neither, and the gain holds through them, so
+# pauses are never pumped up. The gain is limited to +LEVEL_BOOST/-LEVEL_CUT dB, cuts over
+# ~50 ms and comes back over ~150 ms (time constants), smoothed by the 300 ms level.
+LEVEL_FRAME_S = 0.01
+LEVEL_TAU_S = 0.15         # one-pole power average: about a 300 ms window
+LEVEL_BOOST_DB = 6.0
+LEVEL_CUT_DB = 3.0
+LEVEL_ATTACK_S = 0.05      # gain going down
+LEVEL_RELEASE_S = 0.15     # gain coming back up
+LEVEL_GATE_DB = 20.0       # frames this far under the reference are pauses: hold
+LEVEL_FLOOR_DBFS = -55.0   # and anything under this, always
+LEVEL_SETTLE_S = 0.3       # speech needed before the reference is trusted
+LEVEL_MAKEUP_DB = 0.8      # evening out lowers integrated loudness by about this (measured on
+                           # four voices); calibration is measured without the leveler
+
+
+class Leveler:
+    """Causal, chunk-size-invariant short-window leveler (state carries across chunks).
+    Gains are decided on a fixed 10 ms grid and ramped linearly across each frame."""
+
+    def __init__(self, sr: int):
+        self.f = max(1, int(round(LEVEL_FRAME_S * sr)))
+        self.level: float | None = None             # short-term power
+        self.ref_sum, self.ref_n = 0.0, 0           # mean short level (dB) over speech
+        self.settle = int(LEVEL_SETTLE_S / LEVEL_FRAME_S)
+        self.a_lvl = np.exp(-LEVEL_FRAME_S / LEVEL_TAU_S)
+        self.a_att = np.exp(-LEVEL_FRAME_S / LEVEL_ATTACK_S)
+        self.a_rel = np.exp(-LEVEL_FRAME_S / LEVEL_RELEASE_S)
+        self.g_db = 0.0
+        self.g_prev = self.g_cur = 1.0
+        self.acc = 0.0
+        self.pos = 0                                 # samples into the current frame
+
+    def _frame_done(self, power: float):
+        db = 10 * np.log10(power + 1e-12)
+        ref = self.ref_sum / self.ref_n if self.ref_n else None
+        floor = max(LEVEL_FLOOR_DBFS, (ref - LEVEL_GATE_DB) if ref is not None else -1e9)
+        if db > floor:
+            self.level = power if self.level is None else self.a_lvl * self.level + (1 - self.a_lvl) * power
+            short = 10 * np.log10(self.level + 1e-12)
+            self.ref_sum += short
+            self.ref_n += 1
+            if self.ref_n >= self.settle:
+                want = float(np.clip(self.ref_sum / self.ref_n - short, -LEVEL_CUT_DB, LEVEL_BOOST_DB))
+                want += LEVEL_MAKEUP_DB
+                a = self.a_att if want < self.g_db else self.a_rel
+                self.g_db = a * self.g_db + (1 - a) * want
+        self.g_prev, self.g_cur = self.g_cur, 10 ** (self.g_db / 20)
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        out = np.empty_like(x)
+        i, n, f = 0, len(x), self.f
+        while i < n:
+            take = min(n - i, f - self.pos)
+            seg = x[i:i + take]
+            ramp = self.g_prev + (self.g_cur - self.g_prev) * (np.arange(self.pos, self.pos + take) / f)
+            out[i:i + take] = seg * ramp
+            self.acc += float(np.dot(seg, seg))
+            self.pos += take
+            i += take
+            if self.pos == f:
+                self._frame_done(self.acc / f)
+                self.acc, self.pos = 0.0, 0
+        return out
+
+
 class Chain:
     """One utterance's effect chain. `gain` is the linear gain that brings this voice's
     dry output to the preset's target loudness (calibrated once per voice)."""
 
-    def __init__(self, sr: int, preset: Preset, gain: float = 1.0, ir: np.ndarray | None = None):
+    def __init__(self, sr: int, preset: Preset, gain: float = 1.0, ir: np.ndarray | None = None,
+                 level: bool = True):
         p = self.p = preset
         self.sr, self.gain = sr, gain
+        self.leveler = Leveler(sr) if level else None
         self.hp = _Sos(signal.butter(2, 70, "highpass", fs=sr, output="sos"))
         self.eq = [_Sos(s) for s in (
             _biquad("peak", sr, 3200, p.presence_db) if p.presence_db else None,
@@ -244,6 +317,8 @@ class Chain:
             x = f(x)
         x = self._deess(x)
         x = self._tint(x) * self.gain
+        if self.leveler is not None:
+            x = self.leveler(x)
         if self.ir is not None:
             wet = signal.fftconvolve(x, self.ir) * self.p.reverb_mix
             wet[:len(x)] += x
@@ -274,19 +349,19 @@ def calibrate_gain(dry: np.ndarray, sr: int, preset: Preset) -> float:
     """Gain that brings `dry` (a typical sentence from this voice) to the target loudness
     once it has been through the preset's tone stages (measured with the reverb, since
     the tail adds a little loudness)."""
-    c = Chain(sr, preset, 1.0)
+    c = Chain(sr, preset, 1.0, level=False)  # the leveler then works around this gain
     wet = np.concatenate([c.process(dry), c.flush()])
     lufs = loudness_lufs(wet, sr)
     return float(10 ** ((preset.target_lufs - lufs) / 20)) if np.isfinite(lufs) else 1.0
 
 
 def render(x: np.ndarray, sr: int, preset: str | Preset, gain: float | None = None,
-           chunk: int | None = None) -> np.ndarray:
+           chunk: int | None = None, level: bool = True) -> np.ndarray:
     """Process a whole clip (tests, samples). `chunk` feeds it in pieces of that size."""
     p = PRESETS[preset] if isinstance(preset, str) else preset
     if gain is None:
         gain = calibrate_gain(x, sr, p)
-    c = Chain(sr, p, gain)
+    c = Chain(sr, p, gain, level=level)
     if chunk:
         parts = [c.process(x[i:i + chunk]) for i in range(0, len(x), chunk)]
     else:

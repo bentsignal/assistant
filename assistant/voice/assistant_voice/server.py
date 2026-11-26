@@ -100,9 +100,10 @@ class Handler(BaseHTTPRequestHandler):
             log.info("speech cancelled by client after %.2fs of audio", sent / SAMPLE_RATE)
             self.close_connection = True
             return
-        log.info("spoke %d chars, %.2fs audio, first audio %.0f ms, total %.0f ms (%s/%s)",
+        log.info("spoke %d chars, %.2fs audio, first audio %.0f ms, total %.0f ms (%s/%s)%s",
                  len(text), sent / SAMPLE_RATE, timing.get("first_audio_ms", -1),
-                 1000 * (time.perf_counter() - t0), v.id, p.name)
+                 1000 * (time.perf_counter() - t0), v.id, p.name,
+                 f", {timing['regenerated']} sentence(s) regenerated" if timing.get("regenerated") else "")
 
 
 def serve(synth: Synth, host: str = "127.0.0.1", port: int = 7314):

@@ -67,9 +67,32 @@ $py = "$HOME\.assistant\voice\venv\Scripts\python.exe"
 - One synthesis runs at a time on the GPU, and concurrent requests queue.
 - **Levels.** Output is about −20 LUFS integrated, true peak under −3 dBFS (sample
   ceiling −3.8). The volume is the App's to apply. Pauses between sentences are fixed
-  at 220 ms, and leading silence is trimmed to 15 ms.
+  at 220 ms, and leading silence is trimmed to 15 ms. A short-window leveler
+  (`dsp.Leveler`) evens out loudness within a reply: it pulls a gated ~300 ms level
+  toward the mean level of the reply so far, boosting up to 6 dB and cutting up to 3 dB
+  (time constants 50 ms down, 150 ms up), plus a 0.8 dB make-up for the level that evening
+  out costs. Pauses, breaths and room noise (20 dB under that mean)
+  neither move it nor get boosted. It runs on every streamed chunk with state carried
+  across sentences, after the voice's calibrated gain, so each voice still sits at
+  −20 LUFS overall. Calibration is measured without it.
+- **Degeneration guard** (`guard.py`). Qwen3-TTS sometimes never ends a sentence: it
+  stutters on one sound, then babbles in something that isn't speech, until its context
+  is full (a minute of audio; it happened to Tony on "approval-required"). Each sentence
+  is capped at `1.5 s + 0.1 s × characters` of audio (a digit counts as four), and while it streams the service
+  watches for the codec tokens looping or recurring (a stutter), the audio running past that
+  budget, and the voicing collapsing (under 20% of 40 ms frames pitched over the last
+  2 s). The newest audio of each sentence is held back from the client, up to half of
+  what the client already has buffered (2.5 s at most), so the first audio still goes
+  out at once and a caught sentence usually never reaches the speaker. A caught sentence
+  is dropped and said again with safer sampling (temperature 0.45, top-k 20, top-p 0.85,
+  repetition penalty 1.1, another seed), then in the voice's base voice (`base` in
+  `voice.json`, else Eli or Isla by gender), then skipped. If some of it had already
+  played, it restarts after a 300 ms pause. Every catch is a `WARNING` in `voice.log`
+  ("degenerate speech caught …" with the reason and the sentence), and the request's
+  `spoke …` line counts the sentences regenerated. Nothing chimes.
 - **Text shaping** (`text.py`): markdown and fenced code are stripped, URLs become
-  "a link", and a few acronyms are respelled (`T3` → "T three", `CLI`, `JSON`, `PR`…).
+  "a link", a few acronyms are respelled (`T3` → "T three", `CLI`, `JSON`, `PR`…), and
+  hyphens between words become spaces ("approval-required" → "approval required").
   Qwen reads numbers, times, and versions well on its own.
 
 ## Voices

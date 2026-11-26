@@ -45,6 +45,7 @@ class Voice:
     preset: str = ""     # this voice's own effects preset; empty uses the service default
     user: bool = False   # made with add-voice; overrides a built-in voice with the same id
     clip_sha: str = ""   # user voices: the reference clip's hash, so calibration follows the clip
+    base: str = ""       # the voice a degenerate sentence falls back to (default: eli or isla by gender)
 
     @property
     def cal_id(self) -> str:
@@ -52,7 +53,7 @@ class Voice:
 
     def public(self) -> dict:
         d = asdict(self)
-        d.pop("ref"); d.pop("clip_sha")
+        d.pop("ref"); d.pop("clip_sha"); d.pop("base")
         return d
 
 
@@ -95,6 +96,11 @@ def cuda_available() -> bool:
         return False
 
 
+# Normal sampling, and the safer settings a sentence is regenerated with when it degenerates.
+SAMPLING = dict(temperature=0.7, top_k=40, top_p=1.0, repetition_penalty=1.05)
+SAFE_SAMPLING = dict(temperature=0.45, top_k=20, top_p=0.85, repetition_penalty=1.1)
+
+
 class QwenEngine:
     name = "qwen"
 
@@ -112,21 +118,57 @@ class QwenEngine:
             self.model = FasterQwen3TTS.from_pretrained(QWEN_BASE, max_seq_len=1024)
         self.chunk_steps = chunk_steps
         self.lock = threading.Lock()
+        self._sink: list | None = None
+        self._tap_codes()
 
-    def stream(self, text: str, voice: Voice, stop: threading.Event) -> Iterator[np.ndarray]:
+    def _tap_codes(self):
+        """Copy each streamed chunk's first-codebook tokens into `self._sink`, so the
+        degeneration guard can see the codec loop the audio hides. faster-qwen3-tts imports
+        its streaming loop at call time, so wrapping the module attribute is enough."""
+        try:
+            from faster_qwen3_tts import streaming as fs
+        except Exception:
+            log.warning("can't watch codec tokens (faster_qwen3_tts.streaming missing)")
+            return
+        if getattr(fs.fast_generate_streaming, "_assistant_tap", False):
+            fs.fast_generate_streaming._assistant_engine = self
+            return
+        orig = fs.fast_generate_streaming
+        engine = self
+
+        def tapped(*a, **kw):
+            for codec_chunk, timing in orig(*a, **kw):
+                sink = tapped._assistant_engine._sink
+                if sink is not None:
+                    try:
+                        sink.extend(codec_chunk[:, 0].tolist())
+                    except Exception:
+                        pass
+                yield codec_chunk, timing
+
+        tapped._assistant_tap = True
+        tapped._assistant_engine = engine
+        fs.fast_generate_streaming = tapped
+
+    def stream(self, text: str, voice: Voice, stop: threading.Event, sampling: dict | None = None,
+               seed: int = 0, max_frames: int = 2048, tokens: list | None = None) -> Iterator[np.ndarray]:
+        """`tokens`, if given, receives the first-codebook codec tokens as they generate."""
         ref = VOICES_DIR / voice.ref
         ref_text = ref.with_suffix(".txt").read_text(encoding="utf-8").strip()
         with self.lock:
-            self.torch.manual_seed(0)  # same text, same reading
+            self.torch.manual_seed(seed)  # same text, same reading
+            self._sink = tokens
             gen = self.model.generate_voice_clone_streaming(
                 text=text, language="English", ref_audio=str(ref), ref_text=ref_text,
-                chunk_size=self.chunk_steps, temperature=0.7, top_k=40, repetition_penalty=1.05)
+                chunk_size=self.chunk_steps, max_new_tokens=max(8, int(max_frames)),
+                **(sampling or SAMPLING))
             try:
                 for chunk, sr, _timing in gen:
                     if stop.is_set():
                         break
                     yield np.asarray(chunk, np.float32).reshape(-1)
             finally:
+                self._sink = None
                 gen.close()
 
 

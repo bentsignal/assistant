@@ -12,6 +12,9 @@ _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _URL = re.compile(r"https?://\S+")
 _MD = re.compile(r"(^|\s)[#>*\-]+\s+|[*_~]{1,3}(?=\S)|(?<=\S)[*_~]{1,3}")
 _SPACE = re.compile(r"\s+")
+# "approval-required" -> "approval required": Qwen3-TTS can stutter on the hyphen's
+# second word ("approval r-r-r-r…") and never recover; spoken, the hyphen is a space anyway.
+_HYPHEN = re.compile(r"(?<=[A-Za-z])-(?=[A-Za-z])")
 
 
 def normalize(text: str) -> str:
@@ -21,6 +24,7 @@ def normalize(text: str) -> str:
     t = _INLINE_CODE.sub(r"\1", t)
     t = _MD.sub(r"\1", t)
     t = lexicon.apply(t)
+    t = _HYPHEN.sub(" ", t)
     t = t.replace("&", " and ").replace("->", " to ").replace("=>", " to ")
     return _SPACE.sub(" ", t).strip()
 
