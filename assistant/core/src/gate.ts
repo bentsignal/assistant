@@ -176,6 +176,11 @@ export interface WakeMatch {
   soft?: boolean
   /** Which of her names woke her (when `found` and `names` was given). */
   name?: string
+  /**
+   * The name was said as itself ("Optimus"), not a mishearing ("Vara",
+   * "Variable,", "Alfread"): only that switches who answers.
+   */
+  explicit?: boolean
 }
 
 export interface WakeOptions {
@@ -203,8 +208,16 @@ function vocativeEnd(words: string[], i: number): boolean {
 /** Find and strip the wake word. */
 export function stripWakeWord(text: string, opts: WakeOptions = {}): WakeMatch {
   const m = stripWake(text, opts)
+  if (m.found && m.name) {
+    const key = nameKey(m.name)
+    const said = text.trim().split(/\s+/).map((w) => normalizeWord(w).replace(/'/g, ""))
+    if (said.includes(key)) m.explicit = true
+  }
   // Which name woke her is reported only to callers that gave several (personas).
-  if (!opts.names?.length && m.name !== undefined) delete m.name
+  if (!opts.names?.length && m.name !== undefined) {
+    delete m.name
+    delete m.explicit
+  }
   return m
 }
 
@@ -280,7 +293,11 @@ export interface GateState {
   followUpUntil: number
 }
 
-/** `persona`: which of her names woke her (absent for follow-ups and direct turns). */
+/**
+ * `persona`: the name he said, as itself, which switches who answers. Absent
+ * for follow-ups, direct turns, and wakes through a mishearing ("Vara",
+ * "Hey there,", "Alfread"): those keep whoever answered last.
+ */
 export type GateResult =
   | { action: "ignore"; reason: string }
   | { action: "wake"; text: ""; persona?: string } // bare wake word: listen for the next utterance
@@ -302,7 +319,7 @@ export function gate(
   if (!via) return { action: "ignore", reason: "no wake word" }
 
   const text = m.found ? m.text : raw
-  const persona = m.found && m.name ? { persona: m.name } : {}
+  const persona = m.found && m.name && m.explicit ? { persona: m.name } : {}
   if (!text) return { action: "wake", text: "", ...persona }
   if (isStopPhrase(text)) return { action: "stop", text, ...persona }
   return { action: "turn", text, via, ...persona }

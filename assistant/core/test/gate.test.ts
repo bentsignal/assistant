@@ -134,8 +134,8 @@ test("another name: its exact word wakes anywhere, a near miss only first or las
 test("personas: any name wakes her and says which; Vera's mishearings stay Vera's; no cross-matches", () => {
   const names = ["Vera", "Alfred", "Jarvis", "Optimus", "Buzz", "Saul", "Tony"]
   const opts = { names }
-  assert.deepEqual(stripWakeWord("Hey Alfred, what's for dinner?", opts), { found: true, name: "Alfred", text: "what's for dinner?" })
-  assert.deepEqual(stripWakeWord("what time is it, Jarvis?", opts), { found: true, name: "Jarvis", text: "what time is it" })
+  assert.deepEqual(stripWakeWord("Hey Alfred, what's for dinner?", opts), { found: true, name: "Alfred", text: "what's for dinner?", explicit: true })
+  assert.deepEqual(stripWakeWord("what time is it, Jarvis?", opts), { found: true, name: "Jarvis", text: "what time is it", explicit: true })
   assert.deepEqual(stripWakeWord("Vara, set a timer", opts), { found: true, name: "Vera", text: "set a timer" })
   assert.deepEqual(stripWakeWord("Variable, what time is it?", opts), { found: true, soft: true, name: "Vera", text: "what time is it?" })
   assert.equal(stripWakeWord("Alfread, the news", opts).name, "Alfred", "a near miss names its persona")
@@ -146,4 +146,14 @@ test("personas: any name wakes her and says which; Vera's mishearings stay Vera'
   assert.deepEqual(g, { action: "turn", text: "say hello", via: "wake", persona: "Jarvis" })
   const f = gate({ text: "and the weather", start: now }, { followUpUntil: now + 1000 }, now, opts)
   assert.equal((f as any).persona, undefined, "a follow-up names nobody (the last persona answers)")
+  // Mishearings wake her but name nobody: whoever answered last keeps answering.
+  for (const t of ["Vara, set a timer", "Variable, what time is it?", "Alfread, the news"]) {
+    const w = gate({ text: t }, { followUpUntil: 0 }, now, opts)
+    assert.equal(w.action, "turn", t)
+    assert.equal((w as any).persona, undefined, t)
+  }
+  const warm = gate({ text: "Hey there, what's next?" }, { followUpUntil: 0 }, now, { ...opts, recentlyActive: true })
+  assert.equal(warm.action, "turn")
+  assert.equal((warm as any).persona, undefined)
+  assert.equal((gate({ text: "okay Optimus, report" }, { followUpUntil: 0 }, now, opts) as any).persona, "Optimus")
 })

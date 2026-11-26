@@ -143,8 +143,10 @@ device doesn't report (Bluetooth, HDMI) only makes the echo later, which
 AEC3's own estimator finds. Each stream's stamps go through a smoothed
 timeline (jitter averaged out, drift followed), and the read cursor slews
 at most one sample per block, so the reference never jumps. A block waits
-up to 80 ms for its reference to be rendered. The output closes after 8 s
-of silence and the next sound re-opens the default device.
+up to 80 ms for its reference to be rendered. The output stays open through
+a conversation and closes after 3 minutes of silence; the next sound
+re-opens the default device. (It used to close after 8 s, so most replies
+started on a freshly opened stream, which a wireless headset fades in.)
 
 ## Barge-in
 
@@ -192,8 +194,19 @@ level and Silero, over the linear output, decides: asked once there is
 sound has stopped for 120 ms (so a short "Stop." is heard whole); six
 refusals, 800 ms, or the sound ending unheard dismiss it. Breathing, clicks,
 a knock or a fan in a headset never dip her voice; only speech stops her.
-Shawn's CORSAIR headset sends digital silence between sounds and hears
-none of Vera, so every suspicion there is silent.
+**A headset never ducks.** The coupling needs a converged canceller, and
+Shawn's CORSAIR headset gives it nothing to converge on (digital silence
+between sounds, no echo), so his suspicions kept falling back to ducking
+(his log: 9 ducks, 9 restores, 53 silent suspicions, 46 dismissed). The
+detector now also measures the *echo return* without the canceller: the
+raw microphone's 20th-percentile level while Vera has been loud for 300 ms,
+against its level while nothing of hers played for 300 ms (or only her
+pauses, 30 dB under her peak), over the same last 6 s. Speakers measure 10
+to 40 dB; a headset about 0. Under 3 dB (back over 6 dB) every suspicion is
+silent: no duck, only speech the detector hears stops her. Her echo showing
+up in her last 200 ms of loud playback (10 dB over the silent level: the
+headset taken off) ends that at once. The duplex log line reports
+`echo_return_db` and `headset`.
 
 A first word followed by a pause ("Wait, … start a new thread") keeps Vera
 ducked for up to 800 ms until the next word confirms (with speakers; in a

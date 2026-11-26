@@ -134,9 +134,11 @@ if muted.
   unasked comes back after 1, 2, 5, 10, then 30 s.
 - **Core dying** cuts what it asked to say, hides the HUD, and alerts; the
   supervisor brings it back.
-- **The HUD's caps**: listening 30 s, thinking 100 s, speaking 3 min while
-  a line plays and 4 s once nothing does. A look that outstays its cap
-  hides, whatever Core last said.
+- **The HUD's caps**: listening ends 30 s after the last speech the engine
+  heard (never while he's talking: an open utterance only gets a 3-minute
+  safety net from its last partial), thinking 100 s, speaking 3 min while a
+  line plays and 4 s once nothing does. A look that outstays its cap hides,
+  whatever Core last said.
 
 ### Never failing silently (`runtime/alerts.rs`)
 

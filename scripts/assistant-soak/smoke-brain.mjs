@@ -6,7 +6,9 @@
 // ~/.assistant/logs/core-*.log, that the brain called the expected tools and
 // that a line then finished playing.
 //
-//   node scripts/assistant-soak/smoke-brain.mjs [--home ~/.assistant] [--timeout 60]
+//   node scripts/assistant-soak/smoke-brain.mjs [--home ~/.assistant] [--timeout 60] [--skip-codex]
+//
+// --skip-codex leaves out the Codex steps on a machine where Codex isn't signed in.
 //
 // It talks out loud (it's the real app) and changes things it puts back:
 // the voice (restored at the end), the brain (back to Claude), and the
@@ -144,9 +146,14 @@ results.push(await step("switch to Eli", `${NAME}, switch to Eli.`, ["set_voice"
 results.push(await step("own voices again", `${NAME}, use each persona's own voice again.`, ["set_voice"]))
 results.push(await step("Hey Alfred", "Hey Alfred, say hello.", [], "alfred"))
 results.push(await step("Jarvis", "Jarvis, say hello.", [], "jarvis"))
-results.push(await step("use codex", `${NAME}, use codex.`, ["set_brain"]))
-results.push(await step("codex answers", `${NAME}, say ready.`, ["speak"]))
-results.push(await step("use claude", `${NAME}, use claude.`, ["set_brain"]))
+// A mishearing of Vera's name still wakes her but keeps whoever answered last.
+results.push(await step("Jarvis sticks", "Vara, say ready.", [], "jarvis"))
+results.push(await step("asked for Alfred", "Let me talk to Alfred.", [], "alfred"))
+if (!argv.includes("--skip-codex")) {
+  results.push(await step("use codex", `${NAME}, use codex.`, ["set_brain"]))
+  results.push(await step("codex answers", `${NAME}, say ready.`, ["speak"]))
+  results.push(await step("use claude", `${NAME}, use claude.`, ["set_brain"]))
+}
 results.push(await step("prompt edit", `${NAME}, remember to keep answers under two sentences.`, ["edit_system_prompt"]))
 results.push(await step("prompt revert", `${NAME}, undo that last change to your prompt.`, ["revert_system_prompt"]))
 

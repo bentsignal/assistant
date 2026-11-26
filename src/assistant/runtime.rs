@@ -69,6 +69,10 @@ const SILENT_FOR: Duration = Duration::from_secs(4 * 60);
 /// own timeout (Core gives up at 90 s), speaking a line's deadline once
 /// nothing plays.
 const LISTENING_CAP: Duration = Duration::from_secs(30);
+/// While an utterance is open (speech started, no final yet) the listening
+/// look stays; this is only the safety net against an engine that never
+/// ends one, counted from the last thing it heard.
+const LISTENING_OPEN_CAP: Duration = Duration::from_secs(180);
 const THINKING_CAP: Duration = Duration::from_secs(100);
 const SPEAKING_CAP: Duration = Duration::from_secs(180);
 const SPEAKING_IDLE_CAP: Duration = Duration::from_secs(4);
@@ -262,6 +266,9 @@ struct Controller {
     /// A `speech_start` went to Core and its `final` or `speech_cancel`
     /// hasn't yet.
     utterance_open: bool,
+    /// When the engine last reported live speech (a start, a partial, a
+    /// final, a barge-in): the listening look's cap counts from here.
+    heard_at: Instant,
     /// The engine's `Ready`: the microphone and engine it named.
     ready: Option<(String, String)>,
     /// The audio engine's last problem: (message, fatal).
@@ -406,6 +413,7 @@ impl Controller {
             audio_failures: 0,
             ledger: Ledger::default(),
             utterance_open: false,
+            heard_at: Instant::now(),
             ready: None,
             audio_error: None,
             mic_unavailable: false,
@@ -896,10 +904,14 @@ impl Controller {
                 // shortcut press).
                 warm_hud();
                 self.utterance_open = true;
+                self.heard_at = Instant::now();
                 self.heard_speech = true;
                 self.tell_core(AppEvent::SpeechStart { t });
             }
-            AudioEvent::Partial { text, t } => self.tell_core(AppEvent::Partial { text, t }),
+            AudioEvent::Partial { text, t } => {
+                self.heard_at = Instant::now();
+                self.tell_core(AppEvent::Partial { text, t })
+            }
             AudioEvent::Final {
                 text,
                 start,
@@ -907,6 +919,7 @@ impl Controller {
                 during_playback,
             } => {
                 self.utterance_open = false;
+                self.heard_at = Instant::now();
                 self.heard = Some((text.clone(), Instant::now()));
                 self.tell_core(AppEvent::Final {
                     text,
@@ -922,6 +935,7 @@ impl Controller {
             AudioEvent::BargeIn { speak_id } => {
                 // Shawn talked over her: show him at once.
                 self.speaking = None;
+                self.heard_at = Instant::now();
                 self.show(AssistantLook::Listening);
                 match self.ledger.core_id(&speak_id) {
                     Some((core_id, true)) => {

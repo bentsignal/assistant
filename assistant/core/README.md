@@ -310,8 +310,21 @@ codex 1.8 to 2.1 s). Each turn's `firstSpeakMs` and `endToAudioMs` in
   cached in `~/.assistant/t3-token.json`) and calls the running server:
   `GET /api/projects` and `GET /api/orchestration/shell` (header
   `x-t3-orchestration-protocol: 2`), with the origin from
-  `<T3CODE_HOME>/userdata/server-runtime.json`. Threads are started, sent
-  to, and read through the CLI (`--json`, message on stdin via `-`). The
+  `<T3CODE_HOME>/userdata/server-runtime.json`. Threads are started and
+  read through the CLI (`--json`, message on stdin via `-`). Sends steer by
+  default: the CLI's `thread send` always queues, so Vera calls the
+  server's own MCP endpoint (`POST {origin}/mcp`, tool `t3_thread_send`
+  with `mode: "steer"`, or `"queue"` when Shawn asks) with an MCP client
+  session (`t3 auth session issue --subject mcp-client --scope
+  orchestration:read --scope orchestration:operate`, cached in
+  `~/.assistant/t3-mcp-token.json`). The same endpoint takes an
+  `environmentId`, so the T3 tools also list, read, and send to threads on
+  linked machines (`t3_environments`). T3 caps that session at
+  approval-required, so it may not steer a thread that runs in full access
+  (`runtime_mode_escalation_denied`): such a send on this machine is queued
+  through the CLI instead, and one on a linked machine is refused.
+  `send_feedback` sends to `t3.orchestratorThread` (`{environmentId,
+  threadId}`, Winserve's orchestrator by default). The
   `t3.cmd` launcher is parsed so Vera runs the Electron binary directly
   (no cmd.exe quoting). Thread ids can look like `mcp:<uuid>`.
 - **Windows**: CLIs are spawned without a shell; `.cmd` shims are read and

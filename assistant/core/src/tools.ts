@@ -102,12 +102,35 @@ export const HANDLERS: Record<string, ToolHandler> = {
       .join("\n\n")
   },
 
-  async t3_list_projects(assistant) {
+  async t3_environments(assistant) {
+    return JSON.stringify(await assistant.t3.environments(), null, 1).slice(0, 4000)
+  },
+
+  async send_feedback(assistant, args) {
+    const message = need(args, "message")
+    const target = assistant.config.t3.orchestratorThread
+    try {
+      const sent = await assistant.t3.send(target.threadId, message, { environmentId: target.environmentId })
+      const how = sent.delivery === "steered" ? "steered into its running turn" : sent.delivery === "queued" ? "queued" : "sent"
+      return `Feedback ${how} to the orchestrator${sent.steerRefused ? " (T3 doesn't let you steer that thread yet, so it waits for its current turn)" : ""}. Confirm in a few words.`
+    } catch (err) {
+      // Not a fault of hers: she says so briefly, nothing chimes or turns red.
+      return `Couldn't reach the orchestrator (${truncate((err as Error).message, 200)}). Tell Shawn so in one short sentence; don't retry.`
+    }
+  },
+
+  async t3_list_projects(assistant, args) {
+    if (typeof args?.environment === "string" && args.environment) {
+      return truncate(JSON.stringify(await assistant.t3.remoteProjects(args.environment)), 4000)
+    }
     const projects = await assistant.t3.projects()
     return projects.map((p) => `${p.title} — id ${p.id} — ${p.workspaceRoot}`).join("\n")
   },
 
   async t3_list_threads(assistant, args) {
+    if (typeof args?.environment === "string" && args.environment) {
+      return truncate(JSON.stringify(await assistant.t3.remoteThreads(args.environment, Number(args?.limit) || 10)), 6000)
+    }
     const rows = await assistant.t3.listThreads(args?.project || undefined, Number(args?.limit) || 10)
     if (!rows.length) return "No threads."
     return rows
@@ -116,6 +139,10 @@ export const HANDLERS: Record<string, ToolHandler> = {
   },
 
   async t3_read_thread(assistant, args) {
+    if (typeof args?.environment === "string" && args.environment) {
+      const read = await assistant.t3.remoteRead(args.environment, need(args, "thread"), Number(args?.messages) || 4)
+      return truncate(JSON.stringify(read), 8000)
+    }
     const shown = await assistant.t3.show(need(args, "thread"), Number(args?.messages) || 4)
     const t = shown.thread ?? {}
     const msgs = (shown.messages ?? []).map((m: any) => `${m.role}: ${truncate(m.text ?? "", 2500)}`).join("\n\n")
@@ -133,10 +160,16 @@ export const HANDLERS: Record<string, ToolHandler> = {
 
   async t3_send(assistant, args) {
     const thread = need(args, "thread")
-    await assistant.t3.send(thread, need(args, "message"))
+    const environmentId = typeof args.environment === "string" && args.environment ? args.environment : undefined
+    const sent = await assistant.t3.send(thread, need(args, "message"), { mode: args.queue === true ? "queue" : "steer", environmentId })
+    const how0 = sent.delivery === "steered" ? "Steered into its running turn" : sent.delivery === "queued" ? "Queued after its current turn" : "Sent"
+    // Threads on another machine aren't watched (the watcher reads this one).
+    if (environmentId) return `${how0} (thread ${thread} on ${environmentId}).`
     if (!assistant.watcher.watches.has(thread)) await assistant.watcher.add(thread).catch(() => {})
     else assistant.watcher.expectRun(thread)
-    return `Sent to "${await resolveThreadTitle(assistant, thread)}"; watching for the reply.`
+    const how =
+      sent.delivery === "steered" ? "Steered into its running turn" : sent.delivery === "queued" ? "Queued after its current turn" : "Sent"
+    return `${how} ("${await resolveThreadTitle(assistant, thread)}"); watching for the reply.`
   },
 
   async t3_watch(assistant, args) {
@@ -158,6 +191,11 @@ export const HANDLERS: Record<string, ToolHandler> = {
   revert_system_prompt(assistant) {
     const { restored } = assistant.prompt.revert()
     return `Reverted to the version from before the last edit (${restored}). It applies from the next turn.`
+  },
+
+  switch_persona(assistant, args) {
+    const p = assistant.switchPersona(need(args, "name"), "asked")
+    return `${p.name} is answering now, in its own voice${p.style ? ` (${p.style})` : ""}, until Shawn names or asks for another. Speak as ${p.name}.`
   },
 
   async set_name(assistant, args) {

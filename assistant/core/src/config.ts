@@ -123,6 +123,11 @@ export interface AssistantConfig {
     /** Path to the t3 CLI (.cmd or .exe). Defaults to $T3CODE_CLI_PATH. */
     cli?: string
     pollSeconds: number
+    /**
+     * Where "send feedback to the orchestrator" goes: a T3 thread, on this
+     * machine's T3 or a linked environment (`environmentId`).
+     */
+    orchestratorThread: { environmentId?: string; threadId: string }
   }
   /**
    * The App's own settings (it owns them; Core reads a few and writes only
@@ -204,7 +209,14 @@ export const DEFAULT_CONFIG: AssistantConfig = {
     codex: {},
     grok: {},
   },
-  t3: { pollSeconds: 10 },
+  t3: {
+    pollSeconds: 10,
+    // Winserve's orchestrator thread (Shawn's development machine).
+    orchestratorThread: {
+      environmentId: "573af78b-3442-4163-8b9b-bc5cb90eefde",
+      threadId: "mcp:launch:e567a1bd34d8a95f1c00a2ba8883e89cfbe5413356b07615454602cff62b76d9",
+    },
+  },
   voice: { defaultVolume: 0.7 },
 }
 

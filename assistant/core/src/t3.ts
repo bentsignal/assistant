@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { resolveCli, runCli } from "./proc.ts"
 
 /**
@@ -13,8 +13,31 @@ import { resolveCli, runCli } from "./proc.ts"
  *   GET {origin}/api/projects                -> { projects: [...] }
  *   GET {origin}/api/orchestration/shell     -> every thread's status, all projects
  * The server's origin comes from <T3CODE_HOME>/userdata/server-runtime.json.
- * Anything that changes threads goes through the CLI.
+ *
+ * Sending to a thread steers its running turn by default (the message reaches
+ * the agent now, as T3's composer does), and queues it only when asked. The
+ * CLI's `thread send` always queues, so sends go through the server's own MCP
+ * endpoint (`POST {origin}/mcp`, tool `t3_thread_send` with `mode`), with an
+ * MCP client session minted the same way (`t3 auth session issue --subject
+ * mcp-client`, cached in ~/.assistant/t3-mcp-token.json). If that fails, the
+ * CLI queues it. Starting threads goes through the CLI.
  */
+
+/** How a message reaches a thread: steer the running turn, or queue after it. */
+export type SendMode = "steer" | "queue"
+
+/** What happened to a sent message. */
+export interface SendResult {
+  delivery: "started" | "queued" | "steered" | "restarted"
+  runId?: string
+  via: "mcp" | "cli"
+  /**
+   * T3 refused to let Assistant steer it: the thread runs with more access
+   * than Assistant's MCP session may use (it's capped at approval-required
+   * until Shawn approves more), so it was queued through the CLI instead.
+   */
+  steerRefused?: boolean
+}
 
 export interface T3Project {
   id: string
@@ -171,11 +194,136 @@ export class T3 {
     return this.cliJson(args, message, opts.wait ? 600_000 : 60_000)
   }
 
-  async send(threadId: string, message: string, opts: { wait?: boolean } = {}): Promise<any> {
-    const args = ["thread", "send", threadId, "-"]
-    if (opts.wait) args.push("--wait")
-    return this.cliJson(args, message, opts.wait ? 600_000 : 60_000)
+  /**
+   * Sends `message` to a thread: steering its running turn (an idle one
+   * starts a turn) unless `mode` is "queue". `environmentId` names a linked
+   * machine's T3; without it, this machine's.
+   */
+  async send(threadId: string, message: string, opts: { mode?: SendMode; environmentId?: string } = {}): Promise<SendResult> {
+    const mode = opts.mode ?? "steer"
+    const env = opts.environmentId ? { environmentId: opts.environmentId } : {}
+    try {
+      const r = await this.mcpTool("t3_thread_send", { ...env, threadId, message, mode })
+      return { delivery: r.delivery, runId: r.runId, via: "mcp" }
+    } catch (err) {
+      const code = (err as any).code as string | undefined
+      // Steering a full-access thread needs a full-access client, which only
+      // Shawn can approve: the CLI (his own, authorized) queues it instead.
+      // It reaches only this machine's T3; a linked one's thread stays refused.
+      const refused = code === "runtime_mode_escalation_denied"
+      if (!refused && (code || opts.environmentId)) throw err
+      try {
+        const r = await this.cliJson(["thread", "send", threadId, "-"], message, 60_000)
+        return { delivery: r.delivery ?? "queued", runId: r.runId, via: "cli", ...(refused ? { steerRefused: true } : {}) }
+      } catch (cliErr) {
+        throw refused ? err : cliErr
+      }
+    }
   }
+
+  /** The machines linked to this T3 (their environment ids), this one first. */
+  async environments(): Promise<any> {
+    return this.mcpTool("t3_environment_links", {})
+  }
+
+  /** Threads on a linked machine (or this one), newest first. */
+  async remoteThreads(environmentId: string | undefined, limit = 10): Promise<any> {
+    return this.mcpTool("t3_thread_list", { ...(environmentId ? { environmentId } : {}), allProjects: true, limit })
+  }
+
+  /** A thread's latest items on a linked machine (or this one). */
+  async remoteRead(environmentId: string | undefined, threadId: string, limit = 4): Promise<any> {
+    return this.mcpTool("t3_thread_read", { ...(environmentId ? { environmentId } : {}), threadId, limit })
+  }
+
+  /** Projects on a linked machine (or this one). */
+  async remoteProjects(environmentId: string | undefined): Promise<any> {
+    return this.mcpTool("t3_project_list", { ...(environmentId ? { environmentId } : {}), limit: 100 })
+  }
+
+  private mcpTokenFile(): string {
+    return join(dirname(this.tokenFile), "t3-mcp-token.json")
+  }
+
+  /** A T3 MCP client session (subject `mcp-client`, may operate threads), cached for 30 days. */
+  private async mcpToken(fresh = false): Promise<string> {
+    const file = this.mcpTokenFile()
+    if (!fresh && existsSync(file)) {
+      try {
+        const t = JSON.parse(readFileSync(file, "utf8"))
+        if (t.token && t.expires > Date.now() + 3600_000) return t.token
+      } catch {}
+    }
+    const r = await this.cli([
+      "auth", "session", "issue", "--token-only", "--label", "assistant", "--ttl", "30d",
+      "--subject", "mcp-client", "--scope", "orchestration:read", "--scope", "orchestration:operate",
+    ])
+    const token = r.stdout.split(/\s+/).find((s) => s.startsWith("ey"))
+    if (!token) throw new Error(`couldn't get a T3 MCP session: ${r.stderr.trim() || r.stdout.trim()}`)
+    writeFileSync(file, JSON.stringify({ token, expires: Date.now() + 29 * 86400_000 }), { mode: 0o600 })
+    return token
+  }
+
+  /** Calls one of the server's MCP tools and returns its JSON result (throws its failure). */
+  async mcpTool(name: string, args: Record<string, unknown>): Promise<any> {
+    const { origin } = this.runtime()
+    for (const fresh of [false, true]) {
+      const token = await this.mcpToken(fresh)
+      const headers: Record<string, string> = {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      }
+      const post = (body: unknown) =>
+        fetch(origin + "/mcp", { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) })
+      const init = await post({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "assistant", version: "1" } },
+      })
+      if (init.status === 401 && !fresh) continue
+      if (!init.ok) throw new Error(`T3 MCP: HTTP ${init.status} ${(await init.text()).slice(0, 200)}`)
+      await init.text()
+      const session = init.headers.get("mcp-session-id")
+      if (session) headers["mcp-session-id"] = session
+      await (await post({ jsonrpc: "2.0", method: "notifications/initialized" })).text()
+      const res = await post({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } })
+      const reply = parseRpc(await res.text())
+      if (session) void fetch(origin + "/mcp", { method: "DELETE", headers }).catch(() => {})
+      if (reply.error) throw new Error(`T3 MCP: ${reply.error.message ?? JSON.stringify(reply.error)}`)
+      const text = reply.result?.content?.find((c: any) => c.type === "text")?.text ?? "{}"
+      let value: any
+      try {
+        value = JSON.parse(text)
+      } catch {
+        value = { message: text }
+      }
+      if (reply.result?.isError || value?._tag === "OrchestratorMcpFailure") {
+        const err = new Error(value?.message ?? text) as Error & { code?: string }
+        err.code = value?.code
+        throw err
+      }
+      return value
+    }
+    throw new Error("T3 MCP: unauthorized")
+  }
+}
+
+/** A JSON-RPC reply, sent plain or as server-sent events. */
+export function parseRpc(body: string): any {
+  const trimmed = body.trim()
+  if (trimmed.startsWith("{")) return JSON.parse(trimmed)
+  const data = trimmed
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith("data:"))
+    .map((l) => l.slice(5).trim())
+    .filter((l) => l.startsWith("{"))
+  for (const d of data.reverse()) {
+    const v = JSON.parse(d)
+    if (v.id !== undefined) return v
+  }
+  throw new Error(`T3 MCP: unreadable reply ${trimmed.slice(0, 200)}`)
 }
 
 export interface Watch {

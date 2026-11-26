@@ -41,6 +41,17 @@
 //! her. Breathing, clicks and the room never dip her voice; a word stops
 //! her as soon as the detector hears it (a short one, "Stop.", once it has
 //! ended).
+//!
+//! **A headset never ducks at all.** The coupling above needs a converged
+//! canceller, and a headset gives it nothing to converge on (Shawn's sends
+//! digital silence between sounds), so suspicions there kept falling back to
+//! ducking. The detector also measures the *echo return* directly, without
+//! the canceller: how far the raw microphone's low level rises while Vera
+//! has been loud for 300 ms over its low level while nothing of hers has
+//! played for 300 ms ([`EchoReturn`]). Speakers return 10 to 40 dB; a
+//! headset returns nothing. Under `HEADSET_RETURN_DB` every suspicion is
+//! silent: no duck, and only speech the detector hears stops her. Her echo
+//! appearing (the headset taken off) ends that within a fraction of a second.
 
 use std::collections::VecDeque;
 
@@ -134,14 +145,37 @@ const ECHO_FREE_CANCELLED_DB: f32 = 6.0;
 /// blocks once it has this many.
 const COUPLING_INITIAL_DB: f32 = 10.0;
 const COUPLING_MIN: usize = 20;
-/// A silent suspicion first asks the speech detector once it has 100 ms of
-/// sound, then every `CHECK_EVERY`; once its sound has stopped for 120 ms
-/// it asks a last time over all of it (a short word ends before 100 ms of
-/// it was ever there to check) and then ends.
-const LISTEN_FIRST: usize = 25;
+/// A silent suspicion first asks the speech detector once it has 80 ms of
+/// sound (with the 100 ms before it), then every `CHECK_EVERY`; once its
+/// sound has stopped for 120 ms it asks a last time over all of it (a short
+/// word ends before there was enough of it to check) and then ends.
+const LISTEN_FIRST: usize = 20;
 const LISTEN_QUIET: usize = 30;
 /// Refusals that end a silent suspicion whose sound goes on (a fan).
 const LISTEN_REFUSALS: usize = 6;
+/// Echo return (dB) under which the output is a headset, and over which it
+/// is speakers again; the recent loud playback alone ends a headset when
+/// it shows this much.
+const HEADSET_RETURN_DB: f32 = 3.0;
+const SPEAKERS_RETURN_DB: f32 = 6.0;
+const RECENT_ECHO_DB: f32 = 10.0;
+/// The measurement compares the same recent stretch of time (6 s), so a
+/// microphone whose own noise wanders doesn't read as echo; it needs 0.5 s
+/// of loud playback and 0.4 s of silence in it, and otherwise keeps what it
+/// last found. The recent check looks at her last 200 ms of loud playback.
+const RETURN_WINDOW: u64 = 1_500;
+const RETURN_MIN_LOUD: usize = 125;
+const RETURN_MIN_QUIET: usize = 100;
+const RETURN_RECENT: usize = 50;
+/// Vera counts as loud within this much of her recent peak, and above this
+/// absolute level.
+const LOUD_WITHIN_DB: f32 = 10.0;
+const LOUD_ABOVE_DB: f32 = -60.0;
+/// Her playback this far under her peak (her pauses between sentences)
+/// counts as silence.
+const QUIET_UNDER_DB: f32 = 30.0;
+/// Her peak level falls back 1 dB/s.
+const PEAK_DECAY_DB: f32 = BLOCK as f32 / RATE as f32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
@@ -261,6 +295,7 @@ pub(crate) struct Detector {
     coupling: VecDeque<f32>,
     recent_couplings: VecDeque<f32>,
     coupling_db: f32,
+    echo_return: EchoReturn,
     enabled: bool,
 }
 
@@ -320,6 +355,7 @@ impl Detector {
             coupling: VecDeque::new(),
             recent_couplings: VecDeque::new(),
             coupling_db: COUPLING_INITIAL_DB,
+            echo_return: EchoReturn::default(),
             enabled: true,
         }
     }
@@ -336,6 +372,17 @@ impl Detector {
     /// Whether a suspicion is being probed.
     pub(crate) fn suspecting(&self) -> bool {
         matches!(self.state, State::Suspect(_))
+    }
+
+    /// Whether Vera's playback doesn't reach the microphone at all (a
+    /// headset): then nothing ducks her.
+    pub(crate) fn headset(&self) -> bool {
+        self.echo_return.headset
+    }
+
+    /// How far her playback raises the microphone, once measured.
+    pub(crate) fn echo_return_db(&self) -> Option<f32> {
+        self.echo_return.db
     }
 
     /// Whether the echo canceller has settled (see `CONVERGED_BLOCKS`).
@@ -470,6 +517,16 @@ impl Detector {
             TRIGGER_WINDOW,
         );
 
+        // The echo return, from blocks nothing else is stirring in.
+        let stirred = !matches!(self.state, State::Idle | State::Watching { refractory: 0 })
+            || self.hits.iter().any(|(a, b)| *a || *b);
+        self.echo_return.push(
+            db(Self::mean(&self.reference, TAIL_BLOCKS)),
+            microphone_db,
+            stirred,
+            index,
+        );
+
         if !self.enabled {
             self.state = if active {
                 State::Watching { refractory: 0 }
@@ -553,7 +610,7 @@ impl Detector {
             return None;
         }
         let by_suppressed = self.hits.iter().filter(|(a, _)| *a).count() >= TRIGGER_COUNT / 2;
-        let silent = self.echo_free(TRIGGER_WINDOW, reference_db);
+        let silent = self.headset() || self.echo_free(TRIGGER_WINDOW, reference_db);
         let window = if by_suppressed {
             &self.suppressed
         } else {
@@ -626,7 +683,7 @@ impl Detector {
         speech: &mut dyn FnMut(&[f32]) -> Option<bool>,
     ) -> Option<Action> {
         suspicion.probed += 1;
-        if probe.candidate() && self.echo_free(SMOOTH, reference_db) {
+        if probe.candidate() && (self.headset() || self.echo_free(SMOOTH, reference_db)) {
             suspicion.hits += 1;
             suspicion.quiet = 0;
             suspicion.checked_last_hit = false;
@@ -847,6 +904,101 @@ impl Detector {
     }
 }
 
+/// How much Vera's own playback raises the raw microphone, measured without
+/// the canceller or its delay estimate: the 20th percentile of the
+/// microphone's level while she has been loud for the last 300 ms (any echo
+/// path shorter than that is in it), against its 20th percentile while
+/// nothing of hers has played for 300 ms (or only her pauses, 30 dB under
+/// her peak, whose echo is lost in the room). Low percentiles keep breaths and
+/// words out of both. Blocks where anything stirred aren't used at all.
+struct EchoReturn {
+    /// (block, microphone dB) while she was loud, and while she was silent.
+    loud: VecDeque<(u64, f32)>,
+    quiet: VecDeque<(u64, f32)>,
+    recent: VecDeque<f32>,
+    /// The microphone's low level in silence, as last measured.
+    quiet_db: Option<f32>,
+    peak_db: f32,
+    db: Option<f32>,
+    headset: bool,
+}
+
+impl Default for EchoReturn {
+    fn default() -> Self {
+        Self {
+            loud: VecDeque::new(),
+            quiet: VecDeque::new(),
+            recent: VecDeque::new(),
+            quiet_db: None,
+            peak_db: -120.0,
+            db: None,
+            headset: false,
+        }
+    }
+}
+
+fn percentile(values: impl Iterator<Item = f32>, at: usize) -> f32 {
+    let mut sorted: Vec<f32> = values.collect();
+    sorted.sort_by(f32::total_cmp);
+    sorted[(sorted.len() * at / 100).min(sorted.len() - 1)]
+}
+
+impl EchoReturn {
+    /// `reference_db`: her level over the last 300 ms; `microphone_db`:
+    /// this block's raw microphone.
+    fn push(&mut self, reference_db: f32, microphone_db: f32, stirred: bool, index: u64) {
+        self.peak_db = (self.peak_db - PEAK_DECAY_DB).max(reference_db);
+        let oldest = index.saturating_sub(RETURN_WINDOW);
+        for ring in [&mut self.loud, &mut self.quiet] {
+            while ring.front().is_some_and(|(at, _)| *at < oldest) {
+                ring.pop_front();
+            }
+        }
+        if stirred {
+            return;
+        }
+        let microphone_db = microphone_db.max(FLOOR_LOWEST_DB);
+        if reference_db > LOUD_ABOVE_DB && reference_db > self.peak_db - LOUD_WITHIN_DB {
+            self.loud.push_back((index, microphone_db));
+            push_capped(&mut self.recent, microphone_db, RETURN_RECENT);
+        } else if reference_db < FLOOR_LOWEST_DB || reference_db < self.peak_db - QUIET_UNDER_DB {
+            self.quiet.push_back((index, microphone_db));
+        }
+        if !index.is_multiple_of(FLOOR_EVERY) {
+            return;
+        }
+        if self.quiet.len() >= RETURN_MIN_QUIET {
+            self.quiet_db = Some(percentile(self.quiet.iter().map(|(_, db)| *db), 20));
+        }
+        let Some(quiet) = self.quiet_db else {
+            return;
+        };
+        // Her echo turning up (the headset taken off) ends a headset at once.
+        let recent = (self.recent.len() >= RETURN_RECENT / 2)
+            .then(|| percentile(self.recent.iter().copied(), 50) - quiet);
+        let measured = (self.loud.len() >= RETURN_MIN_LOUD && self.quiet.len() >= RETURN_MIN_QUIET)
+            .then(|| percentile(self.loud.iter().map(|(_, db)| *db), 20) - quiet);
+        let echo_now = recent.is_some_and(|recent| recent > RECENT_ECHO_DB);
+        let headset = match measured {
+            _ if echo_now => false,
+            Some(measured) if self.headset => measured <= SPEAKERS_RETURN_DB,
+            Some(measured) => measured < HEADSET_RETURN_DB,
+            None => self.headset,
+        };
+        if headset != self.headset || (self.db.is_none() && measured.is_some()) {
+            tracing::info!(
+                echo_return_db = format!("{:.1}", measured.or(recent).unwrap_or_default()),
+                headset,
+                "assistant audio: echo return measured"
+            );
+        }
+        self.headset = headset;
+        if measured.is_some() {
+            self.db = measured;
+        }
+    }
+}
+
 /// A noise floor: a low percentile of recent 20 ms levels, so neither a
 /// dip to digital silence nor a burst of speech moves it much; steady noise
 /// that keeps triggering can raise it at once.
@@ -922,6 +1074,8 @@ mod tests {
         speech_min_samples: Option<usize>,
         /// How much of Vera reaches the raw microphone (0: a headset).
         coupling: f32,
+        /// The microphone's own noise (amplitude).
+        noise_level: f32,
     }
 
     impl Room {
@@ -939,6 +1093,7 @@ mod tests {
                 speech: Some(true),
                 speech_min_samples: None,
                 coupling: 1.0,
+                noise_level: 1e-4,
             }
         }
 
@@ -977,7 +1132,7 @@ mod tests {
             for _ in 0..BLOCK {
                 // The canceller takes the echo down to `leak` of itself.
                 let raw = self.noise() * echo * self.coupling;
-                let near = self.noise() * user + self.noise() * 1e-4;
+                let near = self.noise() * user + self.noise() * self.noise_level;
                 microphone.push(raw + near);
                 linear.push(raw * self.leak + near);
                 suppressed.push(raw * self.leak * self.suppressed_leak + near);
@@ -1129,6 +1284,105 @@ mod tests {
         assert!(!room.confirmed(), "{kinds:?}");
         assert!(kinds.contains(&Action::Suspect), "{kinds:?}");
         assert!(kinds.contains(&Action::Dismiss), "{kinds:?}");
+    }
+
+    /// Vera as she really talks: loud phrases, soft tails, pauses between
+    /// sentences, over a headset microphone whose own noise wanders.
+    fn headset_reply(room: &mut Room, seconds: usize, user: impl Fn(usize) -> f32) {
+        for block in 0..seconds * 250 {
+            let phase = block % 550;
+            let vera = match phase {
+                0..375 => 0.1 * (1.0 + ((block / 40) % 3) as f32) / 2.0,
+                375..475 => 0.003,
+                _ => 0.0,
+            };
+            // The headset's own noise wanders by about 3.5 dB.
+            room.noise_level = 1e-4 * (1.0 + 0.5 * ((block as f32 / 900.0).sin().abs()));
+            room.block(vera, user(block));
+        }
+    }
+
+    #[test]
+    fn in_a_headset_quiet_stretches_and_noise_never_teach_a_duck() {
+        let mut room = Room::headset();
+        room.speech = Some(false);
+        for _ in 0..500 {
+            room.block(0.0, 0.0);
+        }
+        headset_reply(&mut room, 20, |_| 0.0);
+        room.speech = Some(false);
+        let onset = room.detector.position();
+        // Breaths through a long reply: some in her loud phrases, some in
+        // her pauses.
+        headset_reply(&mut room, 30, |block| {
+            let at = block % 900;
+            if at < 75 {
+                0.004 + 0.02 * (at as f32 / 75.0 * std::f32::consts::PI).sin()
+            } else {
+                0.0
+            }
+        });
+        let kinds = room.after(onset);
+        assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
+        assert!(!room.confirmed(), "{kinds:?}");
+        assert!(
+            room.detector.headset(),
+            "echo return {:?}",
+            room.detector.echo_return_db()
+        );
+    }
+
+    #[test]
+    fn a_noise_gated_headset_with_a_wandering_delay_never_ducks() {
+        // Shawn's CORSAIR: digital silence between sounds, so the canceller
+        // has nothing to converge on and its delay estimate wanders.
+        let mut room = Room::headset();
+        room.speech = Some(false);
+        room.noise_level = 0.0;
+        for _ in 0..500 {
+            room.block(0.0, 0.0);
+        }
+        let wander = [12, 20, 7, 30, 15];
+        let mut round = 0;
+        let mut reply = |room: &mut Room, seconds: usize, breaths: bool| {
+            for block in 0..seconds * 250 {
+                if block % 500 == 0 {
+                    round += 1;
+                    room.delay_blocks = wander[round % wander.len()];
+                }
+                room.noise_level = 0.0;
+                let at = block % 700;
+                let user = if breaths && at < 75 {
+                    0.004 + 0.02 * (at as f32 / 75.0 * std::f32::consts::PI).sin()
+                } else {
+                    0.0
+                };
+                let vera = if block % 550 < 400 { 0.1 } else { 0.0 };
+                room.block(vera, user);
+            }
+        };
+        reply(&mut room, 12, false);
+        let onset = room.detector.position();
+        reply(&mut room, 30, true);
+        let kinds = room.after(onset);
+        assert!(!kinds.contains(&Action::Duck), "{kinds:?}");
+        assert!(!room.confirmed(), "{kinds:?}");
+        assert!(kinds.contains(&Action::Suspect), "{kinds:?}");
+    }
+
+    #[test]
+    fn speakers_measure_their_echo_return_and_keep_ducking() {
+        let mut room = Room::new(-15.0);
+        for _ in 0..500 {
+            room.block(0.0, 0.0);
+        }
+        headset_reply(&mut room, 20, |_| 0.0);
+        assert!(!room.detector.headset());
+        assert!(
+            room.detector.echo_return_db().is_some_and(|db| db > 20.0),
+            "{:?}",
+            room.detector.echo_return_db()
+        );
     }
 
     #[test]

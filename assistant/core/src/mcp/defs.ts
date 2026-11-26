@@ -102,16 +102,31 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "t3_environments",
+    description: "List the machines linked to Shawn's T3 Code (environment ids and names), for working with threads on another machine.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "send_feedback",
+    description:
+      "Send Shawn's feedback about you (Assistant) to the orchestrator: the T3 thread on his development machine that works on you. Use when he says 'send feedback', 'tell the orchestrator', 'note that for the developer'. Pass his words, plus a line of context if it helps. It steers the orchestrator's running turn, or starts one. If it can't be reached, say so in a short sentence.",
+    inputSchema: { type: "object", properties: { message: str("The feedback, in his words.") }, required: ["message"] },
+  },
+  {
     name: "t3_list_projects",
     description: "List Shawn's T3 Code projects (name, id, folder).",
-    inputSchema: { type: "object", properties: {} },
+    inputSchema: { type: "object", properties: { environment: str("A linked machine's environment id (t3_environments); omit for this one."), } },
   },
   {
     name: "t3_list_threads",
     description: "List recent T3 Code threads with their status (running, waiting, idle, ...). Optionally for one project (name, id, or folder).",
     inputSchema: {
       type: "object",
-      properties: { project: str("Project name, id, or folder. Omit for all projects."), limit: { type: "number", description: "Default 10." } },
+      properties: {
+        project: str("Project name, id, or folder. Omit for all projects."),
+        limit: { type: "number", description: "Default 10." },
+        environment: str("A linked machine's environment id (t3_environments); omit for this one."),
+      },
     },
   },
   {
@@ -119,7 +134,11 @@ export const TOOLS: ToolDef[] = [
     description: "Read a T3 thread's state and latest messages, for example to relay what an agent asked or reported.",
     inputSchema: {
       type: "object",
-      properties: { thread: str("Thread id."), messages: { type: "number", description: "How many latest messages (default 4)." } },
+      properties: {
+        thread: str("Thread id."),
+        messages: { type: "number", description: "How many latest messages (default 4)." },
+        environment: str("A linked machine's environment id (t3_environments); omit for this one."),
+      },
       required: ["thread"],
     },
   },
@@ -141,10 +160,15 @@ export const TOOLS: ToolDef[] = [
   {
     name: "t3_send",
     description:
-      "Send a message to a T3 thread: Shawn's answer to an agent's question, approval, or a follow-up. Relay his words faithfully. A busy thread gets it as its next turn. The thread is watched afterwards.",
+      "Send a message to a T3 thread: Shawn's answer to an agent's question, approval, or a follow-up. Relay his words faithfully. A busy thread is steered: the agent gets it in its running turn, at once. Set queue only when Shawn says to queue it (it then waits for the current turn to end). The thread is watched afterwards.",
     inputSchema: {
       type: "object",
-      properties: { thread: str("Thread id."), message: str("What to send.") },
+      properties: {
+        thread: str("Thread id."),
+        message: str("What to send."),
+        queue: bool("Queue it after the running turn instead of steering (only when he asks to queue)."),
+        environment: str("A linked machine's environment id (t3_environments); omit for this one."),
+      },
       required: ["thread", "message"],
     },
   },
@@ -197,6 +221,12 @@ export const TOOLS: ToolDef[] = [
       },
       required: ["name"],
     },
+  },
+  {
+    name: "switch_persona",
+    description:
+      "Hand the conversation to another of your personas when Shawn asks for one without saying its name as a wake word ('let me talk to Alfred', 'put Jarvis on', 'back to Vera'). It answers from now on, this turn included, until he names or asks for another; it never changes by itself. Then speak as that persona.",
+    inputSchema: { type: "object", properties: { name: str("The persona's name.") }, required: ["name"] },
   },
   {
     name: "set_voice",

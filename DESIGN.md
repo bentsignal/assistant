@@ -70,7 +70,10 @@ list stays Vera's), and the gate says which one did. That persona answers:
 each turn the brain gets is tagged `[Shawn is talking to Alfred]`, the prompt
 lists the personas (`{{personas}}`, with their manner) so she lightly takes
 one on, and every `speak` carries that persona's `voice`. Follow-ups, with no
-name, stay with the last persona. It's one agent with one conversation and
+name, stay with the last persona. Who answers changes only when he says a
+persona's name as itself or asks for one (`switch_persona`); mishearings
+that still wake her ("Vara", "Hey there,"), timeouts, and new sessions or a
+restarted Core never switch it (it's kept in `core-state.json`). It's one agent with one conversation and
 one memory; only the voice and manner change. `app.voice` is an explicit
 override every persona speaks in (`set_voice` with a voice alone, or
 Settings); `set_voice` "default" clears it. By voice: `set_name` renames,
@@ -189,8 +192,8 @@ replies piled up behind it):
   whenever nobody talks), so it gets at most a grey hint by the microphone
   picker after minutes of zeros with no speech heard since launch.
 - The HUD leaves every look: Core's states all have exits, and the App
-  hides a look that outstays its cap (listening 30 s, thinking 100 s,
-  speaking once nothing plays).
+  hides a look that outstays its cap (listening 30 s after the last speech
+  heard, never mid-utterance; thinking 100 s; speaking once nothing plays).
 
 Volume level is 0–1 and is Vera's own output gain; the app owns and persists
 it (`app.volume`) and sends it to Core on `ready` and `settings_changed`. The
@@ -248,7 +251,11 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
 
 - Coding work in a project: start or continue a **T3 Code** thread (Shawn
   watches T3 side by side). Quick one-off file edits or questions about local
-  code: `ask_claude`.
+  code: `ask_claude`. Sends steer a running turn by default (queue only when he
+  asks), through T3's own MCP endpoint; threads on his other machines are
+  reached by environment id. Feedback about Vera herself goes to the
+  orchestrator thread (`t3.orchestratorThread` in `config.json`, Winserve's
+  by default) with `send_feedback`.
 - **Using the computer** (desktop apps, clicking around, browser automation):
   `ask_codex`. OpenAI models are best at computer use.
 - **Searching X/Twitter**, or what people are saying right now: `ask_grok`.

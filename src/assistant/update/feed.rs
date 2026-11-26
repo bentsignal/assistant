@@ -154,16 +154,19 @@ impl Feed {
             .ok()
             .filter(|api| !api.is_empty())
             .unwrap_or_else(|| "https://api.github.com".into());
-        Self {
-            api: api.trim_end_matches('/').to_string(),
-            repo: repo.to_string(),
-            agent: ureq::Agent::config_builder()
-                .timeout_connect(Some(Duration::from_secs(15)))
+        let api = api.trim_end_matches('/').to_string();
+        // Hex's agent: the platform's TLS and trusted roots, and the
+        // computer's proxy.
+        let agent = crate::net::agent(&api, |config| {
+            config
                 .timeout_recv_response(Some(Duration::from_secs(30)))
                 .user_agent("assistant-updater")
                 .http_status_as_error(false)
-                .build()
-                .into(),
+        });
+        Self {
+            api,
+            repo: repo.to_string(),
+            agent,
         }
     }
 

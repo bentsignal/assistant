@@ -163,7 +163,10 @@ export class Assistant {
     this.port = this.config.port
     this.logFile = join(paths.logs, `core-${new Date().toISOString().slice(0, 10)}.log`)
     this.mouth = new AppMouth(link, (l) => this.log(l))
-    this.volume = this.loadState().volume ?? this.config.voice.defaultVolume
+    const state = this.loadState()
+    this.volume = state.volume ?? this.config.voice.defaultVolume
+    // Whoever he was talking to keeps answering across restarts and new sessions.
+    this.activePersona = state.persona ?? ""
     this.inbox = new Inbox(paths.inbox)
     this.prompt = new SystemPrompt(paths.systemPrompt, paths.promptHistory)
     const upgrade = this.prompt.upgradeSeed(previousSeeds(), readFileSync(paths.seedPrompt, "utf8"))
@@ -457,11 +460,9 @@ export class Assistant {
     const wasBarge = this.bargePending
     this.bargePending = false
     this.lastHeard = input.text
-    // The name he used picks who answers; a follow-up keeps the last one.
-    if (g.action !== "ignore" && g.persona && g.persona !== this.activePersona) {
-      this.log(`persona: ${this.activePersona} -> ${g.persona}`)
-      this.activePersona = g.persona
-    }
+    // Only a name said as itself switches who answers; follow-ups, mishearings
+    // ("Vara", "Hey there,"), timeouts and new sessions keep the last one.
+    if (g.action !== "ignore" && g.persona) this.switchPersona(g.persona, "named")
     switch (g.action) {
       case "ignore":
         this.log(`ignored (${g.reason}): ${input.text}`)
@@ -714,7 +715,10 @@ export class Assistant {
     const clash = this.findPersona(to)
     if (clash && clash.name !== old.name) throw new Error(`there's already a persona called ${clash.name}`)
     const list = this.personas.map((p) => (p.name === old.name ? { ...p, name: to } : p))
-    if (this.activePersona.toLowerCase() === old.name.toLowerCase()) this.activePersona = to
+    if (this.activePersona.toLowerCase() === old.name.toLowerCase()) {
+      this.activePersona = to
+      this.saveState()
+    }
     this.savePersonas(list)
     return { from: old.name, to }
   }
@@ -735,7 +739,10 @@ export class Assistant {
     if (!p) throw new Error(`no persona called "${name}"; have ${this.personas.map((x) => x.name).join(", ")}`)
     const list = this.personas.filter((x) => x.name !== p.name)
     if (!list.length) throw new Error("that's her only name; rename it instead")
-    if (this.activePersona.toLowerCase() === p.name.toLowerCase()) this.activePersona = list[0].name
+    if (this.activePersona.toLowerCase() === p.name.toLowerCase()) {
+      this.activePersona = list[0].name
+      this.saveState()
+    }
     this.savePersonas(list)
     return p
   }
@@ -841,7 +848,23 @@ export class Assistant {
 
   // ---- volume ---------------------------------------------------------------
 
-  private loadState(): { volume?: number } {
+  /**
+   * Makes `name` the persona answering from now on (a name he said, or his
+   * request through `switch_persona`), including the rest of a turn in progress.
+   */
+  switchPersona(name: string, why: string): Persona {
+    const p = this.findPersona(name)
+    if (!p) throw new Error(`no persona called "${name}"; have ${this.personas.map((x) => x.name).join(", ")}`)
+    if (p.name !== this.activePersona) {
+      this.log(`persona: ${this.activePersona || "(first)"} -> ${p.name} (${why})`)
+      this.activePersona = p.name
+      this.saveState()
+    }
+    if (this.current) this.current.persona = p.name
+    return p
+  }
+
+  private loadState(): { volume?: number; persona?: string } {
     try {
       return JSON.parse(readFileSync(paths.state, "utf8"))
     } catch {
@@ -851,7 +874,10 @@ export class Assistant {
 
   private saveState() {
     try {
-      writeFileSync(paths.state, JSON.stringify({ ...this.loadState(), volume: this.volume }, null, 2) + "\n")
+      writeFileSync(
+        paths.state,
+        JSON.stringify({ ...this.loadState(), volume: this.volume, persona: this.activePersona || undefined }, null, 2) + "\n",
+      )
     } catch {}
   }
 

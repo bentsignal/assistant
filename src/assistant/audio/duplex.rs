@@ -224,6 +224,12 @@ impl<B: Backend> Core<B> {
         peaks
     }
 
+    /// How far Vera's playback raises the microphone (`None` until
+    /// measured), and whether that makes it a headset (no ducks).
+    pub(crate) fn echo_return(&self) -> (Option<f32>, bool) {
+        (self.detector.echo_return_db(), self.detector.headset())
+    }
+
     pub(crate) fn delay_ms(&self) -> i32 {
         self.aec.delay_ms()
     }

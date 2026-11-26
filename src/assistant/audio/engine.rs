@@ -1,7 +1,7 @@
 //! The engine thread: real devices around the duplex core. It keeps the
 //! microphone open (Hex's recovering input, which follows the default
 //! device and survives unplugs), opens the output when there is something
-//! to play and closes it after `OUTPUT_LINGER` of silence, loads speech to
+//! to play and closes it after `OUTPUT_LINGER` (three minutes) of silence, loads speech to
 //! text in the background, and turns the App's requests into mixer
 //! commands and voice fetches.
 
@@ -21,8 +21,11 @@ use crate::assistant_ears::utterances::{Backend, Finished};
 use crate::audio::{RecoveringAudioInput, RecoveringAudioInputEvent};
 use crate::desktop::events::now_ms;
 
-/// The output closes after this long with nothing to play.
-const OUTPUT_LINGER: Duration = Duration::from_secs(8);
+/// The output closes after this long with nothing to play: long enough to
+/// stay open through a whole conversation, so no line of hers waits on a
+/// device opening (a wireless headset fades in on every open, which sounded
+/// like her voice dipping) and the echo canceller keeps what it learned.
+const OUTPUT_LINGER: Duration = Duration::from_secs(180);
 /// How often the engine logs its echo canceller and barge-in counters
 /// while the output is open.
 const STATS_EVERY: Duration = Duration::from_secs(2);
@@ -170,8 +173,11 @@ pub(super) fn run(
             reported = Instant::now();
             let stats = engine.core.stats;
             let (microphone_peak_db, cancelled_peak_db) = engine.core.take_peaks();
+            let (echo_return_db, headset) = engine.core.echo_return();
             tracing::info!(
                 microphone_peak_db,
+                echo_return_db = echo_return_db.map(|db| format!("{db:.1}")),
+                headset,
                 cancelled_peak_db,
                 aec_delay_ms = engine.core.delay_ms(),
                 blocks = stats.blocks,

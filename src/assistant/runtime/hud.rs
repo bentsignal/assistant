@@ -5,8 +5,8 @@
 use std::time::Instant;
 
 use super::{
-    Controller, ERROR_HOLD, LINGER, LISTENING_CAP, SPEAKING_CAP, SPEAKING_IDLE_CAP, THINKING_CAP,
-    look_name, warm_hud,
+    Controller, ERROR_HOLD, LINGER, LISTENING_CAP, LISTENING_OPEN_CAP, SPEAKING_CAP,
+    SPEAKING_IDLE_CAP, THINKING_CAP, look_name, warm_hud,
 };
 use crate::assistant::protocol::HudState;
 use crate::assistant::trace;
@@ -98,6 +98,25 @@ impl Controller {
         let Some(look) = self.look else {
             return;
         };
+        // Listening never times out while he talks: its cap counts from the
+        // last speech heard, and an open utterance gets the long safety net.
+        if look == AssistantLook::Listening {
+            let cap = if self.utterance_open {
+                LISTENING_OPEN_CAP
+            } else {
+                LISTENING_CAP
+            };
+            let quiet = self.look_since.elapsed().min(self.heard_at.elapsed());
+            if quiet >= cap {
+                tracing::warn!(
+                    look = "listening",
+                    open = self.utterance_open,
+                    "the HUD outstayed its look; hiding it"
+                );
+                self.hide("timeout");
+            }
+            return;
+        }
         let cap = match look {
             AssistantLook::Listening => LISTENING_CAP,
             AssistantLook::Thinking => THINKING_CAP,

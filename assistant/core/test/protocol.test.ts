@@ -582,3 +582,71 @@ test("personas: 'Hey Alfred' answers in Alfred's voice, a follow-up stays Alfred
     await app.stop()
   }
 })
+
+test("personas stick: a mishearing, a greeting, a timeout and a restart keep Optimus; only a name or a request switches", async () => {
+  const config = testConfig()
+  let app = await FakeApp.start({
+    config,
+    script: [
+      { match: "status", steps: [{ tool: "speak", args: { text: "Report." } }] },
+      { match: "put alfred on", steps: [{ tool: "switch_persona", args: { name: "Alfred" } }, { tool: "speak", args: { text: "Good evening." } }] },
+    ],
+  })
+  const home = app.home
+  try {
+    let m = app.mark
+    await app.say("Optimus, status.")
+    assert.equal(((await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any).voice, "optimus")
+    await app.waitFor(isHud("idle"), 15000, m)
+    // "Vara" and "Hey there," wake her (Vera's mishearings) but don't switch away from Optimus.
+    for (const said of ["Vara, status.", "Hey there, status?"]) {
+      m = app.mark
+      await app.say(said)
+      const s = (await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any
+      assert.equal(s.voice, "optimus", said)
+      await app.waitFor(isHud("idle"), 15000, m)
+    }
+  } finally {
+    await app.stop(true)
+  }
+  // A new Core (a crash, an update, a new brain session): still Optimus.
+  app = await FakeApp.start({ config, home, script: [
+    { match: "status", steps: [{ tool: "speak", args: { text: "Report." } }] },
+    { match: "put alfred on", steps: [{ tool: "switch_persona", args: { name: "Alfred" } }, { tool: "speak", args: { text: "Good evening." } }] },
+  ] })
+  try {
+    let m = app.mark
+    await app.say("Vara, status.")
+    assert.equal(((await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any).voice, "optimus", "after a restart")
+    await app.waitFor(isHud("idle"), 15000, m)
+    // Asked for by request: this turn's line is already Alfred's.
+    m = app.mark
+    await app.say("Vera, put Alfred on.")
+    const s = (await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any
+    assert.equal(s.voice, "alfred")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a closing remark may get no reply: the turn ends cleanly, the HUD goes idle, no error and no chime", async () => {
+  const app = await FakeApp.start({
+    config: testConfig({ brain: { harness: "script", firstSpeakTimeoutSeconds: 1.5, turnTimeoutSeconds: 20 } }),
+    script: [{ match: "thanks", steps: [] }],
+  })
+  try {
+    const m = app.mark
+    await app.say("Vera, thanks.")
+    await app.waitFor(isHud("thinking"), 3000, m)
+    await app.waitFor(isHud("idle"), 5000, m)
+    // Past the first-speak deadline: still nothing went wrong.
+    await sleep(2000)
+    const since = app.since(m)
+    assert.equal(since.filter(isCmd("speak")).length, 0)
+    assert.equal(since.filter(isCmd("error")).length, 0, JSON.stringify(since))
+    assert.equal(since.filter((c) => c.cmd === "chime" && (c as any).kind === "error").length, 0)
+    assert.equal(app.huds(m).at(-1), "idle")
+  } finally {
+    await app.stop()
+  }
+})
