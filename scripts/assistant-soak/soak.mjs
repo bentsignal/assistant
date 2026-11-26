@@ -49,65 +49,65 @@ const now = () => Date.now()
 // ---- what "Shawn" says, and what the scripted brain answers -------------------
 
 const U = {
-  there: "Vera, are you there?",
+  there: "Hey Vera, are you there?",
   time: "Hey Vera, what time is it?",
   bare: "Hey Vera.",
   paris: "What's the weather in Paris?",
   rome: "And in Rome?",
   oslo: "How about Oslo?",
   pasta: "I think the pasta needs more salt.",
-  alps: "Vera, tell me about the Alps.",
-  andes: "Vera, actually, tell me about the Andes.",
-  fact: "Vera, tell me a fun fact.",
-  joke: "Vera, tell me a joke.",
-  story: "Vera, tell me a long story.",
+  alps: "Hey Vera, tell me about the Alps.",
+  andes: "Hey Vera, actually, tell me about the Andes.",
+  fact: "Hey Vera, tell me a fun fact.",
+  joke: "Hey Vera, tell me a joke.",
+  story: "Hey Vera, tell me a long story.",
   two: "Actually, what's two plus two?",
-  news: "Vera, read me the news.",
+  news: "Hey Vera, read me the news.",
   stop: "Stop.",
-  kitchen: "Vera, describe the kitchen.",
-  garden: "Vera, and the garden?",
-  room: "Vera, describe the living room.",
-  another: "Vera, tell me another long story.",
-  hear: "Vera, can you hear me?",
-  back: "Vera, are you back?",
-  slow: "Vera, think about this slowly.",
-  again: "Vera, are you still there?",
-  break: "Vera, break something.",
-  thanks: "Thanks, Vera.",
-  ponder: "Vera, ponder the universe.",
-  france: "What's the capital of France, Vera?",
-  eggs: "Vera, how long do eggs boil?",
+  kitchen: "Hey Vera, describe the kitchen.",
+  garden: "Hey Vera, and the garden?",
+  room: "Hey Vera, describe the living room.",
+  another: "Hey Vera, tell me another long story.",
+  hear: "Hey Vera, can you hear me?",
+  back: "Hey Vera, are you back?",
+  slow: "Hey Vera, think about this slowly.",
+  again: "Hey Vera, are you still there?",
+  break: "Hey Vera, break something.",
+  thanks: "Hey Vera, thanks.",
+  ponder: "Hey Vera, ponder the universe.",
+  france: "Hey Vera, what's the capital of France?",
+  eggs: "Hey Vera, how long do eggs boil?",
   cool: "Cool.",
-  last: "Vera, what's the time now?",
-  pasta2: "Vera, how long should pasta cook?",
-  water: "Vera, how much salt goes in the water?",
-  night: "Good night, Vera.",
-  rename: "Vera, call yourself Nova.",
-  oldname: "Vera, what's the time now?",
-  nova: "Nova, what's the capital of Spain?",
-  renameBack: "Nova, call yourself Vera again.",
+  last: "Hey Vera, what's the time now?",
+  pasta2: "Hey Vera, how long should pasta cook?",
+  water: "Hey Vera, how much salt goes in the water?",
+  night: "Hey Vera, good night.",
+  rename: "Hey Vera, call yourself Nova.",
+  oldname: "Hey Vera, what's the time now?",
+  nova: "Hey Nova, what's the capital of Spain?",
+  renameBack: "Hey Nova, call yourself Vera again.",
   alfred: "Hey Alfred, what's the capital of Italy?",
-  jarvis: "Jarvis, what's the capital of Japan?",
+  jarvis: "Hey Jarvis, what's the capital of Japan?",
   followup: "And what about Germany?",
-  veraAgain: "Vera, what's the capital of Peru?",
-  ocean: "Vera, tell me about the ocean.",
-  beach: "Vera, describe the beach.",
-  count: "Vera, count to ten.",
-  forest: "Vera, tell me about the forest.",
+  veraAgain: "Hey Vera, what's the capital of Peru?",
+  ocean: "Hey Vera, tell me about the ocean.",
+  beach: "Hey Vera, describe the beach.",
+  count: "Hey Vera, count to ten.",
+  forest: "Hey Vera, tell me about the forest.",
   chile: "Wait, what's the capital of Chile?",
   // Said in two parts with a 3 s pause between: one turn each.
-  umA: "Vera, what's the capital of, um",
+  umA: "Hey Vera, what's the capital of, um",
   umB: "Norway?",
-  andA: "Vera, what's the weather in Lisbon and",
+  andA: "Hey Vera, what's the weather in Lisbon and",
   andB: "in Madrid?",
-  flaky: "Vera, look into the flaky build.",
+  flaky: "Hey Vera, look into the flaky build.",
   flakyMore: "And the tests too.",
   // Said 1 s after she has started thinking about the first part.
-  deploy: "Vera, check on the deploy.",
+  deploy: "Hey Vera, check on the deploy.",
   deployMore: "And roll back the staging server if it failed.",
   // A turn she answers with nothing (a tool, no words), then he goes on
   // 3 s later with no wake word (Shawn's log, 2026-11-26 15:34:55).
-  lights: "Vera, turn off the living room lights.",
+  lights: "Hey Vera, turn off the living room lights.",
   lightsMore: "And dim the kitchen ones too.",
   // He has the floor (2026-11-26 14:04:58): she must start nothing while he talks.
   harbor: "Vera, tell me about the harbor.",
@@ -115,8 +115,8 @@ const U = {
   pantry: "Vera, check the pantry.",
   pantryMore: "Vera, while you're at it, look at the fridge, the freezer, and the shelves by the back door too.",
   // Listening off by voice.
-  sleepNow: "Vera, stop listening for a while.",
-  awake: "Vera, are you listening again?",
+  sleepNow: "Hey Vera, stop listening for a while.",
+  awake: "Hey Vera, are you listening again?",
 }
 
 const LONG = {
@@ -791,7 +791,7 @@ class Run {
       const old = await this.say("oldname")
       await this.heard(old)
       await sleep(4000)
-      this.check(this.trace.find(isFrom("speak"), old.at).length === 0, "\"Vera, ...\" was ignored")
+      this.check(this.trace.find(isFrom("speak"), old.at).length === 0, "\"Hey Vera, ...\" was ignored")
       // The new one does, with speech to text leaning toward it.
       await this.turn("nova", "Madrid.")
       await this.hidden()
@@ -812,7 +812,7 @@ class Run {
       this.check(v.core === "alfred" && v.app === "alfred", `"Hey Alfred" answers in alfred's voice (core ${v.core}, app ${v.app})`)
       const jarvis = await this.turn("jarvis", "Tokyo.")
       v = await voiceOf(jarvis.said, "Tokyo.")
-      this.check(v.core === "jarvis" && v.app === "jarvis", `"Jarvis" answers in jarvis's voice (core ${v.core}, app ${v.app})`)
+      this.check(v.core === "jarvis" && v.app === "jarvis", `"Hey Jarvis" answers in jarvis's voice (core ${v.core}, app ${v.app})`)
       const follow = await this.turn("followup", "Berlin.")
       v = await voiceOf(follow.said, "Berlin.")
       this.check(v.app === "jarvis", `a follow-up without a name stays with Jarvis (${v.app})`)

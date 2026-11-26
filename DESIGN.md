@@ -48,11 +48,18 @@ The product is **Assistant** (`assistant.exe`, `~/.assistant`, the
 Settings (Enter applies it) or by voice ("Vera, call yourself Nova": the
 brain's `set_name` tool). It applies live, nothing restarts:
 
-- **Wake word** (`assistant/core/src/gate.ts`): the name itself wakes her
-  anywhere in a sentence; a near miss (one letter off a name of four letters
-  or more, starting alike, not a common word) wakes her only as the first or
-  last word. Vera keeps her tuned list (vara, veera, bera, ..., "Variable,",
-  "Hey there,") and only Vera does.
+- **Wake phrases** (`assistant/core/src/gate.ts`): "hey <name>" wakes her
+  ("Hey Vera", "hey, Vera", "hay Vera", "Heyvera"), not the bare name, which
+  comes up in conversation (Vera is also an app's name). Each persona has
+  `wakePhrases` (unset: "hey <name>", following a rename) and `bareName`
+  (off by default; on, the name alone wakes it as before: anywhere in a
+  sentence, a near miss only first or last). The phrase's name word is
+  matched fuzzily: exact anywhere, a near miss (one letter off a name of four
+  letters or more, starting alike, not a common word) or Vera's "Sarah",
+  "Variable" only leading. Vera keeps her tuned list (vara, veera, bera, ...)
+  and "Hey there," near a recent interaction, and only Vera does. An install
+  from before wake phrases is told once, the first time he says a bare name
+  to her ("Vera, ..."): "You can wake me with 'hey Vera' now."
 - **Speech to text** leans toward the name (the engine's vocabulary, from the
   next utterance).
 - **The prompt**: the stock prompt says `{{name}}`, filled in when the brain
@@ -72,15 +79,22 @@ lists the personas (`{{personas}}`, with their manner) so she lightly takes
 one on, and every `speak` carries that persona's `voice`. Follow-ups, with no
 name, stay with the last persona. Who answers changes only when he says a
 persona's name as itself or asks for one (`switch_persona`); mishearings
-that still wake her ("Vara", "Hey there,"), timeouts, and new sessions or a
+that still wake her ("Hey Vara", "Hey there,"), timeouts, and new sessions or a
 restarted Core never switch it (it's kept in `core-state.json`). It's one agent with one conversation and
 one memory; only the voice and manner change. `app.voice` is an explicit
 override every persona speaks in (`set_voice` with a voice alone, or
 Settings); `set_voice` "default" clears it. By voice: `set_name` renames,
 adds or removes a persona ("add a persona called Max with the Optimus
 voice"), and `set_voice` with a persona gives it its own voice ("make Jarvis
-use the Eli voice"). A change to the personas restarts the brain before the
-next turn, and Core tells the App with `name`.
+use the Eli voice"). A persona can be turned off (`enabled: false`): it never
+wakes, never answers, and isn't in her prompt. `set_wake` changes a persona's
+switch, wake phrases and `bareName` by voice ("turn off Tony", "let 'okay
+Jarvis' wake you", "stop answering to just Vera"), at once; it never turns off
+the first persona or leaves it with no way to wake (Settings can). Settings
+shows each persona's switch, its wake phrases (comma separated, Enter
+applies) and a Name alone switch. A change to the personas restarts the brain
+before the next turn (wake phrases alone don't), and Core tells the App with
+`name`.
 
 The old data folder `~/.vera` is moved to `~/.assistant` on the first launch
 of `assistant.exe` (an old `vera.exe` still running is asked to quit first),
@@ -282,7 +296,7 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   checked (machine unreachable, thread gone) is logged and reported once. Vera speaks only
   when asked ("Vera, what's new?"). The inbox digest goes to the brain with
   the next user turn.
-- **Wake word** "Vera" (fuzzy matching; see `assistant/core/src/gate.ts`), or the
+- **Wake phrase** "hey Vera" (fuzzy matching; see `assistant/core/src/gate.ts`), or the
   follow-up window after Vera speaks, or a barge-in. The window (8 s) also
   counts from the end of his own accepted words and opens when a turn ends
   with nothing said, so a man still talking to her is never cut off; an

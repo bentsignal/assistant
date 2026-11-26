@@ -48,7 +48,7 @@ test("by default Core never acknowledges: her prompt decides", async () => {
   try {
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
-    await app.say("Vera, summarize the repo.")
+    await app.say("Hey Vera, summarize the repo.")
     await app.waitFor((c) => c.cmd === "speak" && /voice assistant/.test(c.text as string), 10_000, m)
     assert.deepEqual(speaks(app.since(m)), ["It's a voice assistant."])
     assert.doesNotMatch(app.stderr, /acknowledged "/)
@@ -63,7 +63,7 @@ test("by default a slow plain answer gets none either", async () => {
   try {
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
-    await app.say("Vera, slow question.")
+    await app.say("Hey Vera, slow question.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "Here it is.", 10_000, m)
     assert.deepEqual(speaks(app.since(m)), ["Here it is."])
     assert.doesNotMatch(app.stderr, /acknowledged "/)
@@ -78,7 +78,7 @@ test("turned on, a quick first tool she answers right after gets none", async ()
   try {
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
-    await app.say("Vera, what's the status?")
+    await app.say("Hey Vera, what's the status?")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "All good.", 10_000, m)
     await sleep(1800)
     assert.deepEqual(speaks(app.since(m)), ["All good."])
@@ -98,7 +98,7 @@ test("turned on, a slow first tool gets one while it runs; her own 'checking' is
   try {
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
-    await app.say("Vera, summarize the repo.")
+    await app.say("Hey Vera, summarize the repo.")
     await app.waitFor((c) => c.cmd === "speak" && /voice assistant/.test(c.text as string), 10_000, m)
     const said = speaks(app.since(m))
     assert.equal(said.length, 2, `got ${JSON.stringify(said)}`)
@@ -125,7 +125,7 @@ test("silence past the threshold gets one; a quick answer and a 'thanks' get non
   try {
     app.send({ type: "ready", mic: "m" })
     let m = app.mark
-    await app.say("Vera, slow question.")
+    await app.say("Hey Vera, slow question.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "Here it is.", 10_000, m)
     let said = speaks(app.since(m))
     assert.equal(said.length, 2, JSON.stringify(said))
@@ -133,13 +133,13 @@ test("silence past the threshold gets one; a quick answer and a 'thanks' get non
     await sleep(1500)
 
     m = app.mark
-    await app.say("Vera, quick question.")
+    await app.say("Hey Vera, quick question.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "Yes.", 10_000, m)
     await sleep(1600)
     assert.deepEqual(speaks(app.since(m)), ["Yes."])
 
     m = app.mark
-    await app.say("Vera, thanks.")
+    await app.say("Hey Vera, thanks.")
     await sleep(2800)
     assert.deepEqual(speaks(app.since(m)), [])
   } finally {
@@ -153,7 +153,7 @@ test("barge-in stops an acknowledgement like any line", async () => {
   try {
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
-    await app.say("Vera, start the long job.")
+    await app.say("Hey Vera, start the long job.")
     const ack = await app.waitFor((c) => c.cmd === "speak", 5000, m)
     await app.waitFor((c) => c.cmd === "hud" && c.state === "speaking", 3000, m).catch(() => {})
     await sleep(150)

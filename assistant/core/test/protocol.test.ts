@@ -4,7 +4,8 @@
  */
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { FakeApp, sleep, testConfig, type Cmd } from "../scripts/fake-app.ts"
 
@@ -38,11 +39,11 @@ test("wake word -> thinking -> speak -> playback -> follow-up without the wake w
   try {
     const m0 = app.mark
     app.send({ type: "speech_start", t: Date.now() })
-    app.send({ type: "partial", text: "Vera, what's", t: Date.now() })
+    app.send({ type: "partial", text: "Hey Vera, what's", t: Date.now() })
     // The wake word in a partial already shows the HUD listening.
     await app.waitFor(isHud("listening"), 3000, m0)
     await sleep(100)
-    app.send({ type: "final", text: "Vera, what's two plus two?", start: Date.now() - 900, end: Date.now(), during_playback: false })
+    app.send({ type: "final", text: "Hey Vera, what's two plus two?", start: Date.now() - 900, end: Date.now(), during_playback: false })
     const speak = await app.waitFor(isCmd("speak"), 5000, m0)
     assert.equal((speak as any).text, "Four.")
     assert.match((speak as any).speak_id, /^s\d+$/)
@@ -81,7 +82,7 @@ test("several speak calls go out one at a time, each after the previous finished
     script: [{ match: "story", steps: [1, 2, 3].map((n) => ({ tool: "speak", args: { text: `Sentence ${n}.` } })) }],
   })
   try {
-    await app.say("Vera, tell me a story.")
+    await app.say("Hey Vera, tell me a story.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "Sentence 3.", 8000)
     const events = app.cmds.filter((c) => c.cmd === "speak")
     assert.equal(events.length, 3)
@@ -113,7 +114,7 @@ test("barge-in mid-speech: the rest of the turn is dropped, the brain is told, a
     ],
   })
   try {
-    await app.say("Vera, tell me the history of bread.")
+    await app.say("Hey Vera, tell me the history of bread.")
     const first = await app.waitFor(isCmd("speak"))
     await app.waitFor(isHud("speaking"))
     await sleep(700)
@@ -153,7 +154,7 @@ for (const phrase of ["Stop.", "Never mind.", "Be quiet."]) {
       ],
     })
     try {
-      await app.say("Vera, what's the weather like?")
+      await app.say("Hey Vera, what's the weather like?")
       await app.waitFor(isHud("speaking"))
       await sleep(400)
       const m = app.mark
@@ -178,7 +179,7 @@ test("tray Stop talking stops speech and drops the rest of the turn", async () =
     script: [{ match: "recipe", steps: [{ tool: "speak", args: { text: "First, warm the milk until it's just steaming." } }, { tool: "speak", args: { text: "Then whisk in the eggs." } }] }],
   })
   try {
-    await app.say("Vera, read me the recipe.")
+    await app.say("Hey Vera, read me the recipe.")
     await app.waitFor(isHud("speaking"))
     const m = app.mark
     app.send({ type: "ui", action: "stop_talking" })
@@ -201,7 +202,7 @@ test("set_volume: 'you're way too loud' changes Vera's own volume, not the compu
   try {
     app.send({ type: "ready", volume: 0.5 })
     await sleep(100)
-    await app.say("Vera, you're way too loud, turn yourself down.")
+    await app.say("Hey Vera, you're way too loud, turn yourself down.")
     const vol = await app.waitFor(isCmd("set_volume"))
     assert.equal((vol as any).level, 0.2, "0.5 minus a big step (0.3, 12 dB)")
     const speak = await app.waitFor(isCmd("speak"))
@@ -262,7 +263,7 @@ test("playback failed ends that item and the next one is sent; the turn goes on"
     script: [{ match: "two things", steps: [{ tool: "speak", args: { text: "First." } }, { tool: "speak", args: { text: "Second." } }] }],
   })
   try {
-    await app.say("Vera, tell me two things.")
+    await app.say("Hey Vera, tell me two things.")
     const first = (await app.waitFor(isCmd("speak"))) as any
     assert.equal(first.text, "First.")
     // The voice service couldn't say it (the App plays its own error chime).
@@ -291,7 +292,7 @@ test("show opens a card, hide closes it, and card_closed from the App is respect
     ],
   })
   try {
-    await app.say("Vera, show me a shopping list for pancakes.")
+    await app.say("Hey Vera, show me a shopping list for pancakes.")
     const show = await app.waitFor(isCmd("show"))
     assert.deepEqual({ ...show, at: 0 }, { cmd: "show", card_id: "c1", title: "Pancakes", markdown: "- flour\n- eggs\n- milk", at: 0 })
     await app.waitFor(isHud("listening"), 4000, app.cmds.indexOf(show))
@@ -300,7 +301,7 @@ test("show opens a card, hide closes it, and card_closed from the App is respect
     assert.equal((hide as any).card_id, "c1")
     // The App closed a card itself: Core doesn't try to close it again.
     await sleep(200)
-    await app.say("Vera, put up a timer card.")
+    await app.say("Hey Vera, put up a timer card.")
     const show2 = await app.waitFor((c) => c.cmd === "show" && c.card_id === "c2")
     app.send({ type: "ui", action: "card_closed", card_id: "c2" })
     await sleep(200)
@@ -326,7 +327,7 @@ test("a background job shows 'working', then chimes and badges when it's done, w
     script: [{ match: "ask claude", steps: [{ tool: "ask_claude", args: { task: "count the TODOs" } }, { tool: "speak", args: { text: "On it." } }] }],
   })
   try {
-    await app.say("Vera, ask Claude to count the TODOs.")
+    await app.say("Hey Vera, ask Claude to count the TODOs.")
     await app.waitFor(isCmd("speak"))
     // Speech ends, the follow-up window closes, and the job is still running (fake job: 3 s).
     await app.waitFor(isHud("working"), 5000)
@@ -338,7 +339,7 @@ test("a background job shows 'working', then chimes and badges when it's done, w
     await app.waitFor(isHud("idle"), 3000, m)
     assert.deepEqual(spoken(app.since(m)), [], "no unprompted talking")
     // The inbox digest rides on the next turn.
-    await app.say("Vera, what's new?")
+    await app.say("Hey Vera, what's new?")
     await app.waitFor(isCmd("speak"), 5000, m)
     assert.match(app.brainLog().at(-1)!, /Fake result for: count the TODOs/)
   } finally {
@@ -366,7 +367,7 @@ test("an inbox chime waits while Shawn is mid-sentence", async () => {
 test("bare wake word chimes and opens the window; mic mute ignores speech", async () => {
   const app = await FakeApp.start({ config: testConfig(), script: [{ match: "time", steps: [{ tool: "speak", args: { text: "Noon." } }] }] })
   try {
-    await app.say("Vera?")
+    await app.say("Hey Vera?")
     const chime = await app.waitFor(isCmd("chime"))
     assert.equal((chime as any).kind, "listening")
     await app.waitFor(isHud("listening"))
@@ -378,7 +379,7 @@ test("bare wake word chimes and opens the window; mic mute ignores speech", asyn
     app.send({ type: "ui", action: "mute" })
     await sleep(100)
     const m2 = app.mark
-    await app.say("Vera, what time is it?")
+    await app.say("Hey Vera, what time is it?")
     await sleep(500)
     assert.deepEqual(spoken(app.since(m2)), [])
     app.send({ type: "ui", action: "unmute" })
@@ -409,10 +410,10 @@ test("a new turn while the last one is still answering: the stale reply never pl
     ],
   })
   try {
-    await app.say("Vera, tell me about the Alps.")
+    await app.say("Hey Vera, tell me about the Alps.")
     await sleep(150)
     // He asks again before the first answer: the first turn is superseded.
-    await app.say("Vera, actually tell me about the Andes.")
+    await app.say("Hey Vera, actually tell me about the Andes.")
     const reply = (await app.waitFor((c) => c.cmd === "speak" && /Andes/.test(c.text), 5000)) as any
     await sleep(900) // past when the first turn would have spoken
     assert.deepEqual(spoken(app.since(0)), ["The Andes are in South America."], "the Alps reply is never sent")
@@ -435,13 +436,13 @@ test("a reply still playing from an earlier turn is cut when a new turn begins",
     ],
   })
   try {
-    await app.say("Vera, give me a long answer.")
+    await app.say("Hey Vera, give me a long answer.")
     const first = (await app.waitFor(isCmd("speak"))) as any
     app.send({ type: "playback", speak_id: first.speak_id, state: "started" })
     await app.waitFor(isHud("speaking"))
     await sleep(300) // the first turn is done; its speech plays on
     const m = app.mark
-    await app.say("Vera, what time is it?")
+    await app.say("Hey Vera, what time is it?")
     await app.waitFor(isCmd("stop_speaking"), 3000, m)
     const noon = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Noon.", 3000, m)) as any
     assert.ok(app.cmds.indexOf(noon) > app.since(0).findIndex(isCmd("stop_speaking")))
@@ -466,26 +467,26 @@ test("a brain error and a brain that never answers both reach the App as errors,
   })
   try {
     let m = app.mark
-    await app.say("Vera, break please.")
+    await app.say("Hey Vera, break please.")
     const err = (await app.waitFor(isCmd("error"), 3000, m)) as any
     assert.equal(err.what, "brain")
     assert.match(err.message, /overloaded/)
     await app.waitFor(isHud("idle"), 4000, m)
 
     m = app.mark
-    await app.say("Vera, hang on.")
+    await app.say("Hey Vera, hang on.")
     const timeout = (await app.waitFor(isCmd("error"), 5000, m)) as any
     assert.equal(timeout.what, "brain_timeout")
     await app.waitFor(isHud("idle"), 4000, m)
 
     m = app.mark
-    await app.say("Vera, deaf one.")
+    await app.say("Hey Vera, deaf one.")
     await app.waitFor(isCmd("error"), 5000, m)
     // A brain that ignores the interrupt is closed after 5 s; the turn ends.
     await app.waitFor(isHud("idle"), 9000, m)
 
     m = app.mark
-    await app.say("Vera, hello.")
+    await app.say("Hey Vera, hello.")
     const hi = (await app.waitFor(isCmd("speak"), 5000, m)) as any
     assert.equal(hi.text, "Hi.")
   } finally {
@@ -503,7 +504,7 @@ test("'Vera, call yourself Nova': saved, the App is told, Nova wakes her and Ver
     ],
   })
   try {
-    await app.say("Vera, call yourself Nova.")
+    await app.say("Hey Vera, call yourself Nova.")
     const named = (await app.waitFor(isCmd("name"), 5000)) as any
     assert.equal(named.name, "Nova")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "Okay, I'm Nova.", 5000)
@@ -511,11 +512,11 @@ test("'Vera, call yourself Nova': saved, the App is told, Nova wakes her and Ver
     assert.equal(cfg.assistant.name, "Nova")
     await app.waitFor(isHud("idle"), 5000, app.mark)
     let m = app.mark
-    await app.say("Vera, what time is it?")
+    await app.say("Hey Vera, what time is it?")
     await sleep(800)
     assert.deepEqual(spoken(app.since(m)), [], "the old name no longer wakes her")
     m = app.mark
-    await app.say("Nova, what time is it?")
+    await app.say("Hey Nova, what time is it?")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "Noon.", 5000, m)
     // The brain restarted with the prompt in her new name.
     assert.match(readFileSync(join(app.home, "brain", "script-brain.prompt.md"), "utf8"), /^You are Nova, /)
@@ -538,7 +539,7 @@ test("'Vera, switch to the next voice and say something': the list comes from th
   })
   try {
     const m = app.mark
-    await app.say("Vera, switch to the next voice and say something.")
+    await app.say("Hey Vera, switch to the next voice and say something.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "This is Eli.", 5000, m)
     const cmds = app.since(m)
     const voice = cmds.findIndex(isCmd("voice"))
@@ -573,7 +574,7 @@ test("personas: 'Hey Alfred' answers in Alfred's voice, a follow-up stays Alfred
     assert.equal(b.voice, "alfred", "a follow-up keeps the last persona")
     await app.waitFor(isHud("idle"), 15000, m)
     m = app.mark
-    await app.say("Jarvis, say hello.")
+    await app.say("Hey Jarvis, say hello.")
     const c = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Hello.", 5000, m)) as any
     assert.equal(c.voice, "jarvis")
     const log = readFileSync(join(app.home, "brain", "script-brain.log.jsonl"), "utf8")
@@ -597,11 +598,11 @@ test("personas stick: a mishearing, a greeting, a timeout and a restart keep Opt
   const home = app.home
   try {
     let m = app.mark
-    await app.say("Optimus, status.")
+    await app.say("Hey Optimus, status.")
     assert.equal(((await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any).voice, "optimus")
     await app.waitFor(isHud("idle"), 15000, m)
     // "Vara" and "Hey there," wake her (Vera's mishearings) but don't switch away from Optimus.
-    for (const said of ["Vara, status.", "Hey there, status?"]) {
+    for (const said of ["Hey Vara, status.", "Hey there, status?"]) {
       m = app.mark
       await app.say(said)
       const s = (await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any
@@ -618,12 +619,12 @@ test("personas stick: a mishearing, a greeting, a timeout and a restart keep Opt
   ] })
   try {
     let m = app.mark
-    await app.say("Vara, status.")
+    await app.say("Hey Vara, status.")
     assert.equal(((await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any).voice, "optimus", "after a restart")
     await app.waitFor(isHud("idle"), 15000, m)
     // Asked for by request: this turn's line is already Alfred's.
     m = app.mark
-    await app.say("Vera, put Alfred on.")
+    await app.say("Hey Vera, put Alfred on.")
     const s = (await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any
     assert.equal(s.voice, "alfred")
   } finally {
@@ -638,7 +639,7 @@ test("a closing remark may get no reply: the turn ends cleanly, the HUD goes idl
   })
   try {
     const m = app.mark
-    await app.say("Vera, thanks.")
+    await app.say("Hey Vera, thanks.")
     await app.waitFor(isHud("thinking"), 3000, m)
     await app.waitFor(isHud("idle"), 5000, m)
     // Past the first-speak deadline: still nothing went wrong.
@@ -663,7 +664,7 @@ test("he goes on while she's thinking: her answer is held, then dropped, and bot
   })
   try {
     const m = app.mark
-    await app.say("Vera, look into the flaky build and.")
+    await app.say("Hey Vera, look into the flaky build and.")
     await sleep(200)
     await app.say("The tests too.")
     const reply = (await app.waitFor(isCmd("speak"), 5000, m)) as any
@@ -688,7 +689,7 @@ test("he goes on just as she starts: she stops, and the rest joins his request",
     ],
   })
   try {
-    await app.say("Vera, what's the weather in Paris.")
+    await app.say("Hey Vera, what's the weather in Paris.")
     await app.waitFor(isHud("speaking"))
     await sleep(500)
     const m = app.mark
@@ -714,7 +715,7 @@ test("a turn she answers with nothing keeps the conversation open: he goes on wi
   })
   try {
     const m = app.mark
-    await app.say("Vera, turn off the living room lights.")
+    await app.say("Hey Vera, turn off the living room lights.")
     await sleep(800) // her silent turn ends
     await app.say("And dim the kitchen ones too.")
     const s = await app.waitFor(isCmd("speak"), 5000, m)
@@ -739,7 +740,7 @@ test("Listening off: everything stops, nothing is heard; stop_listening turns he
   })
   try {
     const m = app.mark
-    await app.say("Vera, stop listening.")
+    await app.say("Hey Vera, stop listening.")
     const bye = await app.waitFor(isCmd("speak"), 5000, m)
     assert.equal((bye as any).text, "Okay, I'll stop listening.")
     const off = await app.waitFor(isCmd("listening"), 5000, m)
@@ -749,12 +750,12 @@ test("Listening off: everything stops, nothing is heard; stop_listening turns he
     app.send({ type: "ui", action: "mute" })
     await app.waitFor(isHud("idle"), 3000, app.mark)
     const m2 = app.mark
-    await app.say("Vera, tell me a long story.")
+    await app.say("Hey Vera, tell me a long story.")
     await sleep(600)
     assert.deepEqual(spoken(app.since(m2)), [])
     app.send({ type: "ui", action: "unmute" })
     const m3 = app.mark
-    await app.say("Vera, tell me a long story.")
+    await app.say("Hey Vera, tell me a long story.")
     assert.equal(((await app.waitFor(isCmd("speak"), 5000, m3)) as any).text, "Once upon a time.")
     // Off mid-reply: the reply and the turn stop.
     app.send({ type: "ui", action: "mute" })
@@ -778,7 +779,7 @@ test("Shawn has the floor: a line the brain says while he talks waits, and his n
     ],
   })
   try {
-    await app.say("Vera, close the notepads.")
+    await app.say("Hey Vera, close the notepads.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "On it.", 5000)
     // "On it." plays (and finishes); then he starts talking again, and keeps on for 2 s.
     await sleep(250)
@@ -786,16 +787,61 @@ test("Shawn has the floor: a line the brain says while he talks waits, and his n
     const start = Date.now()
     app.send({ type: "speech_start", t: start })
     for (let i = 0; i < 10; i++) {
-      app.send({ type: "partial", text: "Vera and the other", t: Date.now() })
+      app.send({ type: "partial", text: "Hey Vera and the other", t: Date.now() })
       await sleep(200)
     }
     // The brain's second line came due 0.7 s in: nothing went to the App while he talked.
     assert.deepEqual(spoken(app.since(m)), [], "nothing of hers was sent while he had the floor")
-    app.send({ type: "final", text: "Vera, and the other ones too.", start, end: Date.now(), during_playback: false })
+    app.send({ type: "final", text: "Hey Vera, and the other ones too.", start, end: Date.now(), during_playback: false })
     const reply = await app.waitFor((c) => c.cmd === "speak" && c.text === "Those are closed too.", 5000, m)
     assert.ok(reply)
     await sleep(400)
     assert.deepEqual(spoken(app.since(m)), ["Those are closed too."], "the stale line was dropped, never started")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("wake settings by voice: Tony off never wakes or answers, 'hey Tony' back on, Vera can't be turned off by voice", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [
+      // Later turns carry earlier lines as context: the newest request's rule goes first.
+      { match: "hello", steps: [{ tool: "speak", args: { text: "Hello." } }] },
+      { match: "jarvis alone", steps: [{ tool: "set_wake", args: { persona: "Jarvis", bare_name: true } }, { tool: "speak", args: { text: "Done." } }] },
+      { match: "turn off vera", steps: [{ tool: "set_wake", args: { enabled: false } }, { tool: "speak", args: { text: "Tried." } }] },
+      { match: "turn off tony", steps: [{ tool: "set_wake", args: { persona: "Tony", enabled: false } }, { tool: "speak", args: { text: "Tony's off." } }] },
+    ],
+  })
+  try {
+    let m = app.mark
+    await app.say("Hey Vera, turn off Tony.")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "Tony's off.", 5000, m)
+    const saved = JSON.parse(readFileSync(join(app.home, "config.json"), "utf8"))
+    assert.equal(saved.assistant.personas.find((p: any) => p.name === "Tony").enabled, false)
+    await app.waitFor(isHud("idle"), 15000, m)
+    m = app.mark
+    await app.say("Hey Tony, say hello.")
+    await sleep(1500)
+    assert.equal(app.since(m).filter(isCmd("speak")).length, 0, "an off persona never wakes")
+    // The first persona can't be turned off by voice: the tool refuses, she still answers.
+    m = app.mark
+    await app.say("Hey Vera, turn off Vera.")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "Tried.", 5000, m)
+    const after = JSON.parse(readFileSync(join(app.home, "config.json"), "utf8"))
+    assert.notEqual(after.assistant.personas[0].enabled, false)
+    await app.waitFor(isHud("idle"), 15000, m)
+    // Name alone, opted in, wakes Jarvis at once (no restart).
+    m = app.mark
+    await app.say("Hey Vera, let Jarvis alone wake you.")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "Done.", 5000, m)
+    await app.waitFor(isHud("idle"), 15000, m)
+    m = app.mark
+    await app.say("Jarvis, say hello.")
+    const s = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Hello.", 5000, m)) as any
+    assert.equal(s.voice, "jarvis")
+    const prompt = readFileSync(join(app.home, "brain", "script-brain.prompt.md"), "utf8")
+    assert.doesNotMatch(prompt, /- Tony \(voice tony\)/, "an off persona isn't offered to the brain")
   } finally {
     await app.stop()
   }
@@ -807,7 +853,7 @@ test("Shawn has the floor: a false start (no words) lets the waiting line play",
     script: [{ match: "garden", steps: [{ tool: "speak", args: { text: "Checking." } }, { sleep: 400 }, { tool: "speak", args: { text: "The garden is fine." } }] }],
   })
   try {
-    await app.say("Vera, check the garden.")
+    await app.say("Hey Vera, check the garden.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "Checking.", 5000)
     await sleep(150)
     const m = app.mark
@@ -816,6 +862,28 @@ test("Shawn has the floor: a false start (no words) lets the waiting line play",
     assert.deepEqual(spoken(app.since(m)), [], "waits while he might be talking")
     app.send({ type: "speech_cancel", t: Date.now(), reason: "no words" })
     await app.waitFor((c) => c.cmd === "speak" && c.text === "The garden is fine.", 2000, m)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("an install from before wake phrases: the first bare 'Vera,' gets told once how she wakes now", async () => {
+  const home = mkdtempSync(join(tmpdir(), "assistant-fake-app-"))
+  writeFileSync(join(home, "core-state.json"), JSON.stringify({ volume: 0.7 }))
+  const app = await FakeApp.start({ config: testConfig(), home, script: [] })
+  try {
+    let m = app.mark
+    await app.say("Vera, what time is it?")
+    const s = (await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any
+    assert.equal(s.text, "You can wake me with 'hey Vera' now.")
+    assert.equal(app.since(m).filter((c) => c.cmd === "hud" && c.state === "thinking").length, 0, "no turn")
+    // Past the follow-up window her line opened (inside it he could just go on).
+    await sleep(2500)
+    m = app.mark
+    await app.say("Vera, what time is it?")
+    await sleep(1500)
+    assert.equal(app.since(m).filter(isCmd("speak")).length, 0, "only once")
+    assert.equal(JSON.parse(readFileSync(join(home, "core-state.json"), "utf8")).wakePhrases, "told")
   } finally {
     await app.stop()
   }

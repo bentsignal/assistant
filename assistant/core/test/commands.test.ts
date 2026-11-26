@@ -83,7 +83,7 @@ test("barge-in during a running tool stops her speech, not the tool: it finishes
     nodeSkill(app.home)
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
-    await app.say("Vera, run the slow thing.")
+    await app.say("Hey Vera, run the slow thing.")
     await app.waitFor((c) => c.cmd === "speak", 5000, m)
     for (let i = 0; i < 50 && !/tool run_command \{/.test(app.stderr); i++) await sleep(50)
     await sleep(600) // the command is running and her line is playing
@@ -108,7 +108,7 @@ test("a command still running at the detach threshold goes on after the turn, an
     nodeSkill(app.home)
     app.send({ type: "ready", mic: "m" })
     const m = app.mark
-    await app.say("Vera, run the long command.")
+    await app.say("Hey Vera, run the long command.")
     await app.waitFor((c) => c.cmd === "speak" && c.text === "It's running.", 8000, m)
     assert.match(app.stderr, /tool run_command -> .*\(c1\) is still running after 1 s/)
     await app.waitFor((c) => c.cmd === "chime" && (c as any).kind === "notify", 8000, m)
