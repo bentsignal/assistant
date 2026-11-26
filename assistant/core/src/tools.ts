@@ -8,8 +8,9 @@ import { oneLine, truncate } from "./inbox.ts"
 import type { Job, JobAgent } from "./jobs.ts"
 import type { Assistant } from "./assistant.ts"
 import { runCli, type RunResult } from "./proc.ts"
-import { formatSkill, skillSlug, splitCommand } from "./skills.ts"
+import { formatSkill, isInteractive, skillSlug, splitCommand } from "./skills.ts"
 import { launchedId } from "./t3.ts"
+import { describeRun } from "./commands.ts"
 import { describeVoices, fetchVoices, pickVoice } from "./voices.ts"
 
 /**
@@ -60,7 +61,11 @@ function steerNote(assistant: Assistant): string {
 }
 
 /** runCli, but a program installed after Core started is found too (PATH is reread once). */
-async function runFresh(name: string, args: string[], opts: { input?: string; cwd?: string; timeoutMs?: number }): Promise<RunResult> {
+async function runFresh(
+  name: string,
+  args: string[],
+  opts: { input?: string; cwd?: string; timeoutMs?: number; onData?: (chunk: string) => void },
+): Promise<RunResult> {
   try {
     return await runCli(name, args, opts)
   } catch (err) {
@@ -515,6 +520,13 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
       description: typeof args.description === "string" ? args.description : undefined,
       body: typeof args.body === "string" ? args.body : undefined,
       commands,
+      interactive: Array.isArray(args.interactive)
+        ? args.interactive.map(String)
+        : typeof args.interactive === "string"
+          ? args.interactive.split(",").map((c: string) => c.trim()).filter(Boolean)
+          : args.interactive === true
+            ? ["*"]
+            : undefined,
     })
     return `${created ? "Saved the new" : "Updated the"} skill ${skill.name}. It's in your prompt from the next turn${
       skill.commands.length ? `, and run_command may run ${skill.commands.join(", ")} now` : ""
@@ -547,11 +559,31 @@ ${JSON.stringify(envs, null, 1)}`, 4000)
         .join(", ")
       return `No skill lets you run ${argv[0]} (allowed: ${known || "none"}). If it's a program you set up, add it to that skill's commands with skill_save; otherwise delegate it (ask_claude).`
     }
-    const timeoutMs = Math.min(Math.max(Number(args.timeout_seconds) || 60, 5), 300) * 1000
+    const interactive = isInteractive(skill, argv)
+    const jobs = assistant.config.jobs
+    const asked = Number(args.timeout_seconds) || 0
+    const timeoutMs = interactive
+      ? Math.max(asked, jobs.interactiveTimeoutSeconds ?? 900) * 1000
+      : Math.min(Math.max(asked || 60, 5), 3600) * 1000
     const cwd = typeof args.cwd === "string" && args.cwd.trim() ? args.cwd : undefined
-    const r = await runFresh(argv[0], argv.slice(1), { input: typeof args.stdin === "string" ? args.stdin : undefined, cwd, timeoutMs })
-    const head = r.timedOut ? `Timed out after ${timeoutMs / 1000}s` : `Exit ${r.code}`
-    return truncate(`${head} (${skill.name}).\n${r.stdout.trim() || "(no output)"}${r.stderr.trim() ? `\n[stderr]\n${r.stderr.trim()}` : ""}`, 8000)
+    const turn = assistant.currentTurnId
+    const line = argv.join(" ")
+    // Core owns the process: the brain's turn ending (barge-in, stop, a
+    // cancelled request) never kills it, and a result nobody received goes to the inbox.
+    const run = assistant.commands.start(
+      line,
+      skill.name,
+      interactive,
+      (onData) => runFresh(argv[0], argv.slice(1), { input: typeof args.stdin === "string" ? args.stdin : undefined, cwd, timeoutMs, onData }),
+      { timeoutMs, reportIf: () => assistant.currentTurnId !== turn },
+    )
+    const waitMs = interactive ? 3000 : Math.min(timeoutMs, (jobs.commandDetachSeconds ?? 20) * 1000)
+    const r = await assistant.commands.wait(run, waitMs)
+    if (r) return describeRun(r, skill.name, timeoutMs)
+    const sofar = run.output.trim() ? `\nIts output so far:\n${truncate(run.output.trim(), 3000)}` : "\n(No output yet.)"
+    return (interactive
+      ? `Started "${line}" (${run.id}); it waits on Shawn (a login in his browser, say) and runs in the background for up to ${Math.round(timeoutMs / 60000)} min. Tell him in a few words what to do now if its output says (or just that it's waiting on him). When it ends he gets a chime and you get its output with his next message.`
+      : `"${line}" (${run.id}) is still running after ${Math.round(waitMs / 1000)} s; it goes on in the background. When it ends Shawn gets a chime and you get its output with his next message. Say so in a few words.`) + sofar
   },
 
   read_system_prompt(assistant) {
@@ -653,10 +685,19 @@ export async function runTool(assistant: Assistant, name: string, args: unknown)
   if (name !== "speak") assistant.beforeTool(name) // acknowledges first, so it plays as the tool starts
   assistant.log(`tool ${name} ${truncate(oneLine(JSON.stringify(logged(name, args ?? {}))), 300)}`)
   assistant.currentTurn?.tools.push(name)
-  let result = await h(assistant, args ?? {})
+  const call = assistant.toolStarted(name)
+  let result: string
+  try {
+    result = await h(assistant, args ?? {})
+  } catch (err) {
+    assistant.toolEnded(call, `failed: ${(err as Error).message}`)
+    throw err
+  }
   if (name !== "speak") {
     assistant.log(`tool ${name} -> ${truncate(oneLine(result), 240)}`)
     result += assistant.takeAckNote()
   }
+  // Ended once its result is on its way back (server.ts sends it right after).
+  setImmediate(() => assistant.toolEnded(call, result))
   return result
 }

@@ -332,6 +332,11 @@ export const TOOLS: ToolDef[] = [
         description: str("One sentence: what it lets you do."),
         body: str("Markdown: what it's for, exact commands, config and auth locations, anything to watch out for."),
         commands: { type: "array", items: { type: "string" }, description: "Programs run_command may run for this skill, like ['freemail']." },
+        interactive: {
+          type: "array",
+          items: { type: "string" },
+          description: "Command lines that wait on Shawn (a browser login, a device button), like ['freemail auth login']; ['*'] for all. run_command runs them in the background at once and reports when they end.",
+        },
       },
       required: ["name"],
     },
@@ -359,14 +364,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "run_command",
     description:
-      "Run a program one of your skills declares (its commands), directly, no shell, and get its output: the fast way to use a skill (read mail, list lights, check a status). command is a plain command line (quotes group words; no pipes, redirects or &&). Waits up to timeout_seconds (default 60). Confirm out loud first if the command changes or sends anything. A program no skill declares is refused: add it to a skill with skill_save first, or delegate.",
+      "Run a program one of your skills declares (its commands), directly, no shell, and get its output: the fast way to use a skill (read mail, list lights, check a status). command is a plain command line (quotes group words; no pipes, redirects or &&). Gives up after timeout_seconds (default 60). One still running after a few seconds (or one its skill marks interactive, such as a browser login) goes on in the background, whatever happens to this turn; you get its output, and Shawn a chime, when it ends. Failures come back with their stderr: tell him the reason it gives. Confirm out loud first if the command changes or sends anything. A program no skill declares is refused: add it to a skill with skill_save first, or delegate.",
     inputSchema: {
       type: "object",
       properties: {
         command: str("The command line, like: freemail list --unread --limit 10"),
         cwd: str("Working folder (optional)."),
         stdin: str("Text to pass on standard input (optional)."),
-        timeout_seconds: { type: "number", description: "Default 60, at most 300." },
+        timeout_seconds: { type: "number", description: "Default 60, at most 3600 (interactive ones get at least jobs.interactiveTimeoutSeconds)." },
       },
       required: ["command"],
     },

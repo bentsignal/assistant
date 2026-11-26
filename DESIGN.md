@@ -259,6 +259,14 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   sir."; `assistant/core/src/ack.ts`). Never on a quick answer or a turn that
   ends silently ("thanks"); her own opening "checking" is then dropped and the
   next tool result tells her. Barge-in cuts it like any line.
+- **His talking never breaks running work.** Barge-in (or new words while
+  she thinks) stops her speech at once; if a tool she called through Core is
+  still running, the brain is stopped only after it returns, and his words,
+  with what the tool returned, are the next message. `run_command`'s
+  programs belong to Core (`assistant/core/src/commands.ts`): one still
+  running after `jobs.commandDetachSeconds`, or one its skill marks
+  `interactive` (a browser login), goes on in the background, and its result,
+  stderr first on a failure, chimes into the inbox and reaches her next turn.
 - **No unprompted talking.** Finished background work or a T3 thread that
   needs input gets a chime, an inbox item, and a tray badge. Threads she starts
   or sends to are watched on whichever machine they're on; a watched thread

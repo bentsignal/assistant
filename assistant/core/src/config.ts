@@ -142,6 +142,10 @@ export interface AssistantConfig {
     defaultCwd: string
     /** Seconds ask_* waits when wait:true before handing the job to the background. */
     waitTimeoutSeconds: number
+    /** Seconds run_command waits before the command goes on in the background (reported when it ends; `commands.ts`). */
+    commandDetachSeconds: number
+    /** How long a command its skill marks interactive (a browser login) may wait on Shawn. */
+    interactiveTimeoutSeconds: number
     claude: BrainSettings
     codex: BrainSettings
     grok: BrainSettings
@@ -241,6 +245,8 @@ export const DEFAULT_CONFIG: AssistantConfig = {
   jobs: {
     defaultCwd: "D:\\dev",
     waitTimeoutSeconds: 90,
+    commandDetachSeconds: 20,
+    interactiveTimeoutSeconds: 900,
     claude: {},
     codex: {},
     grok: {},

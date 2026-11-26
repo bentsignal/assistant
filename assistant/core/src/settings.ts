@@ -55,6 +55,8 @@ export const SETTINGS: Record<string, KeyDef> = {
   "brain.codex.effort": { schema: effort, applies: "brain", about: "Her effort on Codex." },
   "jobs.defaultCwd": { schema: { type: "path", kind: "dir" }, applies: "now", about: "Default working folder for ask_* jobs." },
   "jobs.waitTimeoutSeconds": num(5, 600, "now", "How long ask_* with wait:true waits before going to the background."),
+  "jobs.commandDetachSeconds": num(1, 600, "now", "How long run_command waits before the command goes on in the background (reported when it ends)."),
+  "jobs.interactiveTimeoutSeconds": num(30, 7200, "now", "How long an interactive command (a browser login) may wait on Shawn."),
   "jobs.claude.model": { schema: model, applies: "now", about: "Model for ask_claude jobs." },
   "jobs.claude.effort": { schema: effort, applies: "now", about: "Effort for ask_claude jobs." },
   "jobs.codex.model": { schema: model, applies: "now", about: "Model for ask_codex jobs." },

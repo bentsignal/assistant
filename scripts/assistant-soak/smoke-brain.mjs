@@ -19,6 +19,11 @@
 // once it's idle (that must start a turn), waits for that finish too, and
 // settles it.
 //
+// The talk-over step (--skip-skills leaves it out) gives
+// her a throwaway skill that naps 5 s through run_command, talks to her while
+// it runs, and checks the command still finished and his words became the
+// next message.
+//
 // The acknowledgement step asks something that needs a slow tool and checks
 // that a line went to the App before the first tool other than speak (Core's
 // own "One sec." or hers).
@@ -36,7 +41,7 @@
 // "Jarvis") pass only when the line Core sends the App carries that
 // persona's voice (`-> app {"cmd":"speak",…,"voice":"alfred"}`).
 
-import { existsSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync } from "node:fs"
+import { existsSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -220,6 +225,49 @@ if (!argv.includes("--skip-mcp")) {
   const gone = !Object.keys(left).some((k) => k.toLowerCase() === "smoke-echo")
   console.log(`${gone ? "PASS" : "FAIL"} smoke-echo is out of mcp.json`)
   results.push(gone)
+}
+
+// His talking never breaks running work.
+if (!argv.includes("--skip-skills")) results.push(...(await talkOverStep()))
+
+/** Talks to her while a 5 s run_command runs: it must finish, and his words come next. */
+async function talkOverStep() {
+  const dir = join(HOME, "skills")
+  mkdirSync(dir, { recursive: true })
+  const nap = join(HOME, "smoke-nap.js")
+  const skill = join(dir, "smoke-nap.md")
+  writeFileSync(nap, "setTimeout(() => console.log('nap-done'), 5000)\n")
+  writeFileSync(
+    skill,
+    `---\nname: smoke-nap\ndescription: A test skill: take a smoke nap.\ncommands: node, ${process.execPath}\n---\nWhen Shawn asks for a smoke nap, call run_command with argv ["${process.execPath.replace(/\\/g, "\\\\")}", "${nap.replace(/\\/g, "\\\\")}"] and wait for it; it prints nap-done after 5 s.\n`,
+  )
+  const out = []
+  try {
+    await sleep(1500) // the skill change restarts the brain before the next turn
+    const read = tail()
+    const first = post("/api/utterance", { text: `${NAME}, take a smoke nap.`, wait: true }).catch((err) => ({ error: err.message }))
+    const running = await waitLog(read, /\btool run_command \{/, TIMEOUT_MS)
+    if (!running) {
+      console.log("FAIL she ran the nap command")
+      return [false]
+    }
+    await sleep(1500)
+    const second = post("/api/utterance", { text: `${NAME}, and after that say the word kiwi.`, wait: true }).catch((err) => ({ error: err.message }))
+    const done = await waitLog(read, /tool run_command -> Exit 0 \(smoke-nap\)\. nap-done/, 20_000)
+    console.log(`${done ? "PASS" : "FAIL"} the command finished although he talked over it`)
+    out.push(!!done)
+    const held = await waitLog(read, /turn \d+ -> [^\n]*run_command finished and returned[^\n]*kiwi|turn \d+ -> [^\n]*kiwi/, TIMEOUT_MS)
+    console.log(`${held ? "PASS" : "FAIL"} his words were the next message`)
+    out.push(!!held)
+    const deferred = /still running, so the brain stops once it returns/.test(read())
+    console.log(`${deferred ? "PASS" : "FAIL"} the brain wasn't stopped while the command ran`)
+    out.push(deferred)
+    await Promise.race([Promise.all([first, second]), sleep(30_000)])
+  } finally {
+    rmSync(skill, { force: true })
+    rmSync(nap, { force: true })
+  }
+  return out
 }
 
 // No dead air: a line plays before the first slow tool.

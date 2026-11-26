@@ -18,7 +18,9 @@ import { basename, join } from "node:path"
  *   (what it's for, the exact commands, where its config and auth live)
  *
  * `commands` lists the programs `run_command` may run for this skill (the
- * brain has no shell of its own). Removing a skill moves it to
+ * brain has no shell of its own). `interactive` (optional) lists command
+ * lines that wait on Shawn, like `freemail auth login` (a prefix matches),
+ * or `true` for all of them: those run detached at once (`commands.ts`). Removing a skill moves it to
  * `skills/.removed/`, so a mistake can be undone by hand; a seeded skill
  * that was removed is never seeded again.
  */
@@ -27,6 +29,8 @@ export interface Skill {
   description: string
   /** Programs `run_command` may run for this skill, like `freemail` or `hue`. */
   commands: string[]
+  /** Command lines that wait on Shawn (a browser login): run detached at once. "*" is every command. */
+  interactive?: string[]
   body: string
   file: string
 }
@@ -82,14 +86,37 @@ export function parseSkill(text: string, file: string): Skill {
       .split(/[,\s]+/)
       .map((c) => c.trim().replace(/^["']|["']$/g, ""))
       .filter(Boolean),
+    ...(parseInteractive(meta.interactive) ? { interactive: parseInteractive(meta.interactive) } : {}),
     body,
     file,
   }
 }
 
+function parseInteractive(v: string | undefined): string[] | undefined {
+  const t = (v ?? "").trim().replace(/^\[|\]$/g, "")
+  if (!t || /^(false|no|none)$/i.test(t)) return undefined
+  if (/^(true|yes|all|\*)$/i.test(t)) return ["*"]
+  const list = t.split(",").map((c) => c.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+  return list.length ? list : undefined
+}
+
+/** Whether `argv` is one of the skill's interactive command lines (it waits on Shawn). */
+export function isInteractive(skill: Pick<Skill, "interactive">, argv: string[]): boolean {
+  const list = skill.interactive ?? []
+  if (list.includes("*")) return true
+  const norm = (p: string) => basename(p.trim().toLowerCase()).replace(/\.(exe|cmd|bat|ps1)$/, "")
+  const line = [norm(argv[0] ?? ""), ...argv.slice(1).map((a) => a.toLowerCase())].join(" ")
+  return list.some((c) => {
+    const [prog, ...rest] = c.trim().toLowerCase().split(/\s+/)
+    const want = [norm(prog), ...rest].join(" ")
+    return line === want || line.startsWith(want + " ")
+  })
+}
+
 export function formatSkill(s: Omit<Skill, "file">): string {
   const oneLine = (t: string) => t.replace(/\s+/g, " ").trim()
-  return `---\nname: ${s.name}\ndescription: ${oneLine(s.description)}\ncommands: ${s.commands.join(", ")}\n---\n${s.body.trim()}\n`
+  const interactive = s.interactive?.length ? `interactive: ${s.interactive.includes("*") ? "true" : s.interactive.join(", ")}\n` : ""
+  return `---\nname: ${s.name}\ndescription: ${oneLine(s.description)}\ncommands: ${s.commands.join(", ")}\n${interactive}---\n${s.body.trim()}\n`
 }
 
 /** The prompt section: every skill in full, until the budget runs out; after that, one line each. */
@@ -179,7 +206,7 @@ export class SkillStore {
   }
 
   /** Creates or replaces a skill. Fields left out keep an existing skill's values. */
-  save(input: { name: string; description?: string; body?: string; commands?: string[] }): { skill: Skill; created: boolean } {
+  save(input: { name: string; description?: string; body?: string; commands?: string[]; interactive?: string[] }): { skill: Skill; created: boolean } {
     const slug = skillSlug(input.name)
     const file = join(this.dir, `${slug}.md`)
     const old = existsSync(file) ? parseSkill(readFileSync(file, "utf8"), file) : undefined
@@ -189,7 +216,8 @@ export class SkillStore {
     if (!body) throw new Error("a new skill needs a body: the exact commands, and where its config and auth live")
     const commands = (input.commands ?? old?.commands ?? []).map((c) => c.trim()).filter(Boolean)
     for (const c of commands) if (!/^[\w.\-\\/: ]+$/.test(c)) throw new Error(`"${c}" isn't a program name`)
-    const skill = { name: slug, description, body, commands }
+    const interactive = (input.interactive ?? old?.interactive ?? []).map((c) => c.trim()).filter(Boolean)
+    const skill = { name: slug, description, body, commands, ...(interactive.length ? { interactive } : {}) }
     writeFileSync(file, formatSkill(skill))
     this.check()
     return { skill: { ...skill, file }, created: !old }

@@ -90,7 +90,7 @@ export interface RunResult {
 export function runCli(
   name: string,
   args: string[],
-  opts: { input?: string; cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {},
+  opts: { input?: string; cwd?: string; timeoutMs?: number; env?: Record<string, string>; onData?: (chunk: string) => void } = {},
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     let child: ChildProcess
@@ -109,8 +109,14 @@ export function runCli(
           killTree(child)
         }, opts.timeoutMs)
       : null
-    child.stdout!.setEncoding("utf8").on("data", (d) => (stdout += d))
-    child.stderr!.setEncoding("utf8").on("data", (d) => (stderr += d))
+    child.stdout!.setEncoding("utf8").on("data", (d) => {
+      stdout += d
+      opts.onData?.(d)
+    })
+    child.stderr!.setEncoding("utf8").on("data", (d) => {
+      stderr += d
+      opts.onData?.(d)
+    })
     child.on("error", (err) => {
       if (timer) clearTimeout(timer)
       reject(err)
