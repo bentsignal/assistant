@@ -88,6 +88,8 @@ interface Interruption {
 
 /** Epoch ms look like this; anything smaller is some other clock. */
 const EPOCH_MS = 1e12
+/** An open utterance with no new words (no partial) for this long, and no final, is over. */
+const SPEECH_SILENCE_MS = 60_000
 
 /**
  * Vera's volume is the App's 0-1 level, where level v is 40 × (v − 1) dB
@@ -171,6 +173,8 @@ export class Assistant {
   private syncJobs = new Set<string>()
   private turnWaiters = new Map<number, (t: TurnRecord) => void>()
   private followUpTimer: NodeJS.Timeout | null = null
+  /** She was asked to stop listening (`stop_listening`): when, once her words are out. */
+  private offRequested: number | null = null
   /** Ends an utterance whose final never came (the App always sends one; this is the backstop). */
   private speechTimer: NodeJS.Timeout | null = null
   /** The last turn was cut short because Shawn spoke again: the next turn's message says so. */
@@ -271,10 +275,11 @@ export class Assistant {
         this.syncBadge(true)
         break
       case "speech_start":
-        this.speechStarted()
+        this.speechStarted(this.appTime(ev.t))
         break
       case "partial":
-        if (!this.inSpeech) this.speechStarted()
+        if (!this.inSpeech) this.speechStarted(this.appTime(ev.t))
+        else this.armSpeechTimer()
         this.partial = ev.text
         if (!this.speechEngaged && !this.micMuted && this.wakeIn(ev.text)) this.speechEngaged = true
         break
@@ -324,11 +329,14 @@ export class Assistant {
         this.stop("tray: stop talking")
         break
       case "mute":
+        // Listening is off (the tray, `assistant listen off`, or she asked):
+        // she's completely off. What she was saying and the turn behind it stop.
         this.micMuted = true
-        this.followUpUntil = 0
+        this.offRequested = null
         this.speechEnded()
         this.resumable = null
         this.mouth.release()
+        this.stop("listening off")
         break
       case "unmute":
         this.micMuted = false
@@ -354,21 +362,37 @@ export class Assistant {
     return typeof t === "number" && t > EPOCH_MS ? t : undefined
   }
 
-  private speechStarted() {
+  /**
+   * He started talking (`onset`: when his voice began, by the App's clock).
+   * It's to her when the window was open as he began, not when the App got
+   * round to saying so: a soft start through a gated headset is announced
+   * a moment late.
+   */
+  private speechStarted(onset?: number) {
     this.inSpeech = true
     this.speechStartedAt = Date.now()
-    this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil > Date.now() || this.mouth.speaking)
+    const began = Math.min(onset ?? Date.now(), Date.now())
+    this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil >= began || this.mouth.speaking)
     this.partial = "…"
     this.holdForResume()
-    // Nobody talks for a minute straight: if no final comes, the HUD stops listening.
+    this.armSpeechTimer()
+  }
+
+  /**
+   * The safety net for a final that never comes. While he talks the App
+   * keeps sending partials, and each one pushes it back: listening never
+   * ends on a timer while his words are still arriving (a 65 s monologue
+   * was cut at 60 s on 2026-11-26 and then ignored).
+   */
+  private armSpeechTimer() {
     if (this.speechTimer) clearTimeout(this.speechTimer)
     const startedAt = this.speechStartedAt
     this.speechTimer = setTimeout(() => {
       if (!this.inSpeech || this.speechStartedAt !== startedAt) return
-      this.log("speech: no final after 60 s; treating the utterance as over")
+      this.log(`speech: no words for ${SPEECH_SILENCE_MS / 1000} s and no final; treating the utterance as over`)
       this.speechEnded()
       this.changed()
-    }, 60_000)
+    }, SPEECH_SILENCE_MS)
     this.speechTimer.unref()
   }
 
@@ -688,7 +712,10 @@ export class Assistant {
     }
     this.lastActiveAt = Date.now()
     this.current = rec
-    this.followUpUntil = 0
+    // His own words keep the conversation open: what he says next, within
+    // the follow-up window of where he stopped, is to her too (he goes on
+    // after a pause, or she answered with nothing to say).
+    this.followUpUntil = Math.max(this.followUpUntil, (heardEndAt ?? Date.now()) + this.config.wake.followUpSeconds * 1000)
     // Nothing from an earlier turn plays after this one began.
     const stale = this.mouth.dropStale(rec.id)
     if (stale.length) this.log(`turn ${rec.id}: dropped ${stale.length} stale line(s): ${stale.map((i) => `${i.id} "${truncate(i.text, 60)}"`).join(", ")}`)
@@ -804,6 +831,10 @@ export class Assistant {
     this.current = null
     if (this.ackTimer) clearTimeout(this.ackTimer)
     this.ackTimer = null
+    // A turn that ended without a word from her (a tool, nothing to say):
+    // he's still talking with her, so the window opens as it does when she
+    // finishes speaking.
+    if (!rec.spoken.length && !rec.muted && !this.micMuted && !this.mouth.speaking && !this.mouth.pendingStart) this.openFollowUp()
     this.turnWaiters.get(rec.id)?.(rec)
     this.turnWaiters.delete(rec.id)
     this.changed()
@@ -1276,7 +1307,8 @@ export class Assistant {
   status(): HudState {
     const now = Date.now()
     if (this.mouth.speaking) return "speaking"
-    if (this.micMuted) return this.current ? "thinking" : this.backgroundBusy() ? "working" : "idle"
+    // Listening off: she's off, whatever was winding down.
+    if (this.micMuted) return this.backgroundBusy() ? "working" : "idle"
     // Shawn is talking to Vera (after the wake word, in the window, or over her).
     if (this.bargePending || (this.inSpeech && this.speechEngaged)) return "listening"
     if (this.current || this.queue.length || this.mouth.pendingStart) return "thinking"
@@ -1347,8 +1379,40 @@ export class Assistant {
     }
   }
 
+  /**
+   * Shawn asked her to stop listening. She finishes what she's saying (the
+   * goodbye), then the App turns Listening off, as the tray would; only the
+   * tray turns it back on.
+   */
+  stopListening() {
+    this.log("stop listening: asked by voice; off once she's done speaking")
+    this.offRequested = Date.now()
+    this.changed()
+  }
+
+  private maybeTurnOff() {
+    if (this.offRequested === null || this.micMuted) return
+    const quiet = !this.mouth.speaking && !this.mouth.pendingStart && !this.current && !this.queue.length
+    // Her words never coming (a stuck line) doesn't keep her on for long.
+    if (!quiet && Date.now() - this.offRequested < 30_000) {
+      if (!this.offTimer) {
+        this.offTimer = setTimeout(() => {
+          this.offTimer = null
+          this.changed()
+        }, 1000)
+        this.offTimer.unref()
+      }
+      return
+    }
+    this.offRequested = null
+    this.log("stop listening: turning Listening off")
+    this.send({ cmd: "listening", on: false })
+  }
+
+  private offTimer: NodeJS.Timeout | null = null
   private changeTimer: NodeJS.Timeout | null = null
   changed() {
+    this.maybeTurnOff()
     // The HUD and badge follow state at once, and the HUD is checked again
     // shortly after, for state that settles right after a change.
     this.syncHud()

@@ -59,6 +59,12 @@ pub(crate) enum CoreCommand {
         #[serde(default)]
         voice: Option<String>,
     },
+    /// Shawn asked her, by voice, to stop listening (`on: false`): the app
+    /// turns Listening off, as the tray does. Only the tray (or
+    /// `assistant listen on`) turns it back on, since she can't hear him.
+    Listening {
+        on: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]

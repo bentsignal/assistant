@@ -134,6 +134,16 @@ if muted.
   unasked comes back after 1, 2, 5, 10, then 30 s.
 - **Core dying** cuts what it asked to say, hides the HUD, and alerts; the
   supervisor brings it back.
+- **Listening on/off** (the tray's first item, `app.listening`, saved, so
+  she starts off after a reboot if he left her off). Off is completely off:
+  the microphone's sound reaches nothing (no wake word, no barge-in), what
+  she's saying stops, held lines end, Core drops the turn (`ui` `mute`), a
+  `speak` ends `interrupted` unplayed, chimes are silent, and the tray mark
+  is dimmed ("not listening" in the tooltip). One click turns her back on.
+  `assistant listen on|off` does the same from a terminal (named events,
+  like `assistant quit`). By voice ("stop listening") the brain's
+  `stop_listening` tool has Core send `{"cmd":"listening","on":false}` once
+  her goodbye has played; only the tray or the CLI turn her back on.
 - **The HUD's caps**: listening ends 30 s after the last speech the engine
   heard (never while he's talking: an open utterance only gets a 3-minute
   safety net from its last partial), thinking 100 s, speaking 3 min while a

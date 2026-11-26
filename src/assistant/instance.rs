@@ -55,8 +55,29 @@ pub(crate) fn signal_legacy_quit(old_home: &std::path::Path) -> bool {
 
 /// Asks the running Vera to quit (`vera quit`); false when none runs.
 pub(crate) fn signal_quit() -> bool {
+    signal("Quit")
+}
+
+/// Asks the running app to turn Listening on or off (`assistant listen`);
+/// false when none runs.
+pub(crate) fn signal_listening(on: bool) -> bool {
+    signal(if on { "ListenOn" } else { "ListenOff" })
+}
+
+/// Calls `on_change` with the state `assistant listen on|off` asks for.
+pub(crate) fn forward_listening(on_change: impl Fn(bool) + Send + Sync + 'static) {
+    let on_change = std::sync::Arc::new(on_change);
+    for on in [true, false] {
+        let on_change = on_change.clone();
+        forward(if on { "ListenOn" } else { "ListenOff" }, move || {
+            on_change(on)
+        });
+    }
+}
+
+fn signal(kind: &str) -> bool {
     use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW};
-    let name = wide(&name("Quit"));
+    let name = wide(&name(kind));
     // SAFETY: a NUL-terminated name that outlives the call.
     let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr()) };
     if event.is_null() {
@@ -87,18 +108,22 @@ pub(crate) fn is_running() -> bool {
 
 /// Calls `on_quit` when `vera quit` signals this Vera.
 pub(crate) fn forward_quit(on_quit: impl Fn() + Send + 'static) {
-    let name = wide(&name("Quit"));
+    forward("Quit", on_quit);
+}
+
+fn forward(kind: &str, on_signal: impl Fn() + Send + 'static) {
+    let name = wide(&name(kind));
     // SAFETY: as above; the handle stays open for the process's life.
     let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) } as usize;
     if event == 0 {
         return;
     }
     let _ = std::thread::Builder::new()
-        .name("assistant-quit".into())
+        .name(format!("assistant-{}", kind.to_lowercase()))
         .spawn(move || {
             // SAFETY: the handle is never closed.
             while unsafe { WaitForSingleObject(event as HANDLE, INFINITE) } == 0 {
-                on_quit();
+                on_signal();
             }
         });
 }

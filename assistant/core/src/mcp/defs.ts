@@ -46,6 +46,12 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "stop_listening",
+    description:
+      "Turn yourself off: ONLY when Shawn asks you to stop listening, go to sleep, or turn yourself off. Speak a few words first; you turn off once you've finished speaking, then hear nothing and say nothing until he turns Listening back on from the tray (you can't turn yourself back on). Never for 'stop', 'never mind' or 'be quiet' alone.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "show",
     description:
       "Open a small popup card on Shawn's screen, for something worth SEEING rather than hearing: a short list, a recipe's steps, a table, a link, a snippet of code. Keep it short (a title and a few lines of Markdown); don't show what you can say in a sentence. Speak a few words with it ('It's on screen.'). Returns the card id.",

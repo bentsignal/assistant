@@ -1,8 +1,9 @@
 //! Vera's tray icon: `Shell_NotifyIcon` from a hidden window on its own
 //! thread, like Rune's tray (which Hex uses), plus what Vera needs that one
-//! lacks: a checked item (Mute microphone), a disabled one (Stop talking
-//! while silent), a bold default item, and an icon that changes (the inbox
-//! badge, a dimmed mark while muted). The mark is drawn at the size the
+//! lacks: a checked item (Listening, at the top: one click turns her off
+//! and on), a disabled one (Stop talking while silent), a bold default
+//! item, and an icon that changes (the inbox badge, a dimmed mark while
+//! she isn't listening). The mark is drawn at the size the
 //! notification area asks for, white or black for the taskbar's theme.
 //!
 //! Left click opens Settings; right click opens the menu. The icon comes
@@ -44,7 +45,7 @@ const ICON_ID: u32 = 1;
 const CAPTURE_TIMER: usize = 7;
 
 const ID_SETTINGS: u16 = 1;
-const ID_MUTE: u16 = 2;
+const ID_LISTENING: u16 = 2;
 const ID_STOP: u16 = 3;
 const ID_QUIT: u16 = 4;
 const ID_UPDATE: u16 = 5;
@@ -52,6 +53,7 @@ const ID_UPDATE: u16 = 5;
 /// What the tray shows.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TrayState {
+    /// Listening is off: the item is unchecked and the mark dimmed.
     pub(crate) muted: bool,
     pub(crate) speaking: bool,
     /// Inbox items: a dot on the icon while above zero.
@@ -72,7 +74,7 @@ pub(crate) struct TrayState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TrayEvent {
     Settings,
-    ToggleMute,
+    ToggleListening,
     StopTalking,
     Quit,
 }
@@ -224,16 +226,17 @@ fn menu(state: &TrayState) -> HMENU {
                 wide(label).as_ptr(),
             );
         };
+        // At the top, so turning her off (a game with friends) is one click.
+        item(
+            ID_LISTENING,
+            "Listening",
+            if state.muted { 0 } else { MF_CHECKED },
+        );
+        AppendMenuW(popup, MF_SEPARATOR, 0, ptr::null());
         item(
             ID_SETTINGS,
             &format!("{} settings…", display_name(state)),
             0,
-        );
-        AppendMenuW(popup, MF_SEPARATOR, 0, ptr::null());
-        item(
-            ID_MUTE,
-            "Mute microphone",
-            if state.muted { MF_CHECKED } else { 0 },
         );
         item(
             ID_STOP,
@@ -270,7 +273,7 @@ fn pick(hwnd: HWND, context: &Context, at: POINT) -> Option<TrayEvent> {
     };
     match u16::try_from(picked).ok()? {
         ID_SETTINGS | ID_UPDATE => Some(TrayEvent::Settings),
-        ID_MUTE => Some(TrayEvent::ToggleMute),
+        ID_LISTENING => Some(TrayEvent::ToggleListening),
         ID_STOP => Some(TrayEvent::StopTalking),
         ID_QUIT => Some(TrayEvent::Quit),
         _ => None,

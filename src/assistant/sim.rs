@@ -5,7 +5,8 @@
 //! - `mic <gain_db> <wav path>`: say that WAV into the simulated microphone
 //!   (answers `ok <ms>`, how long it plays); `mic-clear` drops what's queued.
 //! - `voice <id>|default`, `volume <0..1>`, `microphone <name>|default`,
-//!   `mute on|off`: what the Settings window would do.
+//!   `mute on|off`: what the Settings window would do; `listen on|off`:
+//!   the tray's Listening item.
 //! - `stop`: the Stop talking hotkey.
 //! - `sim echo_db=…,delay_ms=…,noise_db=…`: other simulated devices, live
 //!   (a headset: `sim echo_db=-90,delay_ms=20,noise_db=-100`).
@@ -108,6 +109,8 @@ fn command(line: &str, messages: &Sender<Msg>) -> Result<String, String> {
         }
         "microphone" => ui(messages, UiAction::SetMicrophone(named(rest))),
         "mute" => ui(messages, UiAction::SetMuted(rest == "on")),
+        // What the tray's Listening item does: `listen on|off`.
+        "listen" => ui(messages, UiAction::SetMuted(rest == "off")),
         // What Settings › Updates does: `update check`, `update install`,
         // `update channel stable|nightly`.
         "update" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {

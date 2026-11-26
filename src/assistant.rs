@@ -75,6 +75,12 @@ struct Cli {
 enum Command {
     /// Quit the running Vera (and every process it started).
     Quit,
+    /// Turn the running app's Listening on or off, as the tray does.
+    Listen {
+        /// `on` or `off`.
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
     /// Check for (or install) the update channel's current release.
     Update {
         /// Download, verify, and switch to it (restarts the app).
@@ -156,6 +162,13 @@ pub(crate) fn main(dll_search: std::io::Result<()>) -> Result<()> {
                 update::install::note(&format!("update supervisor: {error:#}"));
             }
             result
+        }
+        Some(Command::Listen { state }) => {
+            if !instance::signal_listening(state == "on") {
+                eprintln!("Assistant isn't running");
+                std::process::exit(3);
+            }
+            Ok(())
         }
         Some(Command::Quit) => {
             if !instance::signal_quit() {

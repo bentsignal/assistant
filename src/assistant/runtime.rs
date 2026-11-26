@@ -189,8 +189,16 @@ pub(crate) fn run(hidden: bool) -> Result<()> {
             let _ = relaunch.send(Msg::OpenSettings);
         });
         let messages = messages.clone();
-        super::instance::forward_quit(move || {
-            let _ = messages.send(Msg::Tray(TrayEvent::Quit));
+        {
+            let messages = messages.clone();
+            super::instance::forward_quit(move || {
+                let _ = messages.send(Msg::Tray(TrayEvent::Quit));
+            });
+        }
+        let messages = std::sync::Mutex::new(messages.clone());
+        super::instance::forward_listening(move |on| {
+            let messages = messages.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = messages.send(Msg::Ui(UiAction::SetMuted(!on)));
         });
     }
     let controller = {
@@ -326,6 +334,8 @@ impl Controller {
         hud: HudSender,
         card: CardHandle,
     ) -> Self {
+        // He left her off: she starts off (after a reboot too).
+        let starts_off = !config.listening;
         let core = {
             let messages = messages.clone();
             Supervisor::new("core", core_spec(&config), move |line| {
@@ -420,7 +430,7 @@ impl Controller {
             mic_heard_at: Instant::now(),
             mic_silent: false,
             heard_speech: false,
-            muted: false,
+            muted: starts_off,
             speaking: None,
             badge: 0,
             core_hud: HudState::Idle,
@@ -720,6 +730,8 @@ impl Controller {
                 }
             }
             CoreCommand::Hud { state } => self.core_hud(state),
+            // Off is off: no chime either (the badge still shows the inbox).
+            CoreCommand::Chime { .. } if self.muted => {}
             CoreCommand::Chime { kind } => {
                 let chime = match kind {
                     ChimeKind::Notify | ChimeKind::Other => engine::ChimeKind::Notify,
@@ -768,6 +780,10 @@ impl Controller {
                 self.config.voice = voice;
                 self.publish(true);
             }
+            CoreCommand::Listening { on: false } => self.set_listening(false, "core"),
+            CoreCommand::Listening { on: true } => {
+                tracing::warn!("Core asked to turn Listening on; only the tray does that");
+            }
             CoreCommand::Error { what, message } => {
                 let title = match what.as_str() {
                     "brain" => "{name}'s brain failed",
@@ -780,6 +796,15 @@ impl Controller {
     }
 
     fn speak(&mut self, speak_id: String, text: String, voice: Option<String>) {
+        if self.muted {
+            // Listening is off: she says nothing.
+            tracing::info!(speak_id, "not listening; a line ends unplayed");
+            self.tell_core(AppEvent::Playback {
+                speak_id,
+                state: "interrupted",
+            });
+            return;
+        }
         self.commit_heard();
         self.remember(false, &text);
         // An explicit voice (`app.voice`) beats the waking persona's.
@@ -991,6 +1016,11 @@ impl Controller {
         {
             let state = self.core_hud;
             self.core_hud(state);
+        } else if self.speaking.is_none() && self.look == Some(AssistantLook::Speaking) {
+            // Core says what's next in a moment; the speaking look's idle
+            // cap counts from the end of her voice, not its start (it used
+            // to hide the HUD the instant every line ended).
+            self.look_since = Instant::now();
         }
     }
 
@@ -1227,7 +1257,7 @@ impl Controller {
         if trace::enabled() && self.traced_tray.as_ref() != Some(&tray) {
             trace::record(
                 "tray",
-                json!({"tooltip": tray.tooltip, "problem": tray.problem, "speaking": tray.speaking}),
+                json!({"tooltip": tray.tooltip, "problem": tray.problem, "speaking": tray.speaking, "muted": tray.muted}),
             );
             self.traced_tray = Some(tray.clone());
         }

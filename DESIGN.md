@@ -90,7 +90,7 @@ and its old start-at-login entry is removed.
 
 ```ts
 assistant.exe   (Rust, from this fork; Windows GUI subsystem, single instance, start at login)
- ├─ tray icon + menu:  Settings…  ·  Mute microphone  ·  Stop talking  ·  Quit
+ ├─ tray icon + menu:  Listening ✓  ·  Settings…  ·  Stop talking  ·  Quit
  ├─ HUD overlay        (Hex's rune_hud look; visible only while engaged)
  ├─ card popup         (Rune window; Vera opens and closes it)
  ├─ settings window    (Rune, Hex style, minimal)
@@ -267,7 +267,13 @@ A local process the app spawns (hidden), listening on `127.0.0.1`:
   when asked ("Vera, what's new?"). The inbox digest goes to the brain with
   the next user turn.
 - **Wake word** "Vera" (fuzzy matching; see `assistant/core/src/gate.ts`), or the
-  follow-up window after Vera speaks, or a barge-in.
+  follow-up window after Vera speaks, or a barge-in. The window (8 s) also
+  counts from the end of his own accepted words and opens when a turn ends
+  with nothing said, so a man still talking to her is never cut off; an
+  utterance is hers when the window was open as his voice began, and an
+  open utterance ends only on its final or a minute with no new words (the
+  2026-11-26 log: a 65 s monologue cut at 60 s, and his next sentences after
+  a silent turn ignored).
 - **Thin brain.** The brain doesn't edit files and has no shell; it
   delegates. It runs programs only through its skills (`run_command`: a
   program some skill lists, no shell, bounded time and output) and uses the

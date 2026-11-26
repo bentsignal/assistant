@@ -703,3 +703,65 @@ test("he goes on just as she starts: she stops, and the rest joins his request",
     await app.stop()
   }
 })
+
+test("a turn she answers with nothing keeps the conversation open: he goes on without the wake word", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [
+      { match: "living room lights", steps: [{ sleep: 200 }] },
+      { match: "kitchen", steps: [{ tool: "speak", args: { text: "Kitchen dimmed." } }] },
+    ],
+  })
+  try {
+    const m = app.mark
+    await app.say("Vera, turn off the living room lights.")
+    await sleep(800) // her silent turn ends
+    await app.say("And dim the kitchen ones too.")
+    const s = await app.waitFor(isCmd("speak"), 5000, m)
+    assert.equal((s as any).text, "Kitchen dimmed.")
+    const st = await app.state()
+    assert.deepEqual(
+      st.turns.map((t: any) => t.via),
+      ["wake", "followup"],
+    )
+  } finally {
+    await app.stop()
+  }
+})
+
+test("Listening off: everything stops, nothing is heard; stop_listening turns her off after her line", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [
+      { match: "long story", steps: [{ tool: "speak", args: { text: "Once upon a time." } }, { tool: "speak", args: { text: "The end." } }] },
+      { match: "stop listening", steps: [{ tool: "speak", args: { text: "Okay, I'll stop listening." } }, { tool: "stop_listening", args: {} }] },
+    ],
+  })
+  try {
+    const m = app.mark
+    await app.say("Vera, stop listening.")
+    const bye = await app.waitFor(isCmd("speak"), 5000, m)
+    assert.equal((bye as any).text, "Okay, I'll stop listening.")
+    const off = await app.waitFor(isCmd("listening"), 5000, m)
+    assert.equal((off as any).on, false)
+    assert.ok(app.cmds.indexOf(bye) < app.cmds.indexOf(off), "she says her line before turning off")
+    // The App turns Listening off: Core hears nothing, says nothing.
+    app.send({ type: "ui", action: "mute" })
+    await app.waitFor(isHud("idle"), 3000, app.mark)
+    const m2 = app.mark
+    await app.say("Vera, tell me a long story.")
+    await sleep(600)
+    assert.deepEqual(spoken(app.since(m2)), [])
+    app.send({ type: "ui", action: "unmute" })
+    const m3 = app.mark
+    await app.say("Vera, tell me a long story.")
+    assert.equal(((await app.waitFor(isCmd("speak"), 5000, m3)) as any).text, "Once upon a time.")
+    // Off mid-reply: the reply and the turn stop.
+    app.send({ type: "ui", action: "mute" })
+    await app.waitFor(isCmd("stop_speaking"), 3000, m3)
+    await sleep(500)
+    assert.ok(!spoken(app.since(m3)).includes("The end."), "the rest of the reply never went out")
+  } finally {
+    await app.stop()
+  }
+})

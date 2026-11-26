@@ -18,7 +18,7 @@ pub(crate) enum Dot {
 
 /// The mark as straight RGBA, `size` pixels square. `dot` adds one in the
 /// top right corner (inbox items, or a problem), cut clear of the mark;
-/// `dim` fades the mark (microphone muted).
+/// `dim` fades the mark (Listening is off).
 pub(crate) fn tray_rgba(size: u32, light_taskbar: bool, dot: Dot, dim: bool) -> Vec<u8> {
     let n = size as usize;
     let ink = if light_taskbar { 0u8 } else { 255u8 };

@@ -42,6 +42,8 @@ export type CoreCommand =
    * from the next `speak`; null clears it (each persona's own voice again).
    */
   | { cmd: "voice"; voice: string | null }
+  /** Shawn asked her to stop listening: the App turns Listening off (only the tray turns it back on). */
+  | { cmd: "listening"; on: false }
 
 const EVENT_TYPES = new Set(["ready", "speech_start", "partial", "final", "speech_cancel", "barge_in", "playback", "ui"])
 

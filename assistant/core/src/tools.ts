@@ -180,6 +180,11 @@ export const HANDLERS: Record<string, ToolHandler> = {
     return `Your voice volume is now ${pct(to)} (was ${pct(from)}). The computer's volume is unchanged.`
   },
 
+  stop_listening(assistant) {
+    assistant.stopListening()
+    return "You'll stop listening as soon as you've finished speaking. Say nothing more after this turn; Shawn turns you back on from the tray."
+  },
+
   ask_claude: (assistant, args) => ask(assistant, "claude", args),
   ask_codex: (assistant, args) => ask(assistant, "codex", args),
   ask_grok: (assistant, args) => ask(assistant, "grok", args),

@@ -3,8 +3,18 @@
 //! reaches Core as speech. A confirmation releases the held events in
 //! order; a false alarm drops them. Everything else passes straight
 //! through.
+//!
+//! An utterance whose start reaches back into a false alarm but which Ears
+//! announced only after it was decided is held to its end, not dropped: one
+//! that goes on well past the false alarm is the user, who had started
+//! talking as her voice ended (2026-11-26, four of Shawn's sentences lost
+//! that way), and it reaches Core whole. One that ends with it is her echo.
 
 use crate::assistant_ears::protocol::{Event, Sink};
+
+/// A late utterance that ends more than this after its false alarm was
+/// decided is the user's, not her echo's.
+const LATE_SPEECH_MS: u64 = 1_200;
 
 /// An Ears event, owned.
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +83,11 @@ pub(crate) struct Gate {
     /// alarm and are dropped when they arrive late.
     dropping_from: Option<u64>,
     dropping_until: u64,
+    /// Utterances held when the false alarm was decided: echo, dropped.
+    doomed: Vec<u64>,
+    /// An utterance announced after the false alarm was decided, whose
+    /// onset reaches back into it: held until its end shows whose it is.
+    late: Option<Held>,
 }
 
 impl Gate {
@@ -89,10 +104,34 @@ impl Gate {
         let Some(onset) = onset else {
             return vec![event];
         };
+        if let Some(late) = self.late.as_mut().filter(|late| late.onset == onset) {
+            late.events.push(event);
+            let last = late.events.last().expect("just pushed");
+            return match last {
+                Heard::Final { end, .. } if *end > self.dropping_until + LATE_SPEECH_MS => {
+                    tracing::info!(
+                        onset,
+                        "an utterance begun in a false alarm went on past it; it's the user's"
+                    );
+                    self.late.take().map(|late| late.events).unwrap_or_default()
+                }
+                Heard::Final { .. } | Heard::SpeechCancel { .. } => {
+                    self.late = None;
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
+        }
         if let Some(from) = self.dropping_from
             && onset >= from
             && onset <= self.dropping_until
         {
+            if matches!(event, Heard::SpeechStart { .. }) && !self.doomed.contains(&onset) {
+                self.late = Some(Held {
+                    onset,
+                    events: vec![event],
+                });
+            }
             return Vec::new();
         }
         if let Some(held) = self.held.iter_mut().find(|held| held.onset == onset) {
@@ -117,7 +156,8 @@ impl Gate {
     /// A false alarm that began at `from` (epoch ms) and was decided at
     /// `until`: drops what is held, and what arrives late for it.
     pub(crate) fn drop_held(&mut self, from: u64, until: u64) {
-        self.held.clear();
+        self.doomed = self.held.drain(..).map(|held| held.onset).collect();
+        self.late = None;
         self.dropping_from = Some(from);
         self.dropping_until = until;
     }
@@ -137,6 +177,7 @@ impl Gate {
     /// dropped any more.
     pub(crate) fn forgive(&mut self) {
         self.dropping_from = None;
+        self.doomed.clear();
     }
 }
 
@@ -188,5 +229,30 @@ mod tests {
         assert!(gate.admit(cancel, false).is_empty());
         assert!(gate.admit(final_("late", 1_000), false).is_empty());
         assert_eq!(gate.admit(start(2_000), false), [start(2_000)]);
+    }
+
+    #[test]
+    fn an_utterance_announced_after_a_false_alarm_is_his_when_it_goes_on() {
+        let mut gate = Gate::default();
+        gate.drop_held(850, 1_200);
+        // Her echo: announced late, ends with the false alarm.
+        assert!(gate.admit(start(1_000), false).is_empty());
+        assert!(gate.admit(final_("you", 1_000), false).is_empty());
+        // Him, starting as her voice ended and going on for seconds.
+        let late = Heard::Final {
+            text: "Just turn off the living room".into(),
+            start: 1_100,
+            end: 4_000,
+        };
+        let partial = Heard::Partial {
+            text: "just turn".into(),
+            t: 2_000,
+        };
+        assert!(gate.admit(start(1_100), false).is_empty());
+        assert!(gate.admit(partial.clone(), false).is_empty());
+        assert_eq!(
+            gate.admit(late.clone(), false),
+            [start(1_100), partial, late]
+        );
     }
 }

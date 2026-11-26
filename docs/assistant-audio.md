@@ -231,6 +231,14 @@ path changes, is not interruptible. While AEC3 isn't actually cancelling
 audible), only the suppressed output can trigger, and confirmation needs
 both signals.
 
+**A false alarm's late utterance.** An utterance whose onset reaches back
+into a dismissed suspicion but that Ears announced only after the verdict
+used to be dropped whole as her echo. That lost four of Shawn's sentences on
+2026-11-26, each begun as her line ended ("Just turn off the living room
+just to test"). `gate.rs` now holds such an utterance to its end and lets it
+through when it ends more than 1.2 s after the verdict (the user's), and
+still drops one that ends with it (her echo).
+
 **Ears during playback.** While Vera's voice (or its 300 ms tail) is in the
 room and nobody is suspected of talking, the endpointer starts nothing, so
 her echo never becomes an utterance; `gate.rs` holds any utterance that
@@ -309,7 +317,7 @@ This is how `assistant.exe` wires it (`src/assistant/runtime.rs`; `docs/assistan
   and the tray's Stop talking and the hotkey → `audio.stop_playback()`;
   `set_volume` → `audio.set_volume(level)` (and persist it); `chime` →
   `audio.chime(kind.parse()?)`.
-- Tray Mute microphone → `audio.set_mic_muted(true/false)`.
+- Tray Listening off → `audio.set_mic_muted(true)` and `audio.stop_playback()`; on → `set_mic_muted(false)`.
 - HUD: poll `audio.levels()` at the frame rate (`mic` is the user after
   echo cancellation, `out` is Vera before her volume); `listening` while a
   `speech_start` is open, `speaking` between `playback started` and its

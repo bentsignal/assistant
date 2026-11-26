@@ -105,6 +105,13 @@ const U = {
   // Said 1 s after she has started thinking about the first part.
   deploy: "Vera, check on the deploy.",
   deployMore: "And roll back the staging server if it failed.",
+  // A turn she answers with nothing (a tool, no words), then he goes on
+  // 3 s later with no wake word (Shawn's log, 2026-11-26 15:34:55).
+  lights: "Vera, turn off the living room lights.",
+  lightsMore: "And dim the kitchen ones too.",
+  // Listening off by voice.
+  sleepNow: "Vera, stop listening for a while.",
+  awake: "Vera, are you listening again?",
 }
 
 const LONG = {
@@ -124,6 +131,10 @@ const LONG = {
 const speak = (text) => ({ tool: "speak", args: { text } })
 const rule = (key, steps) => ({ match: `\\] Shawn: .*${key}`, steps })
 const SCRIPT = [
+  rule("dim the kitchen", [speak("Kitchen dimmed.")]),
+  rule("living room lights", [{ sleep: 300 }]),
+  rule("listening again", [speak("Yes, I'm listening.")]),
+  rule("stop listening", [speak("Okay, I'll stop listening."), { tool: "stop_listening", args: {} }]),
   rule("norway", [speak("Oslo.")]),
   rule("lisbon.*madrid", [speak("Both are sunny.")]),
   rule("flaky build.*tests", [speak("The build and the tests.")]),
@@ -837,6 +848,60 @@ class Run {
 
     await step("a 3 s pause after a trailing 'and' stays one turn", async () => {
       await twoParts("andA", "andB", "Both are sunny.")
+    })
+
+    await step("he goes on after a turn she answered with nothing: still listening, no wake word needed", async () => {
+      const first = await this.say("lights")
+      await this.heard(first)
+      this.addressed++
+      // Her silent turn ends; he carries on, as Shawn did.
+      await sleep(2500)
+      const rest = await this.say("lightsMore")
+      await this.heard(rest)
+      this.steps.push({ said: rest, replies: ["Kitchen dimmed."] })
+      await this.reply(rest, "Kitchen dimmed.")
+      this.checkReachedBrain("lightsMore", rest.at, "what he said after her silent turn")
+      await this.hidden()
+    })
+
+    await step("Listening off from the tray: nothing wakes her, a reply stops; on again: she answers", async () => {
+      const said = await this.say("story")
+      await this.heard(said)
+      await this.trace.waitFor(isTo("playback", (m) => m.state === "started"), { after: said.at, within: 15_000, what: "the story to start" })
+      const off = now()
+      await this.control("listen off")
+      const cut = await this.trace.waitFor(isTo("playback", (m) => m.state !== "started"), { after: off, within: 3000, what: "the story to stop" })
+      this.check(cut.msg.state === "interrupted", `the reply stopped (${cut.msg.state})`)
+      await this.trace.waitFor((e) => e.kind === "tray" && e.muted, { after: off, within: 3000, what: "the tray to show Listening off" })
+      await this.hidden(5000)
+      const ignored = await this.say("there")
+      await sleep(4000)
+      this.check(this.trace.find(isTo("speech_start"), ignored.at).length === 0, "her name woke nothing while off")
+      this.check(this.trace.find(isFrom("speak"), ignored.at).length === 0, "she said nothing while off")
+      this.check(this.trace.find((e) => e.kind === "chime", ignored.at).length === 0, "no chime while off")
+      const cfg = JSON.parse(readFileSync(join(this.home, "config.json"), "utf8"))
+      this.check(cfg.app?.listening === false, `Listening off is saved (app.listening = ${cfg.app?.listening})`)
+      // Off closes the microphone; the simulated one keeps what was said
+      // into it meanwhile (a real one doesn't), so it's dropped here.
+      await this.control("mic-clear")
+      await this.control("listen on")
+      await sleep(500)
+      await this.turn("awake", "Yes, I'm listening.")
+      await this.hidden()
+    })
+
+    await step("'stop listening' by voice: she says so, then turns herself off", async () => {
+      const said = await this.say("sleepNow")
+      await this.heard(said)
+      this.addressed++
+      this.steps.push({ said, replies: ["Okay, I'll stop listening."] })
+      const played = await this.reply(said, "Okay, I'll stop listening.")
+      const off = await this.trace.waitFor(isFrom("listening", (m) => m.on === false), { after: said.at, within: 5000, what: "Core turning Listening off" })
+      this.check(off.t >= played.ended.t - 50, "she finished her line before turning off")
+      await this.trace.waitFor((e) => e.kind === "tray" && e.muted, { after: off.t, within: 3000, what: "the tray to show Listening off" })
+      await this.control("listen on")
+      await sleep(500)
+      await this.hidden()
     })
 
     await step("he goes on while she's still thinking: one turn, no answer to half of it", async () => {

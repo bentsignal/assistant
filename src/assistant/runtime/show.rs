@@ -218,8 +218,9 @@ impl Controller {
         if self.muted {
             return Status {
                 tone: Tone::Quiet,
-                title: "Microphone muted".into(),
-                detail: "{name} can't hear you until you unmute".into(),
+                title: "Not listening".into(),
+                detail: "{name} is off: nothing wakes her. Turn Listening back on from the tray"
+                    .into(),
             };
         }
         match &self.voice_service.state {
@@ -339,7 +340,7 @@ impl Controller {
         } else if self.speaking.is_some() {
             "speaking".into()
         } else if self.muted {
-            "microphone muted".into()
+            "not listening".into()
         } else if self.core_hud == HudState::Working {
             "working on a job".into()
         } else if self.ready.is_none() {

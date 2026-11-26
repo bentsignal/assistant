@@ -300,8 +300,8 @@ pub(crate) const SCENES: &[Scene] = &[
         ui.view.muted = true;
         ui.view.status = Status {
             tone: Tone::Quiet,
-            title: "Microphone muted".into(),
-            detail: "Vera can't hear you until you unmute".into(),
+            title: "Not listening".into(),
+            detail: "Vera is off: nothing wakes her. Turn Listening back on from the tray".into(),
         };
     }),
     ("settings-voice-menu", |ui| ui.open = Some(Open::Voice)),
@@ -443,7 +443,7 @@ fn status(ui: &AssistantUi, p: Paint) -> El {
         Tone::Problem => status_dot(p.danger()),
     };
     let muted = ui.view.muted;
-    let action = Button::new(if muted { "Unmute" } else { "Mute" })
+    let action = Button::new(if muted { "Listen" } else { "Stop listening" })
         .variant(if muted {
             ButtonVariant::Contrast
         } else {

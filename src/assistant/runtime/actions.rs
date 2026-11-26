@@ -11,14 +11,13 @@ use crate::assistant::config::{self, Config};
 use crate::assistant::protocol::AppEvent;
 use crate::assistant::trace;
 use crate::assistant::tray::TrayEvent;
-use crate::dictation::indicator::AssistantLook;
 use crate::rune_ui::assistant::UiAction;
 
 impl Controller {
     pub(super) fn tray_event(&mut self, event: TrayEvent) -> bool {
         match event {
             TrayEvent::Settings => self.open_settings(),
-            TrayEvent::ToggleMute => self.set_muted(!self.muted),
+            TrayEvent::ToggleListening => self.set_listening(self.muted, "tray"),
             TrayEvent::StopTalking => self.stop_talking(),
             TrayEvent::Quit => return true,
         }
@@ -106,7 +105,7 @@ impl Controller {
                 }
                 self.at_login = crate::assistant::login::registered().is_some();
             }
-            UiAction::SetMuted(muted) => self.set_muted(muted),
+            UiAction::SetMuted(muted) => self.set_listening(!muted, "settings"),
             UiAction::CardClosed(card_id) => self.tell_core(AppEvent::Ui {
                 action: "card_closed",
                 card_id,
@@ -160,18 +159,36 @@ impl Controller {
         }
     }
 
-    fn set_muted(&mut self, muted: bool) {
+    /// The Listening switch (the tray, Settings, `assistant listen`, or
+    /// Core asking by voice). Off, she's completely off: the microphone's
+    /// sound reaches nothing (no wake word, no barge-in), what she's saying
+    /// stops, and Core drops the turn. It's saved, so a restart keeps it.
+    pub(super) fn set_listening(&mut self, on: bool, by: &str) {
+        let muted = !on;
         if muted == self.muted {
             return;
         }
+        tracing::info!(on, by, "listening switched");
+        trace::record("listening", json!({"on": on, "by": by}));
         self.muted = muted;
+        if self.config.listening != on {
+            self.save(|root| *config::slot(root, &["app", "listening"]) = json!(on));
+        }
         if let Some(audio) = &self.audio {
             audio.set_mic_muted(muted);
+            if muted {
+                audio.stop_playback();
+            }
+        }
+        if muted {
+            // Lines waiting for the voice to load never play either.
+            self.drop_held(true);
         }
         self.tell_core(AppEvent::ui(if muted { "mute" } else { "unmute" }));
-        if muted && self.look == Some(AssistantLook::Listening) {
-            self.idle_at = Some(Instant::now());
+        if muted && self.look.is_some() {
+            self.hide("not listening");
         }
+        self.publish(true);
     }
 
     pub(super) fn stop_talking(&mut self) {

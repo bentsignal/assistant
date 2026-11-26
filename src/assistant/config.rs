@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! "app": {
-//!   "microphone": null, "volume": 0.7, "voice": null,
+//!   "listening": true, "microphone": null, "volume": 0.7, "voice": null,
 //!   "startAtLogin": true, "stopHotkey": "Ctrl+Alt+Space", "hud": "bottom",
 //!   "repo": null,
 //!   "core": { "command": null, "entry": "assistant/core/src/main.ts", "args": ["--stdio"] },
@@ -144,6 +144,9 @@ pub(crate) struct Launch {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Config {
+    /// The tray's Listening switch (`app.listening`, on unless he turned it
+    /// off): off, the microphone wakes nothing and she says nothing.
+    pub(crate) listening: bool,
     /// A microphone by name; `None` follows the system default.
     pub(crate) microphone: Option<String>,
     pub(crate) volume: f32,
@@ -232,6 +235,7 @@ pub(crate) fn default_personas(name: &str) -> Vec<Persona> {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            listening: true,
             microphone: None,
             volume: DEFAULT_VOLUME,
             voice: None,
@@ -287,6 +291,7 @@ impl Config {
     fn from_value(root: &Value) -> Self {
         let mut config = Self::default();
         let app = &root["app"];
+        config.listening = app["listening"].as_bool().unwrap_or(true);
         config.microphone = string(&app["microphone"]);
         if let Some(volume) = app["volume"].as_f64() {
             config.volume = (volume as f32).clamp(0.0, 1.0);
@@ -475,6 +480,8 @@ mod tests {
         assert_eq!(config.volume, 0.2);
         assert_eq!(config.microphone.as_deref(), Some("Headset"));
         assert!(!config.hud_bottom);
+        assert!(config.listening);
+        assert!(!Config::from_value(&json!({ "app": { "listening": false } })).listening);
         assert_eq!(config.voice_port, 9000);
         assert_eq!(config.voice_service.command.as_ref().unwrap().len(), 2);
         assert_eq!(Config::from_value(&json!({})), Config::default());
