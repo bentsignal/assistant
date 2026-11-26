@@ -156,6 +156,8 @@ export class AppMouth {
   private seq = 0
   private endTimer: NodeJS.Timeout | null = null
   private stopping = false
+  /** Nothing new goes to the App until `release()` (Shawn went on talking before she began). */
+  private held = false
   private startTimeoutMs: number
   private graceMs: number
 
@@ -208,8 +210,44 @@ export class AppMouth {
     return [...this.queue]
   }
 
+  /** Whether lines are being held back (`hold()`). */
+  get holding(): boolean {
+    return this.held
+  }
+
+  /**
+   * Holds her lines back while Shawn is still talking: nothing new is sent,
+   * and a line sent but not yet playing is taken back (stopped in the App,
+   * queued again under a new id). Something already playing goes on (a
+   * barge-in stops that). `release()` or `cut()` ends the hold.
+   */
+  hold() {
+    if (this.held) return
+    this.held = true
+    const cur = this.current
+    if (!cur || cur.state !== "sent") return
+    if (cur.timer) clearTimeout(cur.timer)
+    this.stopping = true
+    this.link.send({ cmd: "stop_speaking" })
+    this.stopping = false
+    this.items.delete(cur.id)
+    cur.id = `s${++this.seq}`
+    this.items.set(cur.id, cur)
+    cur.state = "queued"
+    this.current = null
+    this.queue.unshift(cur)
+    this.log(`speech: held back ${cur.id} "${cur.text.length > 60 ? cur.text.slice(0, 60) + "…" : cur.text}" while Shawn talks`)
+  }
+
+  /** Lets held lines play. */
+  release() {
+    if (!this.held) return
+    this.held = false
+    this.pump()
+  }
+
   private pump() {
-    if (this.current || !this.queue.length) return
+    if (this.held || this.current || !this.queue.length) return
     const item = this.queue.shift()!
     this.current = item
     item.state = "sent"
@@ -302,6 +340,7 @@ export class AppMouth {
    * it's sent anyway when anything was still queued or sent.
    */
   cut(notify = true): { cut: SpeechItem | null; dropped: SpeechItem[] } {
+    this.held = false
     const cur = this.current
     const dropped = this.queue.splice(0)
     if (notify && cur) {

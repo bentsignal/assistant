@@ -11,6 +11,7 @@ import { Jobs, type Job } from "./jobs.ts"
 import { T3, T3Watcher, isBusy } from "./t3.ts"
 import { AppMouth, type AppEvent, type AppLink, type ChimeKind, type CoreCommand, type HudState, type SpeechItem } from "./app.ts"
 import { createBrain, type Brain, type TurnResult } from "./brain/index.ts"
+import { continues, joinTurns, resumeNote, type Resumable } from "./turns.ts"
 
 export type Status = HudState
 
@@ -157,6 +158,8 @@ export class Assistant {
   private speechTimer: NodeJS.Timeout | null = null
   /** The last turn was cut short because Shawn spoke again: the next turn's message says so. */
   private superseded: string | null = null
+  /** His next words continue this turn (he went on before she'd answered; `turns.ts`). */
+  private resumable: Resumable | null = null
   private logFile: string
 
   constructor(link: AppLink) {
@@ -265,6 +268,12 @@ export class Assistant {
       }
       case "speech_cancel":
         this.speechEnded()
+        if (this.resumable) {
+          // Nothing usable after all: her held answer plays.
+          this.log(`turn ${this.resumable.turnId}: he didn't go on after all${this.mouth.holding ? "; her answer plays" : ""}`)
+          this.resumable = null
+          this.mouth.release()
+        }
         if (this.bargePending) {
           // Talked over Vera, then nothing usable: keep listening a normal follow-up window.
           this.bargePending = false
@@ -293,6 +302,8 @@ export class Assistant {
         this.micMuted = true
         this.followUpUntil = 0
         this.speechEnded()
+        this.resumable = null
+        this.mouth.release()
         break
       case "unmute":
         this.micMuted = false
@@ -323,6 +334,7 @@ export class Assistant {
     this.speechStartedAt = Date.now()
     this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil > Date.now() || this.mouth.speaking)
     this.partial = "…"
+    this.holdForResume()
     // Nobody talks for a minute straight: if no final comes, the HUD stops listening.
     if (this.speechTimer) clearTimeout(this.speechTimer)
     const startedAt = this.speechStartedAt
@@ -333,6 +345,30 @@ export class Assistant {
       this.changed()
     }, 60_000)
     this.speechTimer.unref()
+  }
+
+  /**
+   * He started talking again soon after his last turn, before any of her
+   * answer played: he hadn't finished. Hold her answer back until his words
+   * are in; they and that turn become one (`utterance`).
+   */
+  private holdForResume() {
+    if (this.micMuted || this.mouth.speaking || this.resumable) return
+    const rec = this.turns[this.turns.length - 1]
+    const mergeMs = (this.config.turn?.mergeSeconds ?? 12) * 1000
+    if (!rec || rec.muted || !rec.heardEndAt || Date.now() - rec.heardEndAt > mergeMs) return
+    if (rec.via === "direct" || this.hasPlayed(rec.id)) return
+    // Done and said nothing: nothing to hold or redo.
+    if (rec.durationMs !== undefined && !this.mouth.pendingStart) return
+    this.resumable = { turnId: rec.id, text: rec.text, why: "thinking", at: Date.now() }
+    this.speechEngaged = true
+    this.mouth.hold()
+    this.log(`turn ${rec.id}: he's talking again before she answered; holding her answer`)
+  }
+
+  /** Whether any of that turn's speech has started playing. */
+  private hasPlayed(turnId: number): boolean {
+    return (this.speechByTurn.get(turnId) ?? []).some((i) => i.startedAt !== undefined)
   }
 
   private speechEnded() {
@@ -381,6 +417,13 @@ export class Assistant {
       const rec = this.turns.find((t) => t.id === turnId)
       if (rec) rec.muted = true
       const items = this.speechByTurn.get(turnId) ?? []
+      // She'd only just begun: he was still going, not answering her.
+      const firstAudio = Math.min(...items.map((i) => i.startedAt ?? Infinity))
+      const graceMs = (this.config.turn?.bargeMergeSeconds ?? 2) * 1000
+      if (rec && rec.via !== "direct" && Number.isFinite(firstAudio) && Date.now() - firstAudio <= graceMs) {
+        this.resumable = { turnId, text: rec.text, why: "barge", at: Date.now() }
+        this.log(`turn ${turnId}: barged in ${Date.now() - firstAudio} ms into her answer; his next words join that turn`)
+      }
       const cutItem = items.find((i) => i.state === "cut")
       this.interruption = {
         at: Date.now(),
@@ -457,7 +500,9 @@ export class Assistant {
   async utterance(input: UtteranceInput): Promise<GateResult & { turnId?: number }> {
     const now = Date.now()
     // While Vera is talking (or was just talked over) the window is open; it opens fully when she stops.
-    const open = this.mouth.speaking || input.duringPlayback || this.bargePending
+    const resume = this.resumable
+    this.resumable = null
+    const open = this.mouth.speaking || input.duringPlayback || this.bargePending || !!resume
     const followUpUntil = open ? Number.MAX_SAFE_INTEGER : this.followUpUntil
     const g = gate(input, { followUpUntil }, now, {
       names: this.personas.map((p) => p.name),
@@ -472,6 +517,9 @@ export class Assistant {
     // Only a name said as itself switches who answers; follow-ups, mishearings
     // ("Vara", "Hey there,"), timeouts and new sessions keep the last one.
     if (g.action !== "ignore" && g.persona) this.switchPersona(g.persona, "named")
+    if (resume && continues(resume, g, now) && g.action === "turn") return this.resumeTurn(resume, g.text, input)
+    // Not a continuation: whatever happens next, her held answer isn't held any more.
+    if (resume) queueMicrotask(() => this.mouth.release())
     switch (g.action) {
       case "ignore":
         this.log(`ignored (${g.reason}): ${input.text}`)
@@ -502,6 +550,29 @@ export class Assistant {
         return { ...g, turnId: rec.id }
       }
     }
+  }
+
+  /** His words `text` finish the turn `resume` names: one message, her answer to the first part dropped. */
+  private resumeTurn(resume: Resumable, text: string, input: UtteranceInput): GateResult & { turnId?: number } {
+    const whole = joinTurns(resume.text, text)
+    this.lines.push({ who: "shawn", text, at: Date.now() })
+    this.trimLines()
+    const first = this.turns.find((t) => t.id === resume.turnId)
+    if (first) first.muted = true
+    this.log(`turn ${resume.turnId} continued (${resume.why}): ${truncate(whole, 160)}`)
+    const note = resumeNote(resume.why)
+    if (this.current) {
+      // Still thinking: cut it; the queue starts the whole message once it winds down.
+      this.queue.push({ ...input, text: whole })
+      this.supersede(this.current, whole, note)
+      this.changed()
+      return { action: "turn", text: whole, via: "followup" }
+    }
+    const { cut, dropped } = this.mouth.cut(true)
+    if (cut || dropped.length) this.log(`turn ${resume.turnId}: dropped its held answer (${[cut, ...dropped].filter(Boolean).length} line(s))`)
+    this.superseded = note
+    const rec = this.beginTurn(whole, "resumed", input.end)
+    return { action: "turn", text: whole, via: "followup", turnId: rec.id }
   }
 
   get currentTurnId(): number | null {
@@ -621,12 +692,12 @@ export class Assistant {
    * queued) is cut, anything it says from now on is dropped, and the brain
    * is interrupted so his new words are answered next.
    */
-  private supersede(rec: TurnRecord, text: string) {
+  private supersede(rec: TurnRecord, text: string, note?: string) {
     this.log(`turn ${rec.id} superseded by: ${truncate(text, 120)}`)
     rec.muted = true
     const { cut, dropped } = this.mouth.cut(true)
     if (cut || dropped.length) this.log(`turn ${rec.id}: cut ${[cut, ...dropped].filter(Boolean).map((i) => i!.id).join(", ")}`)
-    this.superseded = "[He said this before you finished answering his previous message; that answer was cut off. Answer this now.]"
+    this.superseded = note ?? "[He said this before you finished answering his previous message; that answer was cut off. Answer this now.]"
     void this.brain?.interrupt()
   }
 
@@ -776,6 +847,7 @@ export class Assistant {
     this.log(`stop (${reason})`)
     this.queue = []
     this.bargePending = false
+    this.resumable = null
     this.interruption = null
     this.superseded = null
     if (this.current) this.current.muted = true

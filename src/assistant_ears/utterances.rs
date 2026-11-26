@@ -8,9 +8,12 @@
 //!   the clip is sent for transcription speculatively: if the pause runs out
 //!   with no more speech, the transcript is usually already there, and
 //!   `final` follows the pause at once. Speech that resumes makes it stale.
-//! - A transcript that trails off mid-phrase ([`trails_off`]) is held until
-//!   `hesitation` after its speech ended; speech that starts inside that
-//!   window continues the same utterance, and the texts are joined.
+//! - A transcript is then held until its [`Patience`] wait after its speech
+//!   ended: short for a question, longer for a plain statement, several
+//!   seconds for one that trails off on "um" or "and". Speech that starts
+//!   inside that window continues the same utterance, and the texts are
+//!   joined; nothing is said to the caller in between, so it keeps showing
+//!   him listening.
 //! - While an announced utterance goes on, its clip so far is transcribed
 //!   every `PARTIAL_EVERY` (one run in flight at most) for `partial` lines,
 //!   prefixed with any held text being continued. A whole-clip run of a few
@@ -20,7 +23,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-use super::endpointer::{self, Endpointer, SAMPLE_RATE, samples, trails_off};
+use super::endpointer::{self, Endpointer, SAMPLE_RATE, samples};
+use super::patience::{self, Patience};
 use super::protocol::{Event, Sink};
 
 /// How often unconfirmed speech is put to the speech detector.
@@ -56,6 +60,7 @@ pub(crate) struct Finished {
 
 struct Current {
     clip_start: usize,
+    onset: usize,
     onset_ms: u64,
     /// The partial transcription in flight, and the position of the last
     /// one asked for.
@@ -77,6 +82,7 @@ struct Current {
 
 struct Pending {
     id: u64,
+    onset: usize,
     speech_end: usize,
     onset_ms: u64,
     end_ms: u64,
@@ -90,6 +96,8 @@ struct Pending {
 struct Held {
     pending: Pending,
     text: String,
+    /// The position its wait runs out at.
+    until: usize,
 }
 
 pub(crate) struct Utterances<B: Backend, S: Sink> {
@@ -98,7 +106,7 @@ pub(crate) struct Utterances<B: Backend, S: Sink> {
     endpointer: Endpointer,
     ring: VecDeque<f32>,
     ring_first: usize,
-    hesitation: usize,
+    patience: Patience,
     /// Wall-clock ms of position 0, refreshed with each block.
     epoch_base_ms: f64,
     paused: bool,
@@ -119,7 +127,7 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
         backend: B,
         output: S,
         settings: endpointer::Settings,
-        hesitation: Duration,
+        patience: Patience,
         partials: bool,
     ) -> Self {
         Self {
@@ -128,7 +136,7 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
             endpointer: Endpointer::new(settings),
             ring: VecDeque::new(),
             ring_first: 0,
-            hesitation: samples(hesitation),
+            patience,
             epoch_base_ms: 0.0,
             paused: false,
             partials,
@@ -215,6 +223,7 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
     fn started(&mut self, clip_start: usize, onset: usize) {
         let mut current = Current {
             clip_start,
+            onset,
             onset_ms: self.epoch_ms(onset),
             partial: None,
             partial_at: onset,
@@ -226,16 +235,15 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
             last_partial: String::new(),
             speculation: None,
         };
-        let hesitation = self.hesitation;
-        let within =
-            |speech_end: usize| hesitation > 0 && onset.saturating_sub(speech_end) <= hesitation;
-        if let Some(held) = self.held.take_if(|held| within(held.pending.speech_end)) {
+        let longest = samples(self.patience.longest());
+        if let Some(held) = self.held.take_if(|held| onset <= held.until) {
             tracing::info!(held = %held.text, "speech resumed after a hesitation; joining");
             current.onset_ms = held.pending.onset_ms;
             current.prefix = held.text;
             current.announced = held.pending.announced;
         } else if let Some(last) = self.pending.back()
-            && within(last.speech_end)
+            && longest > 0
+            && onset.saturating_sub(last.speech_end) <= longest
         {
             current.after = Some(last.id);
         }
@@ -328,6 +336,7 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
         }
         self.pending.push_back(Pending {
             id,
+            onset: current.onset,
             speech_end,
             onset_ms: current.onset_ms,
             end_ms: self.epoch_ms(speech_end),
@@ -436,11 +445,14 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
             self.release(pending.id);
             return;
         }
-        if self.hesitation > 0 && trails_off(&text) {
+        let wait = self.patience.wait(&text);
+        let until = pending.speech_end + samples(wait);
+        if !wait.is_zero() {
+            let text = patience::to_continue(&text);
             if let Some(next) = self
                 .pending
                 .iter_mut()
-                .find(|next| next.after == Some(pending.id))
+                .find(|next| next.after == Some(pending.id) && next.onset <= until)
             {
                 tracing::info!(held = %text, "a later utterance continues this one; joining");
                 next.after = None;
@@ -452,7 +464,7 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
             if let Some(current) = self
                 .current
                 .as_mut()
-                .filter(|current| current.after == Some(pending.id))
+                .filter(|current| current.after == Some(pending.id) && current.onset <= until)
             {
                 tracing::info!(held = %text, "speech resumed after a hesitation; joining");
                 current.after = None;
@@ -463,8 +475,17 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
                 self.announce();
                 return;
             }
-            if self.current.is_none() {
-                self.held = Some(Held { pending, text });
+            if self.current.is_none() && self.endpointer.position() < until {
+                tracing::info!(
+                    held = %text,
+                    wait_ms = wait.as_millis() as u64,
+                    "waiting in case he goes on"
+                );
+                self.held = Some(Held {
+                    pending,
+                    text,
+                    until,
+                });
                 return;
             }
         }
@@ -510,7 +531,7 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
         if self
             .held
             .as_ref()
-            .is_some_and(|held| position >= held.pending.speech_end + self.hesitation)
+            .is_some_and(|held| position >= held.until)
         {
             self.flush_held();
         }
@@ -571,7 +592,7 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
     pub(crate) fn stop(&mut self) {
         self.cancel_current("shutdown");
         self.flush_held();
-        self.hesitation = 0;
+        self.patience = Patience::none();
     }
 
     pub(crate) fn backend(&mut self) -> &mut B {
@@ -689,7 +710,7 @@ mod tests {
             },
             output.clone(),
             endpointer::Settings::default(),
-            Duration::from_millis(1_400),
+            Patience::default(),
             false,
         );
         (ears, output)
@@ -854,7 +875,88 @@ mod tests {
             }
         }
         let waited_ms = (at.expect("a final") - speech_end) / 16;
-        assert!((1_380..=1_440).contains(&waited_ms), "{waited_ms}");
+        assert!((1_180..=1_240).contains(&waited_ms), "{waited_ms}");
+    }
+
+    /// How long after its speech ends a lone utterance transcribed as
+    /// `text` takes to become final.
+    fn wait_for(text: &str) -> usize {
+        let (mut ears, output) = ears(true);
+        let mut audio = room(300);
+        audio.extend(utterance(&[(900, 0)], -70.0));
+        let speech_end = audio.len();
+        audio.extend(room(9_000));
+        let mut answered = 0;
+        for (index, block) in audio.chunks(160).enumerate() {
+            ears.audio(block, index as u64 * 10);
+            while answered < ears.backend().asked.len() {
+                let (id, ..) = ears.backend().asked[answered];
+                answered += 1;
+                ears.finished(Finished {
+                    id,
+                    text: Ok(text.into()),
+                    speech: true,
+                });
+            }
+            if kinds(&lines(&output)).contains(&"final".to_owned()) {
+                return ((index + 1) * 160 - speech_end) / 16;
+            }
+        }
+        panic!("no final for {text:?}");
+    }
+
+    #[test]
+    fn a_clear_question_is_final_quickly_and_a_trailing_um_waits() {
+        let question = wait_for("Vera, what's new?");
+        assert!((680..=760).contains(&question), "{question}");
+        let statement = wait_for("Check the hex thread.");
+        assert!((1_180..=1_240).contains(&statement), "{statement}");
+        let um = wait_for("So I was thinking about the, um.");
+        assert!((4_980..=5_040).contains(&um), "{um}");
+        let and = wait_for("Check the build and");
+        assert!((4_980..=5_040).contains(&and), "{and}");
+    }
+
+    fn one_request(first: &str, pause_ms: usize, second: &str) -> Vec<serde_json::Value> {
+        let (mut ears, output) = ears(true);
+        let mut audio = room(300);
+        audio.extend(utterance(&[(1_200, pause_ms), (900, 2_000)], -70.0));
+        let mut replies = [first, second].into_iter();
+        play(&mut ears, &audio, &mut |id| {
+            Some(Finished {
+                id,
+                text: Ok(replies.next().unwrap_or("").to_owned()),
+                speech: true,
+            })
+        });
+        lines(&output)
+    }
+
+    #[test]
+    fn three_seconds_on_an_um_mid_sentence_stays_one_request() {
+        let lines = one_request("So I was thinking about the, um.", 3_000, "Hex thread.");
+        assert_eq!(kinds(&lines), ["speech_start", "final"], "{lines:?}");
+        assert_eq!(
+            lines[1]["text"],
+            "So I was thinking about the, um hex thread."
+        );
+    }
+
+    #[test]
+    fn three_seconds_after_a_trailing_and_stays_one_request() {
+        let lines = one_request("Check the build and.", 3_000, "Run the tests.");
+        assert_eq!(kinds(&lines), ["speech_start", "final"], "{lines:?}");
+        assert_eq!(lines[1]["text"], "Check the build and run the tests.");
+    }
+
+    #[test]
+    fn a_question_then_a_long_pause_is_its_own_request() {
+        let lines = one_request("What's new?", 3_000, "Also the weather.");
+        assert_eq!(
+            kinds(&lines),
+            ["speech_start", "final", "speech_start", "final"],
+            "{lines:?}"
+        );
     }
 
     fn ears_with_partials() -> (Ears, Arc<Output<Vec<u8>>>) {
@@ -866,7 +968,7 @@ mod tests {
             },
             output.clone(),
             endpointer::Settings::default(),
-            Duration::from_millis(1_400),
+            Patience::default(),
             true,
         );
         (ears, output)

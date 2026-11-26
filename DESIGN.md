@@ -175,6 +175,18 @@ replies piled up behind it):
 - Every `speech_start` gets its `final` or `speech_cancel`.
 - Settings never restart the audio engine: a voice applies to the next
   `speak`, a volume at once, a microphone reopens only the input.
+- **Never make him rush.** His turn ends on a pause that depends on how
+  his words end: 0.7 s after a question, 1.2 s after any other clean
+  ending, 5 s when they trail off ("um", "and", "the", a comma), never over
+  8 s (`turn.finishedMs`, `pauseMs`, `unfinishedMs`, `maxMs` in
+  config.json; Ears applies them, `src/assistant_ears/patience.rs`). Speech
+  inside the wait is the same turn, and the HUD stays on listening. If he
+  goes on after that but before any of her answer has played (within
+  `turn.mergeSeconds`, 12 s, of his last words), Core holds her answer
+  back; his new words, unless they wake her afresh with her name, join that
+  turn and the answer to the first half is dropped (`assistant/core/src/turns.ts`).
+  If she had only just begun (a barge-in within `turn.bargeMergeSeconds`,
+  2 s, of her first audio), she stops and the same merge happens.
 - When a new user turn starts, Core drops every line left from earlier
   turns (playing or queued), and a turn still running is cut and its brain
   interrupted. No reply ever plays after a newer question.

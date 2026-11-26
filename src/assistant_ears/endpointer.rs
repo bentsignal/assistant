@@ -12,7 +12,7 @@
 //!
 //! The endpointer only reports positions; the caller keeps the audio, checks
 //! an ended clip holds real speech (Silero), and decides from its transcript
-//! whether a pause was only a breath mid-sentence ([`trails_off`]).
+//! whether a pause was only a breath mid-sentence ([`super::patience`]).
 
 use std::time::Duration;
 
@@ -268,37 +268,6 @@ pub(crate) const fn samples(duration: Duration) -> usize {
     duration.as_millis() as usize * SAMPLE_RATE / 1_000
 }
 
-/// Whether a transcript stops mid-phrase: no closing punctuation and a last
-/// word that needs more after it, or a trailing comma. A pause after such
-/// text is treated as a breath, so "Vera, can you check the … hex thread"
-/// stays one request.
-pub(crate) fn trails_off(text: &str) -> bool {
-    const OPEN_ENDED: &[&str] = &[
-        "a", "an", "the", "and", "or", "but", "so", "to", "of", "for", "with", "in", "on", "at",
-        "from", "into", "about", "my", "your", "our", "their", "his", "her", "its", "this", "that",
-        "is", "are", "was", "be", "can", "could", "would", "should", "will", "please", "um", "uh",
-        "er", "hmm", "like", "then", "if", "because", "when", "what", "which", "who", "where",
-        "how", "why", "hey", "vera",
-    ];
-    let trimmed = text.trim_end();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.ends_with([',', '-', '…', ';', ':']) {
-        return true;
-    }
-    if trimmed.ends_with(['.', '?', '!']) {
-        return false;
-    }
-    let last = trimmed
-        .rsplit(char::is_whitespace)
-        .next()
-        .unwrap_or("")
-        .trim_matches(|character: char| !character.is_alphanumeric())
-        .to_lowercase();
-    OPEN_ENDED.contains(&last.as_str())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,16 +458,5 @@ mod tests {
             panic!("{events:?}");
         };
         assert_eq!(clip_start, resumed);
-    }
-
-    #[test]
-    fn transcripts_that_trail_off_mark_a_breath() {
-        assert!(trails_off("Vera, can you check the"));
-        assert!(trails_off("Vera,"));
-        assert!(trails_off("open my"));
-        assert!(trails_off("Hey Vera"));
-        assert!(!trails_off("Vera, what's the status of my T3 threads?"));
-        assert!(!trails_off("check the hex thread"));
-        assert!(!trails_off(""));
     }
 }

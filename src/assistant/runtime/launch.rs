@@ -91,6 +91,7 @@ pub(super) fn audio_config(config: &Config) -> AudioConfig {
         voice: config.voice.clone(),
         ears: crate::assistant_ears::EarsSettings {
             vocabulary: config.personas.iter().map(|p| p.name.clone()).collect(),
+            patience: config.turn,
             ..Default::default()
         },
         ..AudioConfig::default()

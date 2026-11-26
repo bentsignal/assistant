@@ -114,6 +114,23 @@ export interface AssistantConfig {
     /** How many leading words may come before the wake word ("hey", "okay"). */
     maxLeadingWords: number
   }
+  /**
+   * When his turn is over. The App's ears read the waits: after a question
+   * (`finishedMs`), any other clean ending (`pauseMs`), and words that trail
+   * off on "um", "and", "the", … (`unfinishedMs`), never over `maxMs`
+   * (src/assistant_ears/patience.rs; an App restart applies them). Core
+   * reads the rest: words he says within `mergeSeconds` of his last ones,
+   * while she's still thinking, hold her answer and join that turn; so do
+   * words that barge in within `bargeMergeSeconds` of her first audio.
+   */
+  turn: {
+    finishedMs: number
+    pauseMs: number
+    unfinishedMs: number
+    maxMs: number
+    mergeSeconds: number
+    bargeMergeSeconds: number
+  }
   jobs: {
     /** Default working directory for ask_* jobs. */
     defaultCwd: string
@@ -206,6 +223,7 @@ export const DEFAULT_CONFIG: AssistantConfig = {
     script: {},
   },
   wake: { words: [], soft: true, warmSeconds: 120, followUpSeconds: 8, maxLeadingWords: 3 },
+  turn: { finishedMs: 700, pauseMs: 1200, unfinishedMs: 5000, maxMs: 8000, mergeSeconds: 12, bargeMergeSeconds: 2 },
   jobs: {
     defaultCwd: "D:\\dev",
     waitTimeoutSeconds: 90,

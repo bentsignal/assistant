@@ -95,6 +95,13 @@ const U = {
   count: "Vera, count to ten.",
   forest: "Vera, tell me about the forest.",
   chile: "Wait, what's the capital of Chile?",
+  // Said in two parts with a 3 s pause between: one turn each.
+  umA: "Vera, what's the capital of, um",
+  umB: "Norway?",
+  andA: "Vera, what's the weather in Lisbon and",
+  andB: "in Madrid?",
+  flaky: "Vera, look into the flaky build.",
+  flakyMore: "And the tests too.",
 }
 
 const LONG = {
@@ -114,6 +121,10 @@ const LONG = {
 const speak = (text) => ({ tool: "speak", args: { text } })
 const rule = (key, steps) => ({ match: `\\] Shawn: .*${key}`, steps })
 const SCRIPT = [
+  rule("norway", [speak("Oslo.")]),
+  rule("lisbon.*madrid", [speak("Both are sunny.")]),
+  rule("flaky build.*tests", [speak("The build and the tests.")]),
+  rule("flaky build", [{ sleep: 4000 }, speak("Looking at the build.")]),
   rule("still there", [speak("Still here.")]),
   rule("are you there", [speak("I'm here.")]),
   rule("time now", [speak("It's half past twelve.")]),
@@ -349,9 +360,9 @@ class Run {
     return { name, at, end: at + ms }
   }
 
-  /** The `final` for what was said (Ears adds ~0.7 s of pause). */
-  async heard(said) {
-    const final = await this.trace.waitFor(isTo("final"), { after: said.at, within: 8000, what: `the final for "${U[said.name]}"` })
+  /** The `final` for what was said (Ears waits 0.7 s after a question, 1.2 s after a statement). */
+  async heard(said, within = 8000) {
+    const final = await this.trace.waitFor(isTo("final"), { after: said.at, within, what: `the final for "${U[said.name]}"` })
     said.finalAt = final.t
     said.text = final.msg.text
     return final
@@ -760,6 +771,44 @@ class Run {
       await this.turn("water", "A big pinch.")
       await this.hidden()
       await this.turn("night", "Good night.")
+      await this.hidden()
+    })
+
+    // "Shawn" stops for 3 s mid-sentence: she waits, and answers the whole thing.
+    const twoParts = async (a, b, reply) => {
+      const first = await this.say(a)
+      await sleep(3000)
+      const rest = await this.say(b)
+      const said = { name: b, at: first.at, end: rest.end }
+      await this.heard(said, 16_000)
+      this.addressed++
+      this.steps.push({ said, replies: [reply] })
+      this.check(said.finalAt >= rest.at, `no final before he went on (heard "${said.text}")`)
+      this.check(this.trace.find(isFrom("speak"), first.at).every((e) => e.t >= rest.at), "she said nothing during the pause")
+      await this.reply({ ...said, at: rest.at }, reply)
+      const finals = this.trace.find(isTo("final"), first.at).filter((e) => e.t <= said.finalAt + 1000)
+      this.check(finals.length === 1, `one final for both parts (${finals.map((e) => `"${e.msg.text}"`).join(", ")})`)
+      await this.hidden()
+    }
+
+    await step("a 3 s pause on an um mid-sentence stays one turn", async () => {
+      await twoParts("umA", "umB", "Oslo.")
+    })
+
+    await step("a 3 s pause after a trailing 'and' stays one turn", async () => {
+      await twoParts("andA", "andB", "Both are sunny.")
+    })
+
+    await step("he goes on while she's still thinking: one turn, no answer to half of it", async () => {
+      const first = await this.say("flaky")
+      await this.heard(first)
+      this.addressed++
+      await sleep(1500)
+      const rest = await this.say("flakyMore")
+      await this.heard(rest)
+      this.steps.push({ said: rest, replies: ["The build and the tests."] })
+      await this.reply(rest, "The build and the tests.")
+      this.check(this.trace.find(isFrom("speak", (m) => m.text === "Looking at the build."), first.at).length === 0, "the answer to the first half was never sent")
       await this.hidden()
     })
 

@@ -6,7 +6,7 @@ what Vera herself plays, so the user can talk over her at any time. When
 they do, she stops within ~300–400 ms (with speakers she ducks first, within ~130 ms), and
 what they said arrives as an ordinary `Final` with `during_playback: true`.
 Speech to text is v1 Ears (Parakeet Unified through Hex's engine, Silero, the
-700 ms pause, "Vera" as vocabulary) running on the cancelled signal. Vera
+patient end of turn in `assistant_ears/patience.rs`, "Vera" as vocabulary) running on the cancelled signal. Vera
 has her own volume and never touches the system's.
 
 Code: `src/assistant/audio.rs` (the API) and `src/assistant/audio/`:

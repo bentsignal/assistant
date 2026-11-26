@@ -20,6 +20,7 @@
 //! file runs the microphone, the engine, and stdin/stdout.
 
 pub(crate) mod endpointer;
+pub(crate) mod patience;
 pub(crate) mod protocol;
 pub(crate) mod utterances;
 
@@ -54,14 +55,22 @@ pub(crate) struct EarsArgs {
     /// BCP-47 language the model supports.
     #[arg(long, default_value = "en")]
     language: String,
-    /// Silence after speech that ends an utterance, in ms.
+    /// Silence after a question or exclamation that ends it, in ms (the
+    /// shortest wait; see `assistant_ears::patience`).
     #[arg(long, default_value_t = 700)]
+    finished_ms: u64,
+    /// Silence after any other clean ending ("Check the hex thread.") that
+    /// ends it, in ms.
+    #[arg(long, default_value_t = 1_200)]
     pause_ms: u64,
-    /// How long after its speech a transcript that trails off mid-phrase
-    /// ("…check the") waits for more, in ms; speech that resumes inside it
-    /// joins the same utterance. 0 turns it off.
-    #[arg(long, default_value_t = 1_400)]
+    /// How long after its speech a transcript that trails off ("…check
+    /// the", "um", "and") waits for more, in ms; speech that resumes inside
+    /// it joins the same utterance.
+    #[arg(long, default_value_t = 5_000)]
     hesitation_ms: u64,
+    /// The longest any of those waits, in ms (never over 15 s).
+    #[arg(long, default_value_t = 8_000)]
+    max_wait_ms: u64,
     /// Speech needed before an utterance starts, in ms.
     #[arg(long, default_value_t = 120)]
     min_speech_ms: u64,
@@ -161,8 +170,8 @@ pub(crate) fn init_logging() {
 pub(crate) struct EarsSettings {
     pub model: String,
     pub language: String,
-    pub pause: Duration,
-    pub hesitation: Duration,
+    /// How long a pause ends his turn, by how it ends.
+    pub patience: patience::Patience,
     pub min_speech: Duration,
     pub pre_roll: Duration,
     pub max_utterance: Duration,
@@ -177,8 +186,7 @@ impl Default for EarsSettings {
         Self {
             model: "parakeet_unified_en".into(),
             language: "en".into(),
-            pause: Duration::from_millis(700),
-            hesitation: Duration::from_millis(1_400),
+            patience: patience::Patience::default(),
             min_speech: Duration::from_millis(120),
             pre_roll: Duration::from_millis(300),
             max_utterance: Duration::from_millis(30_000),
@@ -193,7 +201,7 @@ impl Default for EarsSettings {
 impl EarsSettings {
     pub(crate) fn endpointer(&self) -> endpointer::Settings {
         endpointer::Settings {
-            pause: self.pause,
+            pause: self.patience.clamped().finished,
             min_speech: self.min_speech,
             pre_roll: self.pre_roll,
             max_utterance: self.max_utterance,
@@ -218,8 +226,13 @@ impl EarsArgs {
         EarsSettings {
             model: self.model.clone(),
             language: self.language.clone(),
-            pause: Duration::from_millis(self.pause_ms),
-            hesitation: Duration::from_millis(self.hesitation_ms),
+            patience: patience::Patience {
+                finished: Duration::from_millis(self.finished_ms),
+                pause: Duration::from_millis(self.pause_ms),
+                unfinished: Duration::from_millis(self.hesitation_ms),
+                max: Duration::from_millis(self.max_wait_ms),
+            }
+            .clamped(),
             min_speech: Duration::from_millis(self.min_speech_ms),
             pre_roll: Duration::from_millis(self.pre_roll_ms),
             max_utterance: Duration::from_millis(self.max_utterance_ms),
@@ -353,7 +366,7 @@ fn listen(
         backend,
         output.clone(),
         settings.endpointer(),
-        settings.hesitation,
+        settings.patience.clamped(),
         partials,
     );
     let mut resampler: Option<(u32, StreamingResampler)> = None;

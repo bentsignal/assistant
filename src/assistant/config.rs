@@ -171,6 +171,9 @@ pub(crate) struct Config {
     /// `assistant.personas` was in the file (else `personas` are defaults).
     pub(crate) has_personas: bool,
     pub(crate) updates: Updates,
+    /// How long a pause ends his turn (`turn.finishedMs`, `pauseMs`,
+    /// `unfinishedMs`, `maxMs`; Core reads the same section).
+    pub(crate) turn: crate::assistant_ears::patience::Patience,
 }
 
 /// One of her names and the voice it speaks in.
@@ -248,6 +251,7 @@ impl Default for Config {
             personas: default_personas(DEFAULT_NAME),
             has_personas: false,
             updates: Updates::default(),
+            turn: crate::assistant_ears::patience::Patience::default(),
         }
     }
 }
@@ -323,6 +327,19 @@ impl Config {
         if let Some(repo) = string(&updates["repo"]).filter(|repo| repo.contains('/')) {
             config.updates.repo = repo;
         }
+        let turn = &root["turn"];
+        let ms = |key: &str, default: std::time::Duration| {
+            turn[key]
+                .as_u64()
+                .map_or(default, std::time::Duration::from_millis)
+        };
+        config.turn = crate::assistant_ears::patience::Patience {
+            finished: ms("finishedMs", config.turn.finished),
+            pause: ms("pauseMs", config.turn.pause),
+            unfinished: ms("unfinishedMs", config.turn.unfinished),
+            max: ms("maxMs", config.turn.max),
+        }
+        .clamped();
         config.brain = Brain::parse(root["brain"]["harness"].as_str().unwrap_or_default());
         config.model = string(&root["brain"][config.brain.key()]["model"]);
         config.wake = Wake::parse(root["wake"]["sensitivity"].as_str().unwrap_or_default());

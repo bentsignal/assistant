@@ -145,3 +145,38 @@ test("heardPrefix estimates where speech was cut", () => {
   assert.match(heardPrefix("Short.", 5000), /^at the end of/)
   assert.match(heardPrefix("Something long enough here.", 100), /^right at the start/)
 })
+
+test("hold() takes back a line not yet playing and sends nothing until release()", async () => {
+  const { sent, mouth } = setup()
+  const a = mouth.say("One.")
+  assert.equal(sent.length, 1)
+  mouth.hold()
+  assert.equal(mouth.holding, true)
+  assert.deepEqual(sent[1], { cmd: "stop_speaking" })
+  mouth.say("Two.")
+  // The App's late answer to the taken-back line changes nothing.
+  mouth.onPlayback((sent[0] as any).speak_id, "interrupted")
+  assert.equal(sent.length, 2)
+  mouth.release()
+  assert.equal(sent.length, 3)
+  const resent = sent[2] as any
+  assert.equal(resent.text, "One.")
+  assert.notEqual(resent.speak_id, (sent[0] as any).speak_id)
+  assert.equal(a.id, resent.speak_id)
+  mouth.onPlayback(resent.speak_id, "started")
+  mouth.onPlayback(resent.speak_id, "finished")
+  assert.equal((await a.done).state, "done")
+  assert.equal((sent[3] as any).text, "Two.")
+})
+
+test("cut() ends a hold: what was held is dropped, and the next line goes out", async () => {
+  const { sent, mouth } = setup()
+  mouth.hold()
+  const a = mouth.say("Stale.")
+  assert.equal(sent.length, 0)
+  mouth.cut(true)
+  assert.equal((await a.done).state, "dropped")
+  assert.equal(mouth.holding, false)
+  mouth.say("Fresh.")
+  assert.equal((sent[sent.length - 1] as any).text, "Fresh.")
+})

@@ -174,7 +174,7 @@ impl<B: Backend> Core<B> {
                 backend,
                 Collected::default(),
                 settings.endpointer(),
-                settings.hesitation,
+                settings.patience.clamped(),
                 settings.partials,
             ),
             gate: Gate::default(),

@@ -33,8 +33,10 @@ while a transcript is still on its way, which is then printed first).
 | --- | --- | --- |
 | `--device <fragment>` | system default, followed live | microphone by name fragment (`hex.exe ears --list-devices` lists them) |
 | `--model`, `--language` | `parakeet_unified_en`, `en` | any installed Hex model, e.g. `parakeet_v3` |
-| `--pause-ms` | 700 | silence after speech that ends an utterance |
-| `--hesitation-ms` | 1400 | a transcript that trails off mid-phrase waits this long after its speech for more (0: off) |
+| `--finished-ms` | 700 | silence that ends a question or exclamation (the endpointer's own pause) |
+| `--pause-ms` | 1200 | silence that ends any other clean ending ("Check the hex thread.") |
+| `--hesitation-ms` | 5000 | a transcript that trails off ("um", "and", "the", a comma) waits this long after its speech for more |
+| `--max-wait-ms` | 8000 | the longest any of those waits (never over 15 s) |
 | `--min-speech-ms` | 120 | speech needed before an utterance starts |
 | `--pre-roll-ms` | 300 | audio kept from before the onset |
 | `--max-utterance-ms` | 30000 | longer utterances end at the next 300 ms pause (hard cut at 2×) |
@@ -86,7 +88,7 @@ or fields loses nothing by:
 1. **Endpointing** (`endpointer.rs`): 20 ms frames against Hex's adaptive
    noise floor (`SpeechFrames`, from the meeting pause segmenter). An
    utterance starts after 120 ms of speech frames and ends after 700 ms
-   without one. The clip is onset − 300 ms to speech end + 240 ms.
+   (`--finished-ms`) without one. The clip is onset − 300 ms to speech end + 240 ms.
 2. **Speech check**: `speech_start` waits until Silero (Hex's
    `speech_detector`, on the CPU) hears speech in the audio so far, checked
    every 160 ms; until then nothing is announced. A fan, a door, or music
@@ -98,14 +100,22 @@ or fields loses nothing by:
    If the pause runs out with no more speech, that transcript is the final,
    usually already back: `latency_ms` is 0 in every fixture run. Speech that
    resumes makes it stale and it is dropped.
-4. **Hesitation joins**: a final whose text trails off mid-phrase (ends in a
-   comma, or in words like "the", "and", "my", "Vera"; see
-   `endpointer::trails_off`) is held until 1400 ms after its speech. Speech
-   that starts inside that window continues the same utterance: the two
-   transcripts are joined ("Vera, can you check on the" + "Hex thread for
-   me" → one final, `start` from the first). A complete sentence is never
-   held. Cost: a bare "Vera" or "Hey Vera" with nothing after it arrives
-   1400 ms after its speech instead of 700 ms.
+4. **Patience** (`patience.rs`): the transcript decides how long the pause
+   must run before the `final`, counted from the end of speech. A question
+   or exclamation ("What's new?"): 700 ms. Any other clean ending ("Check
+   the hex thread.", "Hey Vera"): 1200 ms, since Parakeet puts a full stop
+   after almost every clip and can drop a spoken "um". A transcript that
+   trails off (a filler like "um", "uh", "hmm", "like"; a conjunction,
+   article, preposition or possessive like "and", "the", "to", "my", with
+   or without the model's full stop; a trailing comma, dash or ellipsis):
+   5 s. Every wait is capped at 8 s. Speech that starts inside the wait
+   continues the same utterance: the transcripts are joined ("So I was
+   thinking about the, um" + "hex thread" → one final, `start` from the
+   first, the fragment's stray full stop dropped). Nothing is printed in
+   between, so the caller keeps showing him listening. Shawn's complaint
+   that set these: a 3 s "um" got answered. The App reads the same waits
+   from `~/.assistant/config.json`'s `turn` (`finishedMs`, `pauseMs`,
+   `unfinishedMs`, `maxMs`).
 5. **Partials** are whole-clip runs of the clip so far every 400 ms (one in
    flight at a time, utterances under 20 s). A few seconds of audio takes
    tens of ms on the GPU, and unlike Hex's live streams they never compete

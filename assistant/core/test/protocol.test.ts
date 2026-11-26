@@ -96,7 +96,8 @@ test("several speak calls go out one at a time, each after the previous finished
 
 test("barge-in mid-speech: the rest of the turn is dropped, the brain is told, and the next final needs no wake word", async () => {
   const app = await FakeApp.start({
-    config: testConfig(),
+    // No merge window: what he says is an answer to her, not the rest of his request.
+    config: testConfig({ turn: { bargeMergeSeconds: 0 } }),
     msPerChar: 40,
     script: [
       {
@@ -130,7 +131,7 @@ test("barge-in mid-speech: the rest of the turn is dropped, the brain is told, a
     const told = app.brainLog().at(-1)!
     assert.match(told, /talked over you/)
     assert.match(told, /cut off after "Bread goes/)
-    assert.match(told, /Never said: "Then the Egyptians worked out leavening\."/)
+    assert.match(told, /Never said: "Then the Egyptians worked out leavening\./)
     assert.match(told, /Shawn: Actually, how long does a starter take\?/)
     const st = await app.state()
     const [t1, t2] = st.turns
@@ -564,7 +565,8 @@ test("personas: 'Hey Alfred' answers in Alfred's voice, a follow-up stays Alfred
     await app.say("Hey Alfred, say hello.")
     const a = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Hello.", 5000, m)) as any
     assert.equal(a.voice, "alfred")
-    await app.waitFor(isHud("listening"), 5000, m)
+    await app.waitFor(isHud("speaking"), 5000, m)
+    await app.waitFor(isHud("listening"), 5000, app.mark)
     m = app.mark
     await app.say("and again")
     const b = (await app.waitFor((c) => c.cmd === "speak" && c.text === "Again.", 5000, m)) as any
@@ -646,6 +648,57 @@ test("a closing remark may get no reply: the turn ends cleanly, the HUD goes idl
     assert.equal(since.filter(isCmd("error")).length, 0, JSON.stringify(since))
     assert.equal(since.filter((c) => c.cmd === "chime" && (c as any).kind === "error").length, 0)
     assert.equal(app.huds(m).at(-1), "idle")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("he goes on while she's thinking: her answer is held, then dropped, and both parts are one turn", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [
+      { match: "flaky build.*tests", steps: [{ tool: "speak", args: { text: "Both." } }] },
+      { match: "flaky build", steps: [{ sleep: 600 }, { tool: "speak", args: { text: "Half." } }] },
+    ],
+  })
+  try {
+    const m = app.mark
+    await app.say("Vera, look into the flaky build and.")
+    await sleep(200)
+    await app.say("The tests too.")
+    const reply = (await app.waitFor(isCmd("speak"), 5000, m)) as any
+    assert.equal(reply.text, "Both.")
+    await sleep(800)
+    assert.deepEqual(spoken(app.since(m)), ["Both."])
+    const told = app.brainLog().at(-1)!
+    assert.match(told, /hadn't finished/)
+    assert.match(told, /Shawn: look into the flaky build and the tests too\./)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("he goes on just as she starts: she stops, and the rest joins his request", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    msPerChar: 40,
+    script: [
+      { match: "weather.*rome", steps: [{ tool: "speak", args: { text: "Sunny in both." } }] },
+      { match: "weather", steps: [{ tool: "speak", args: { text: "Paris is mild today, with light wind." } }] },
+    ],
+  })
+  try {
+    await app.say("Vera, what's the weather in Paris.")
+    await app.waitFor(isHud("speaking"))
+    await sleep(500)
+    const m = app.mark
+    app.bargeIn()
+    await app.say("And in Rome?", { skipStart: true, duringPlayback: true })
+    const reply = (await app.waitFor(isCmd("speak"), 5000, m)) as any
+    assert.equal(reply.text, "Sunny in both.")
+    const told = app.brainLog().at(-1)!
+    assert.match(told, /only just started answering/)
+    assert.match(told, /Shawn: what's the weather in Paris and in Rome\?/)
   } finally {
     await app.stop()
   }
