@@ -147,9 +147,16 @@ impl AssistantUi {
             return;
         };
         let mut persona = old.clone();
-        let typed = self.phrases.get(index).map(|f| f.text.clone()).unwrap_or_default();
+        let typed = self
+            .phrases
+            .get(index)
+            .map(|f| f.text.clone())
+            .unwrap_or_default();
         let mut list: Vec<String> = Vec::new();
-        for phrase in typed.split([',', ';']).filter_map(crate::assistant::config::valid_phrase) {
+        for phrase in typed
+            .split([',', ';'])
+            .filter_map(crate::assistant::config::valid_phrase)
+        {
             if !list.iter().any(|x| x.eq_ignore_ascii_case(&phrase)) {
                 list.push(phrase);
             }
@@ -261,8 +268,9 @@ pub(crate) fn fixture_view() -> SettingsView {
         status: Status {
             tone: Tone::Ready,
             title: "Listening".into(),
-            detail: "Say \u{201c}hey Vera\u{201d} to start \u{00b7} Ctrl+Alt+Space stops her talking"
-                .into(),
+            detail:
+                "Say \u{201c}hey Vera\u{201d} to start \u{00b7} Ctrl+Alt+Space stops her talking"
+                    .into(),
         },
         name: crate::assistant::config::DEFAULT_NAME.into(),
         personas: {
@@ -667,7 +675,7 @@ fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
             .gap(2.0)
             .child(text("Names").key("title").font(p.k.ty.ui).color(p.text()))
             .child(
-                text("Each name wakes to its phrases and answers in its own voice. Name alone lets just the name wake it too")
+                text("Each name wakes to its phrases and answers in its own voice")
                     .key("description")
                     .font(DESCRIPTION)
                     .color(p.muted()),
@@ -740,12 +748,13 @@ fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
         )
         .disabled(saved.is_none())
         .on_press(move |ui: &mut AssistantUi| ui.commit_wake(index, |p| p.enabled = !on));
-        rows.push(
+        // The name row and its wake row are one item: no divider between them.
+        let mut group = col().key(format!("persona-group-{index}")).child(
             row()
                 .key(format!("persona-{index}"))
                 .px(METRICS.row_px)
                 .pt(8.0)
-                .pb(if saved.is_some() { 2.0 } else { 8.0 })
+                .pb(if saved.is_some() { 6.0 } else { 8.0 })
                 .gap(8.0)
                 .center_y()
                 .child(toggle)
@@ -771,12 +780,17 @@ fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
                     .gap(6.0)
                     .center_y()
                     .label("Name alone")
-                    .child(text("Name alone").key("title").font(DESCRIPTION).color(p.muted()))
+                    .child(
+                        text("Name alone")
+                            .key("title")
+                            .font(DESCRIPTION)
+                            .color(p.muted()),
+                    )
                     .child(row_switch(p, bare)),
                 bare,
             )
             .on_press(move |ui: &mut AssistantUi| ui.commit_wake(index, |p| p.bare_name = !bare));
-            rows.push(
+            group = group.child(
                 row()
                     .key(format!("wake-{index}"))
                     .px(METRICS.row_px)
@@ -789,6 +803,7 @@ fn persona_rows(ui: &AssistantUi, p: Paint, layer: &mut Vec<El>) -> Vec<El> {
                     .child(alone),
             );
         }
+        rows.push(group);
     }
     let adding = ui.names.len() > ui.view.personas.len();
     rows.push(

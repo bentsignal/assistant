@@ -273,7 +273,13 @@ impl Persona {
 pub(crate) fn valid_phrase(phrase: &str) -> Option<String> {
     let cleaned: String = phrase
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '\'' { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '\'' {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect();
     let words: Vec<&str> = cleaned.split_whitespace().collect();
     let phrase = words.join(" ");
@@ -443,7 +449,11 @@ impl Config {
                             enabled: p["enabled"].as_bool() != Some(false),
                             wake_phrases: p["wakePhrases"].as_array().map(|list| {
                                 let mut out: Vec<String> = Vec::new();
-                                for phrase in list.iter().filter_map(|x| x.as_str()).filter_map(valid_phrase) {
+                                for phrase in list
+                                    .iter()
+                                    .filter_map(|x| x.as_str())
+                                    .filter_map(valid_phrase)
+                                {
                                     if !out.iter().any(|x| x.eq_ignore_ascii_case(&phrase)) {
                                         out.push(phrase);
                                     }
@@ -561,15 +571,24 @@ mod tests {
         assert_eq!(vera.phrases(), vec!["hey Vera".to_owned()]);
         let tony = &config.personas[1];
         assert!(!tony.enabled && tony.bare_name);
-        assert_eq!(tony.phrases(), vec!["hey Tony".to_owned(), "yo Tony".to_owned()]);
+        assert_eq!(
+            tony.phrases(),
+            vec!["hey Tony".to_owned(), "yo Tony".to_owned()]
+        );
         let base = json!({ "name": "Tony", "voice": "tony", "acks": ["Yeah."], "enabled": false });
         let mut on = tony.clone();
         on.enabled = true;
         let saved = on.to_json_over(Some(&base));
         assert_eq!(saved["acks"][0], "Yeah.", "Core's keys stay");
-        assert!(saved.get("enabled").is_none(), "on is the default, left out");
+        assert!(
+            saved.get("enabled").is_none(),
+            "on is the default, left out"
+        );
         assert_eq!(saved["bareName"], true);
-        assert_eq!(tony.renamed("Rex").phrases(), vec!["hey Rex".to_owned(), "yo Rex".to_owned()]);
+        assert_eq!(
+            tony.renamed("Rex").phrases(),
+            vec!["hey Rex".to_owned(), "yo Rex".to_owned()]
+        );
         assert_eq!(valid_phrase("  Hey,  Vera! "), Some("Hey Vera".into()));
         assert_eq!(valid_phrase(" , "), None);
     }

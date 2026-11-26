@@ -163,8 +163,8 @@ pub(crate) fn run(dir: &Path, tray: bool) -> Result<()> {
     for (scene, theme, height, name) in [
         ("settings", "light", None, "settings-light"),
         ("settings", "dark", None, "settings-dark"),
-        ("settings", "light", Some(1000.0), "settings-full-light"),
-        ("settings", "dark", Some(1000.0), "settings-full-dark"),
+        ("settings", "light", Some(1400.0), "settings-full-light"),
+        ("settings", "dark", Some(1400.0), "settings-full-dark"),
         (
             "settings-voice-menu",
             "dark",

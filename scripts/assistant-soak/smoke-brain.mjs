@@ -167,22 +167,22 @@ try {
   process.exit(1)
 }
 
-results.push(await step("say ready", `${NAME}, say ready.`, ["speak"]))
+results.push(await step("say ready", `Hey ${NAME}, say ready.`, ["speak"]))
 const skipVoice = argv.includes("--skip-voice")
-if (!skipVoice) results.push(await step("switch to Eli", `${NAME}, switch to Eli.`, ["set_voice"]))
-if (!skipVoice) results.push(await step("own voices again", `${NAME}, use each persona's own voice again.`, ["set_voice"]))
+if (!skipVoice) results.push(await step("switch to Eli", `Hey ${NAME}, switch to Eli.`, ["set_voice"]))
+if (!skipVoice) results.push(await step("own voices again", `Hey ${NAME}, use each persona's own voice again.`, ["set_voice"]))
 results.push(await step("Hey Alfred", "Hey Alfred, say hello.", [], "alfred"))
-results.push(await step("Jarvis", "Jarvis, say hello.", [], "jarvis"))
+results.push(await step("Jarvis", "Hey Jarvis, say hello.", [], "jarvis"))
 // A mishearing of Vera's name still wakes her but keeps whoever answered last.
-results.push(await step("Jarvis sticks", "Vara, say ready.", [], "jarvis"))
+results.push(await step("Jarvis sticks", "Hey Vara, say ready.", [], "jarvis"))
 results.push(await step("asked for Alfred", "Let me talk to Alfred.", [], "alfred"))
 if (!argv.includes("--skip-codex")) {
-  results.push(await step("use codex", `${NAME}, use codex.`, ["set_brain"]))
-  results.push(await step("codex answers", `${NAME}, say ready.`, ["speak"]))
-  results.push(await step("use claude", `${NAME}, use claude.`, ["set_brain"]))
+  results.push(await step("use codex", `Hey ${NAME}, use codex.`, ["set_brain"]))
+  results.push(await step("codex answers", `Hey ${NAME}, say ready.`, ["speak"]))
+  results.push(await step("use claude", `Hey ${NAME}, use claude.`, ["set_brain"]))
 }
-results.push(await step("prompt edit", `${NAME}, remember to keep answers under two sentences.`, ["edit_system_prompt"]))
-results.push(await step("prompt revert", `${NAME}, undo that last change to your prompt.`, ["revert_system_prompt"]))
+results.push(await step("prompt edit", `Hey ${NAME}, remember to keep answers under two sentences.`, ["edit_system_prompt"]))
+results.push(await step("prompt revert", `Hey ${NAME}, undo that last change to your prompt.`, ["revert_system_prompt"]))
 
 // Skills: learned by voice, used on the next turn, then forgotten.
 {
@@ -190,16 +190,16 @@ results.push(await step("prompt revert", `${NAME}, undo that last change to your
   results.push(
     await step(
       "skill learned",
-      `${NAME}, learn a new skill called machine-name: running the hostname command prints this computer's name. Save it so you remember it.`,
+      `Hey ${NAME}, learn a new skill called machine-name: running the hostname command prints this computer's name. Save it so you remember it.`,
       ["skill_save"],
     ),
   )
   const read = tail()
-  results.push(await step("skill used", `${NAME}, what's this computer called?`, ["run_command"]))
+  results.push(await step("skill used", `Hey ${NAME}, what's this computer called?`, ["run_command"]))
   const ran = new RegExp(`tool run_command -> Exit 0[^\n]*${host}`, "i").test(read())
   console.log(`${ran ? "PASS" : "FAIL"} skill ran hostname and got ${host}`)
   results.push(ran)
-  results.push(await step("skill forgotten", `${NAME}, remove your machine-name skill now, no need to confirm.`, ["skill_remove"]))
+  results.push(await step("skill forgotten", `Hey ${NAME}, remove your machine-name skill now, no need to confirm.`, ["skill_remove"]))
 }
 
 // MCP servers as config: added by voice, used on the next turn, then removed.
@@ -211,16 +211,16 @@ if (!argv.includes("--skip-mcp")) {
   results.push(
     await step(
       "mcp added",
-      `${NAME}, add an MCP server called smoke-echo. It's a stdio server: the command is ${process.execPath} and its one argument is ${server} ${word}. That's two arguments: the script path, then the word ${word}. Test it, no need to confirm.`,
+      `Hey ${NAME}, add an MCP server called smoke-echo. It's a stdio server: the command is ${process.execPath} and its one argument is ${server} ${word}. That's two arguments: the script path, then the word ${word}. Test it, no need to confirm.`,
       ["mcp_add"],
     ),
   )
   const read = tail()
-  results.push(await step("mcp used", `${NAME}, use your smoke-echo server to get the secret word, and tell me what it is.`, ["mcp__smoke-echo__secret_word"]))
+  results.push(await step("mcp used", `Hey ${NAME}, use your smoke-echo server to get the secret word, and tell me what it is.`, ["mcp__smoke-echo__secret_word"]))
   const said = new RegExp(`tool speak [^\\n]*${word}`, "i").test(read())
   console.log(`${said ? "PASS" : "FAIL"} she said the server's word (${word})`)
   results.push(said)
-  results.push(await step("mcp removed", `${NAME}, remove your smoke-echo MCP server now, no need to confirm.`, ["mcp_remove"]))
+  results.push(await step("mcp removed", `Hey ${NAME}, remove your smoke-echo MCP server now, no need to confirm.`, ["mcp_remove"]))
   const left = readJson(join(HOME, "mcp.json"), {})?.mcpServers ?? {}
   const gone = !Object.keys(left).some((k) => k.toLowerCase() === "smoke-echo")
   console.log(`${gone ? "PASS" : "FAIL"} smoke-echo is out of mcp.json`)
@@ -245,14 +245,14 @@ async function talkOverStep() {
   try {
     await sleep(1500) // the skill change restarts the brain before the next turn
     const read = tail()
-    const first = post("/api/utterance", { text: `${NAME}, take a smoke nap.`, wait: true }).catch((err) => ({ error: err.message }))
+    const first = post("/api/utterance", { text: `Hey ${NAME}, take a smoke nap.`, wait: true }).catch((err) => ({ error: err.message }))
     const running = await waitLog(read, /\btool run_command \{/, TIMEOUT_MS)
     if (!running) {
       console.log("FAIL she ran the nap command")
       return [false]
     }
     await sleep(1500)
-    const second = post("/api/utterance", { text: `${NAME}, and after that say the word kiwi.`, wait: true }).catch((err) => ({ error: err.message }))
+    const second = post("/api/utterance", { text: `Hey ${NAME}, and after that say the word kiwi.`, wait: true }).catch((err) => ({ error: err.message }))
     const done = await waitLog(read, /tool run_command -> Exit 0 \(smoke-nap\)\. nap-done/, 20_000)
     console.log(`${done ? "PASS" : "FAIL"} the command finished although he talked over it`)
     out.push(!!done)
@@ -280,7 +280,7 @@ if (!argv.includes("--skip-t3")) results.push(...(await watchSteps()))
 /** Something that needs a slow tool: a line must reach the App before that tool runs. */
 async function ackStep() {
   const read = tail()
-  const ok = await step("answers with a slow tool", `${NAME}, how many T3 threads are running on this machine right now?`, ["t3_list_threads|t3_tool|t3_environments"])
+  const ok = await step("answers with a slow tool", `Hey ${NAME}, how many T3 threads are running on this machine right now?`, ["t3_list_threads|t3_tool|t3_environments"])
   const log = read()
   const firstSpeak = log.search(/-> app \{"cmd":"speak"/)
   const firstTool = log.search(/\btool (?!speak\b)\w+ \{/)
@@ -314,7 +314,7 @@ async function watchSteps() {
   out.push(
     await step(
       "start a thread by environment id",
-      `${NAME}, call t3_start_thread with project "No project", environmentId ${WINSERVE}, title "${title}", and this exact brief: Reply with the single word done, and do nothing else.`,
+      `Hey ${NAME}, call t3_start_thread with project "No project", environmentId ${WINSERVE}, title "${title}", and this exact brief: Reply with the single word done, and do nothing else.`,
       ["t3_start_thread"],
     ),
   )
@@ -334,7 +334,7 @@ async function watchSteps() {
   out.push(
     await step(
       "send to the idle thread",
-      `${NAME}, use t3_send to tell thread ${threadId} on environment ${WINSERVE}: reply with the single word mango.`,
+      `Hey ${NAME}, use t3_send to tell thread ${threadId} on environment ${WINSERVE}: reply with the single word mango.`,
       ["t3_send"],
     ),
   )
@@ -391,7 +391,7 @@ async function t3Steps() {
   out.push(
     await step(
       "steer the thread",
-      `${NAME}, tell my "${title}" thread on Winserve to also say the word pineapple when it's done.`,
+      `Hey ${NAME}, tell my "${title}" thread on Winserve to also say the word pineapple when it's done.`,
       ["t3_send|t3_tool|send_feedback"],
     ),
   )
@@ -405,7 +405,7 @@ async function t3Steps() {
     if (row && !/^(preparing|queued|starting|running)$/.test(row.status ?? "")) break
     await sleep(3000)
   }
-  out.push(await step("settle the thread", `${NAME}, settle the "${title}" thread on Winserve.`, ["t3_tool"]))
+  out.push(await step("settle the thread", `Hey ${NAME}, settle the "${title}" thread on Winserve.`, ["t3_tool"]))
   try {
     const list = await call("t3_thread_list", { environmentId: WINSERVE, allProjects: true, settled: true, titleContains: title, limit: 5 })
     const settled = JSON.stringify(list).includes(threadId)
@@ -425,7 +425,7 @@ async function t3Steps() {
 // Put back what the run changed.
 const after = readJson(join(HOME, "config.json"), {})
 if (!skipVoice && (after?.app?.voice ?? null) !== startVoice) {
-  const back = startVoice ? `${NAME}, switch your voice back to ${startVoice}.` : `${NAME}, switch back to your first voice.`
+  const back = startVoice ? `Hey ${NAME}, switch your voice back to ${startVoice}.` : `Hey ${NAME}, switch back to your first voice.`
   results.push(await step("voice back", back, ["set_voice"]))
 }
 if (startPrompt !== null) {
