@@ -876,7 +876,8 @@ test("an install from before wake phrases: the first bare 'Vera,' gets told once
     await app.say("Vera, what time is it?")
     const s = (await app.waitFor((c) => c.cmd === "speak", 5000, m)) as any
     assert.equal(s.text, "You can wake me with 'hey Vera' now.")
-    assert.equal(app.since(m).filter((c) => c.cmd === "hud" && c.state === "thinking").length, 0, "no turn")
+    // No turn: the brain never hears it. (The HUD may show thinking while the notice waits to play.)
+    assert.deepEqual(app.brainLog(), [], "no turn")
     // Past the follow-up window her line opened (inside it he could just go on).
     await sleep(2500)
     m = app.mark
