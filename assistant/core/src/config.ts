@@ -275,7 +275,7 @@ export const DEFAULT_CONFIG: AssistantConfig = {
     harness: "claude-code",
     firstSpeakTimeoutSeconds: 45,
     turnTimeoutSeconds: 150,
-    "claude-code": { model: "sonnet", effort: "low" },
+    "claude-code": { model: "opus", effort: "low" },
     codex: { model: "gpt-6.2-sol", effort: "low" },
     grok: {},
     gemini: {},

@@ -4,7 +4,7 @@
  * test/protocol.test.ts, and runnable by hand against a real brain:
  *
  *   pnpm fake-app                      # scripted brain: quick protocol demo
- *   pnpm fake-app --real               # claude-code sonnet/low, a few real turns
+ *   pnpm fake-app --real               # claude-code opus/low, a few real turns
  *   pnpm fake-app --real --brain codex
  *
  * Playback is simulated: a `speak` gets `playback started` after `startMs`
