@@ -160,6 +160,13 @@ impl<B: Backend, S: Sink> Utterances<B, S> {
         !self.pending.is_empty()
     }
 
+    /// Whether the user has the floor: talking, or his words are still on
+    /// their way (transcribing, or held in case he goes on). Nothing of
+    /// Vera's may start while this is true.
+    pub(crate) fn has_floor(&self) -> bool {
+        self.speaking() || self.waiting() || self.held.is_some() || self.current.is_some()
+    }
+
     /// Holds new onsets while set (see [`Endpointer::set_inhibited`]).
     pub(crate) fn set_inhibited(&mut self, inhibited: bool) {
         self.endpointer.set_inhibited(inhibited);

@@ -765,3 +765,58 @@ test("Listening off: everything stops, nothing is heard; stop_listening turns he
     await app.stop()
   }
 })
+
+test("Shawn has the floor: a line the brain says while he talks waits, and his new turn drops it (2026-11-26 14:04:58)", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [
+      { match: "other ones", steps: [{ tool: "speak", args: { text: "Those are closed too." } }] },
+      {
+        match: "close the notepads",
+        steps: [{ tool: "speak", args: { text: "On it." } }, { sleep: 700 }, { tool: "speak", args: { text: "All Notepad windows are closed." } }],
+      },
+    ],
+  })
+  try {
+    await app.say("Vera, close the notepads.")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "On it.", 5000)
+    // "On it." plays (and finishes); then he starts talking again, and keeps on for 2 s.
+    await sleep(250)
+    const m = app.mark
+    const start = Date.now()
+    app.send({ type: "speech_start", t: start })
+    for (let i = 0; i < 10; i++) {
+      app.send({ type: "partial", text: "Vera and the other", t: Date.now() })
+      await sleep(200)
+    }
+    // The brain's second line came due 0.7 s in: nothing went to the App while he talked.
+    assert.deepEqual(spoken(app.since(m)), [], "nothing of hers was sent while he had the floor")
+    app.send({ type: "final", text: "Vera, and the other ones too.", start, end: Date.now(), during_playback: false })
+    const reply = await app.waitFor((c) => c.cmd === "speak" && c.text === "Those are closed too.", 5000, m)
+    assert.ok(reply)
+    await sleep(400)
+    assert.deepEqual(spoken(app.since(m)), ["Those are closed too."], "the stale line was dropped, never started")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("Shawn has the floor: a false start (no words) lets the waiting line play", async () => {
+  const app = await FakeApp.start({
+    config: testConfig(),
+    script: [{ match: "garden", steps: [{ tool: "speak", args: { text: "Checking." } }, { sleep: 400 }, { tool: "speak", args: { text: "The garden is fine." } }] }],
+  })
+  try {
+    await app.say("Vera, check the garden.")
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "Checking.", 5000)
+    await sleep(150)
+    const m = app.mark
+    app.send({ type: "speech_start", t: Date.now() })
+    await sleep(900)
+    assert.deepEqual(spoken(app.since(m)), [], "waits while he might be talking")
+    app.send({ type: "speech_cancel", t: Date.now(), reason: "no words" })
+    await app.waitFor((c) => c.cmd === "speak" && c.text === "The garden is fine.", 2000, m)
+  } finally {
+    await app.stop()
+  }
+})

@@ -116,6 +116,12 @@ pub(super) fn run(
     );
     core.set_barge_in(config.barge_in);
     core.set_stt_source(config.stt_source);
+    // Nothing of hers starts while he has the floor.
+    mixer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .hold_while(shared.floor.clone());
+    core.hold_playback_with(shared.floor.clone());
     // `ASSISTANT_AUDIO_DUMP=<folder>`: keep this run's microphone, reference,
     // and cancelled audio (16 kHz) and write them there on shutdown.
     let dump = std::env::var_os("ASSISTANT_AUDIO_DUMP").map(std::path::PathBuf::from);

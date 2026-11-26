@@ -239,6 +239,21 @@ just to test"). `gate.rs` now holds such an utterance to its end and lets it
 through when it ends more than 1.2 s after the verdict (the user's), and
 still drops one that ends with it (her echo).
 
+**He has the floor.** Nothing of Vera's *starts* while the user talks: no
+line, no next line after a gap, no chime. The duplex core sets one flag
+(`Shared::floor`) every block while Ears has an utterance open, its words
+are being transcribed or held in case he goes on, or barge-in is suspecting
+or has confirmed him; the mixer reads it in the output callback and leaves a
+line that hasn't started where it is (its audio keeps arriving), so it plays
+within a block of the flag clearing. A line already playing goes on: stopping
+it is barge-in's call. Core does the same on its side (`AppMouth.floor`):
+from `speech_start` it sends nothing new and takes back a line sent but not
+yet playing, and gives the floor back only once his `final` has been decided
+on, so a reply from before his words is dropped (a new turn) or plays (they
+were ignored), never started first. The App's 12 s start deadline doesn't run
+while he has the floor. (2026-11-26 14:04:58: the brain's "All Notepad
+windows are closed." went out 2 s into his next sentence and played.)
+
 **Ears during playback.** While Vera's voice (or its 300 ms tail) is in the
 room and nobody is suspected of talking, the endpointer starts nothing, so
 her echo never becomes an utterance; `gate.rs` holds any utterance that
@@ -351,8 +366,6 @@ This is how `assistant.exe` wires it (`src/assistant/runtime.rs`; `docs/assistan
   echo suddenly reaches the microphone along the same delay (a headset put
   down next to its own mic) before the canceller notices, her own voice
   could stop her once. A new device changes the delay, which resets it.
-- If the user starts talking while a `speak` is still being synthesized,
-  Vera will start over them; Core can `stop_speaking` on `speech_start`.
 - Windows only for now; the code is platform-neutral except `now_ns` (QPC)
   and the default-output lookup.
 

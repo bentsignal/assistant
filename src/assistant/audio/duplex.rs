@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 
 use super::align::{BLOCK, LOOKAHEAD_NS, RATE, Reference, Timeline};
@@ -134,6 +134,10 @@ pub(crate) struct Core<B: Backend> {
     events: Vec<AudioEvent>,
     mic_level: Arc<AtomicU32>,
     mic_level_value: f32,
+    /// Set while the user has the floor (Ears' utterance open or its words
+    /// on their way, or barge-in suspecting or confirming him): the mixer
+    /// starts nothing new while it is.
+    user_voice: Arc<AtomicBool>,
     /// Every block's trace, when the simulator asks for them.
     pub(crate) traces: Option<Vec<BlockTrace>>,
     /// Every block's audio (microphone, reference, linear, suppressed),
@@ -190,9 +194,32 @@ impl<B: Backend> Core<B> {
             events: Vec::new(),
             mic_level,
             mic_level_value: 0.0,
+            user_voice: Arc::new(AtomicBool::new(false)),
             traces: None,
             audio_dump: None,
             stats: Stats::default(),
+        }
+    }
+
+    /// Shares the mixer's hold flag ([`super::mixer::Mixer::user_voice`]).
+    pub(crate) fn hold_playback_with(&mut self, flag: Arc<AtomicBool>) {
+        self.user_voice = flag;
+        self.update_floor();
+    }
+
+    fn update_floor(&mut self) {
+        let floor = !self.muted
+            && (self.utterances.has_floor()
+                || self.detector.suspecting()
+                || self.detector.confirmed());
+        let was = self.user_voice.swap(floor, Ordering::Relaxed);
+        if floor != was {
+            let waiting = self.speeches.iter().any(|speech| !speech.playing);
+            if floor && waiting {
+                tracing::info!("assistant audio: he has the floor; her next line waits");
+            } else if !floor && waiting {
+                tracing::info!("assistant audio: he's done; her waiting line may start");
+            }
         }
     }
 
@@ -617,6 +644,7 @@ impl<B: Backend> Core<B> {
             out.extend(self.gate.admit(event, holding));
         }
         self.forward(out);
+        self.update_floor();
     }
 
     /// Ears' new events go to the gate, which still holds the false

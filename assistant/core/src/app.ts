@@ -160,6 +160,8 @@ export class AppMouth {
   private stopping = false
   /** Nothing new goes to the App until `release()` (Shawn went on talking before she began). */
   private held = false
+  /** Shawn is talking: nothing new goes to the App until `floor(false)`. */
+  private floorTaken = false
   private startTimeoutMs: number
   private graceMs: number
 
@@ -217,6 +219,11 @@ export class AppMouth {
     return this.held
   }
 
+  /** Whether Shawn has the floor (`floor(true)`): nothing new is sent. */
+  get floorHeld(): boolean {
+    return this.floorTaken
+  }
+
   /**
    * Holds her lines back while Shawn is still talking: nothing new is sent,
    * and a line sent but not yet playing is taken back (stopped in the App,
@@ -226,6 +233,24 @@ export class AppMouth {
   hold() {
     if (this.held) return
     this.held = true
+    this.takeBack()
+  }
+
+  /**
+   * Shawn has the floor (`true`, from his `speech_start`) or gave it back
+   * (`false`, once his words have been decided on): while he has it nothing
+   * of hers starts, whatever turn it belongs to, and a line sent but not yet
+   * playing is taken back. Unlike `hold()`, `cut()` leaves it as it is: he
+   * is still talking.
+   */
+  floor(taken: boolean) {
+    if (this.floorTaken === taken) return
+    this.floorTaken = taken
+    if (taken) this.takeBack()
+    else this.pump()
+  }
+
+  private takeBack() {
     const cur = this.current
     if (!cur || cur.state !== "sent") return
     if (cur.timer) clearTimeout(cur.timer)
@@ -249,7 +274,7 @@ export class AppMouth {
   }
 
   private pump() {
-    if (this.held || this.current || !this.queue.length) return
+    if (this.held || this.floorTaken || this.current || !this.queue.length) return
     const item = this.queue.shift()!
     this.current = item
     item.state = "sent"

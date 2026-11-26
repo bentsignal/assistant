@@ -300,14 +300,20 @@ export class Assistant {
       case "final": {
         const start = this.appTime(ev.start) ?? (this.inSpeech ? this.speechStartedAt : Date.now())
         const end = this.appTime(ev.end) ?? Date.now()
-        this.speechEnded()
+        // He keeps the floor until his words are decided on: a line from
+        // before them is dropped (a new turn) or plays (ignored), never
+        // started first.
+        this.speechEnded(false)
         if (this.micMuted) {
           this.log(`ignored (microphone muted): ${ev.text}`)
+          this.mouth.floor(false)
           break
         }
         if (ev.during_playback && this.mouth.speaking) this.bargeIn(undefined, "final during playback")
         this.log(`heard: "${ev.text}"${ev.during_playback ? " (during playback)" : ""}`)
+        // utterance() decides synchronously (it awaits nothing before it returns).
         void this.utterance({ text: ev.text, start, end, source: "app", duringPlayback: !!ev.during_playback })
+        this.mouth.floor(false)
         break
       }
       case "speech_cancel":
@@ -384,6 +390,11 @@ export class Assistant {
    */
   private speechStarted(onset?: number) {
     this.inSpeech = true
+    // Shawn has the floor: nothing of hers starts until his words are in.
+    if (!this.micMuted) {
+      if (this.mouth.pendingStart && !this.mouth.floorHeld) this.log("speech: he's talking; her next line waits")
+      this.mouth.floor(true)
+    }
     this.speechStartedAt = Date.now()
     const began = Math.min(onset ?? Date.now(), Date.now())
     this.speechEngaged = !this.micMuted && (this.bargePending || this.followUpUntil >= began || this.mouth.speaking)
@@ -434,12 +445,14 @@ export class Assistant {
     return (this.speechByTurn.get(turnId) ?? []).some((i) => i.startedAt !== undefined)
   }
 
-  private speechEnded() {
+  /** His utterance is over; `giveFloor` false when the caller gives it back once his words are decided on. */
+  private speechEnded(giveFloor = true) {
     if (this.speechTimer) clearTimeout(this.speechTimer)
     this.speechTimer = null
     this.inSpeech = false
     this.speechEngaged = false
     this.partial = ""
+    if (giveFloor) this.mouth.floor(false)
     this.flushChimes()
   }
 

@@ -110,6 +110,16 @@ impl Ledger {
         })
     }
 
+    /// A line not started yet waits for him while he has the floor: its
+    /// start deadline runs from when he gives it back.
+    pub(super) fn floor_held(&mut self, now: Instant) {
+        for speech in self.items.values_mut() {
+            if speech.started_at.is_none() {
+                speech.sent_at = now;
+            }
+        }
+    }
+
     /// Removes and returns every utterance past its deadline.
     pub(super) fn overdue(&mut self, now: Instant) -> Vec<Ended> {
         let late: Vec<String> = self

@@ -173,6 +173,14 @@ replies piled up behind it):
   Speak ids are scoped to the Core that sent them, so a restarted Core never
   hears the old one's ends.
 - Every `speech_start` gets its `final` or `speech_cancel`.
+- **He always has the floor.** While he talks (or his words are still being
+  transcribed) nothing of hers starts: no line, acknowledgement or chime,
+  whatever turn it belongs to. The App enforces it where audio starts (the
+  mixer holds any line or chime that hasn't begun while Ears or barge-in
+  hears him); Core sends nothing new from `speech_start` and takes back a
+  line sent but not yet playing, until his `final` has been decided on.
+  Then a line from before his words is dropped (they made a new turn) or
+  plays (they didn't). A line already playing when he starts is barge-in's.
 - Settings never restart the audio engine: a voice applies to the next
   `speak`, a volume at once, a microphone reopens only the input.
 - **Never make him rush.** His turn ends on a pause that depends on how

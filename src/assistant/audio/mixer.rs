@@ -4,13 +4,19 @@
 //! a channel, and reports every block it rendered as the echo canceller's
 //! reference, plus when each utterance started and finished.
 //!
+//! Nothing new starts while the user is talking ([`Mixer::user_voice`],
+//! set by the duplex core from Ears and barge-in): a line at the head of the
+//! queue, the next one after a gap, or a chime waits, buffering, until his
+//! voice has ended and his words are transcribed. What is already playing
+//! goes on; stopping it is barge-in's call.
+//!
 //! Gains never jump: volume moves over ~60 ms, a duck falls in ~8 ms and
 //! recovers in ~150 ms, and a stop fades the voice out over ~20 ms before
 //! its audio is dropped, so nothing clicks.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 
 use super::resample::Resampler;
@@ -142,6 +148,9 @@ pub(crate) struct Mixer {
     level: Arc<AtomicU32>,
     level_value: f32,
     scratch: Vec<f32>,
+    /// Set while the user is talking (or his words are being transcribed):
+    /// nothing new starts.
+    user_voice: Arc<AtomicBool>,
 }
 
 impl Mixer {
@@ -165,7 +174,19 @@ impl Mixer {
             level,
             level_value: 0.0,
             scratch: Vec::new(),
+            user_voice: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// The flag that holds new playback back while the user talks; the
+    /// duplex core sets it.
+    pub(crate) fn user_voice(&self) -> Arc<AtomicBool> {
+        self.user_voice.clone()
+    }
+
+    /// Holds new playback back while `flag` is set.
+    pub(crate) fn hold_while(&mut self, flag: Arc<AtomicBool>) {
+        self.user_voice = flag;
     }
 
     /// A new output stream at `rate`: queued audio is resampled for it.
@@ -272,10 +293,12 @@ impl Mixer {
             self.command(command);
         }
         let frame_ns = 1e9 / self.rate as f64;
+        // Never log here: this is the output callback.
+        let hold = self.user_voice.load(Ordering::Relaxed);
         let mut program_energy = 0.0f32;
         let mut duck_sum = 0.0f32;
         for (index, sample) in out.iter_mut().enumerate() {
-            let mut program = self.next_speech(playback_ns, index, frame_ns);
+            let mut program = self.next_speech(playback_ns, index, frame_ns, hold);
             if let Some((item, fade)) = &mut self.stopping {
                 let voice = item.buffer.pop_front().unwrap_or(0.0);
                 program += voice * fade.next();
@@ -284,6 +307,10 @@ impl Mixer {
                 }
             }
             for (chime, at) in &mut self.chimes {
+                // A chime not yet begun waits for him too.
+                if hold && *at == 0 {
+                    continue;
+                }
                 program += chime.get(*at).copied().unwrap_or(0.0);
                 *at += 1;
             }
@@ -319,8 +346,10 @@ impl Mixer {
         });
     }
 
-    /// The next sample of the utterance at the head of the queue.
-    fn next_speech(&mut self, playback_ns: u64, index: usize, frame_ns: f64) -> f32 {
+    /// The next sample of the utterance at the head of the queue. While
+    /// `hold`, one that hasn't started stays where it is (its audio keeps
+    /// arriving), and so does the next one after a gap.
+    fn next_speech(&mut self, playback_ns: u64, index: usize, frame_ns: f64, hold: bool) -> f32 {
         if self.gap > 0 {
             self.gap -= 1;
             return 0.0;
@@ -330,7 +359,7 @@ impl Mixer {
             return 0.0;
         };
         if !item.started {
-            if !item.ended && item.buffer.len() < prebuffer {
+            if hold || (!item.ended && item.buffer.len() < prebuffer) {
                 return 0.0;
             }
             if item.buffer.is_empty() {
@@ -544,6 +573,65 @@ mod tests {
         speak(&rig, "a", 0.5);
         let out = rig.render(300);
         assert!((out[480 * 20] - 0.05).abs() < 0.002, "{}", out[480 * 20]);
+    }
+
+    fn started(reports: &[Report]) -> Vec<String> {
+        reports
+            .iter()
+            .filter_map(|report| match report {
+                Report::Started { id } => Some(id.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn nothing_new_starts_while_he_has_the_floor() {
+        let mut rig = rig(1.0);
+        let floor = rig.mixer.user_voice();
+        floor.store(true, Ordering::Relaxed);
+        speak(&rig, "a", 0.5);
+        let _ = rig.commands.send(Command::Chime(vec![0.25; 4_800]));
+        // He talks for 4 s: not a sample of hers, not even the chime.
+        let out = rig.render(4_000);
+        assert!(out.iter().all(|s| *s == 0.0));
+        assert!(started(&rig.reports()).is_empty());
+        assert!(rig.mixer.busy(), "the line is still waiting");
+        // He stops: it plays at once, whole.
+        floor.store(false, Ordering::Relaxed);
+        let out = rig.render(800);
+        assert_eq!(started(&rig.reports()), ["a"]);
+        let first = out.iter().position(|s| s.abs() > 0.01).unwrap();
+        assert!(first < 480 * 2, "starts within 20 ms ({first} samples)");
+        // The line (0.5), with the chime (0.25) over its first 100 ms.
+        let both = out.iter().filter(|s| (s.abs() - 0.75).abs() < 0.01).count();
+        let voice = out.iter().filter(|s| (s.abs() - 0.5).abs() < 0.01).count();
+        assert!((4_700..=4_800).contains(&both), "{both}");
+        assert!(both + voice >= 23_500, "{both} + {voice}");
+    }
+
+    #[test]
+    fn a_line_already_playing_goes_on_but_the_next_waits() {
+        let mut rig = rig(1.0);
+        let floor = rig.mixer.user_voice();
+        speak(&rig, "a", 0.3);
+        speak(&rig, "b", 0.3);
+        rig.render(100);
+        assert_eq!(started(&rig.reports()), ["a"]);
+        // He starts while "a" plays (barge-in, not the mixer, decides
+        // whether to stop it): "a" goes on, "b" doesn't start.
+        floor.store(true, Ordering::Relaxed);
+        let out = rig.render(1_500);
+        assert!(out[..480 * 15].iter().any(|s| s.abs() > 0.25), "a goes on");
+        assert!(out[480 * 30..].iter().all(|s| *s == 0.0), "b waits");
+        assert!(started(&rig.reports()).is_empty());
+        // His words make a new turn: Core drops "b", and nothing plays.
+        let _ = rig.commands.send(Command::Drop { id: "b".into() });
+        floor.store(false, Ordering::Relaxed);
+        let out = rig.render(600);
+        assert!(out.iter().all(|s| *s == 0.0));
+        assert!(started(&rig.reports()).is_empty());
+        assert!(!rig.mixer.busy());
     }
 
     #[test]

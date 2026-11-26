@@ -407,6 +407,7 @@ pub(crate) fn run(
         Arc::new(AtomicU32::new(0)),
     );
     core.set_stt_source(source);
+    core.hold_playback_with(mixer.user_voice());
     core.traces = Some(Vec::new());
     let dump_dir = std::env::var_os("ASSISTANT_SIM_TRACE").map(std::path::PathBuf::from);
     if dump_dir.is_some() {

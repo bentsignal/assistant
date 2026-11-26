@@ -186,6 +186,9 @@ pub(crate) struct Shared {
     pub raw_peak: AtomicU32,
     pub speaking: AtomicBool,
     pub muted: AtomicBool,
+    /// The user has the floor (talking, or his words on their way): the
+    /// mixer starts nothing new.
+    pub floor: Arc<AtomicBool>,
 }
 
 pub(crate) enum Request {
@@ -353,6 +356,12 @@ impl AssistantAudio {
     /// Whether Vera is talking or about to.
     pub(crate) fn speaking(&self) -> bool {
         self.shared.speaking.load(Ordering::Relaxed)
+    }
+
+    /// Whether the user has the floor: nothing of Vera's starts while he
+    /// talks or his words are being transcribed.
+    pub(crate) fn user_has_floor(&self) -> bool {
+        self.shared.floor.load(Ordering::Relaxed)
     }
 }
 

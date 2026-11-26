@@ -109,12 +109,19 @@ const U = {
   // 3 s later with no wake word (Shawn's log, 2026-11-26 15:34:55).
   lights: "Vera, turn off the living room lights.",
   lightsMore: "And dim the kitchen ones too.",
+  // He has the floor (2026-11-26 14:04:58): she must start nothing while he talks.
+  harbor: "Vera, tell me about the harbor.",
+  mountains: "Wait, wait, I'd rather hear about the mountains instead, the tall ones up north that keep their snow all year round.",
+  pantry: "Vera, check the pantry.",
+  pantryMore: "Vera, while you're at it, look at the fridge, the freezer, and the shelves by the back door too.",
   // Listening off by voice.
   sleepNow: "Vera, stop listening for a while.",
   awake: "Vera, are you listening again?",
 }
 
 const LONG = {
+  harbor:
+    "The harbor is busy at dawn, with fishing boats coming in low in the water, nets piled on the quay, and gulls circling over the market stalls.",
   story:
     "Once there was a lighthouse keeper who counted the ships that passed each night, and she wrote every name in a blue notebook by the window.",
   news: "Here is the news. The city opened a new park by the river this morning, and the weather stays mild through the weekend with light wind.",
@@ -131,6 +138,10 @@ const LONG = {
 const speak = (text) => ({ tool: "speak", args: { text } })
 const rule = (key, steps) => ({ match: `\\] Shawn: .*${key}`, steps })
 const SCRIPT = [
+  rule("fridge", [speak("The fridge and the shelves are full too.")]),
+  rule("check the pantry", [speak("On it."), { sleep: 1500 }, speak("The pantry is stocked.")]),
+  rule("mountains", [speak("The northern peaks keep their snow all year.")]),
+  rule("harbor", [speak(LONG.harbor), speak("The tide turns at noon.")]),
   rule("dim the kitchen", [speak("Kitchen dimmed.")]),
   rule("living room lights", [{ sleep: 300 }]),
   rule("listening again", [speak("Yes, I'm listening.")]),
@@ -940,6 +951,57 @@ class Run {
       this.check(messages.filter((m) => /staging/i.test(m.text)).length === 1, `the second part went to the brain once (${messages.length} messages)`)
       const answers = this.trace.find(isFrom("speak"), first.at)
       this.check(answers.length === 1, `she answered once (${answers.map((e) => `"${e.msg.text}"`).join(", ")})`)
+      await this.hidden()
+    })
+
+    // Nothing of hers (a line, the next line, a chime) starts between `from` and `to`.
+    const nothingStarted = (from, to, what) => {
+      const starts = this.trace.find(isTo("playback", (m) => m.state === "started"), from).filter((e) => e.t <= to)
+      const chimes = this.trace.find((e) => e.kind === "chime", from).filter((e) => e.t <= to)
+      this.check(starts.length === 0, `${what}: no line started while he talked (${starts.map((e) => e.msg.speak_id).join(", ") || "none"})`)
+      this.check(chimes.length === 0, `${what}: no chime while he talked (${chimes.length})`)
+    }
+
+    await step("he barges in and keeps talking for 4 s: nothing she says starts until he's done", async () => {
+      const harbor = await this.say("harbor")
+      await this.heard(harbor)
+      this.addressed++
+      const playing = await this.reply(harbor, LONG.harbor, { until: "started" })
+      await sleep(2500)
+      const mountains = await this.say("mountains", -3)
+      const barge = this.trace.find(isTo("barge_in"), mountains.at)[0]
+      this.check(!!barge, "his long interruption barged in")
+      this.check(mountains.end - mountains.at >= 4000, `he talked for ${mountains.end - mountains.at} ms`)
+      const cut = this.trace.find(isTo("playback", (m) => m.speak_id === playing.id && m.state === "interrupted"), playing.started.t)
+      this.check(cut.length === 1, "the harbor line was interrupted")
+      nothingStarted((barge?.t ?? mountains.at) + 50, mountains.end, "barge-in, then 4 s more")
+      await this.heard(mountains)
+      this.addressed++
+      this.steps.push({ said: mountains, replies: ["The northern peaks keep their snow all year."] })
+      await this.reply(mountains, "The northern peaks keep their snow all year.")
+      this.check(this.trace.find(isFrom("speak", (m) => m.text === "The tide turns at noon."), harbor.at).length === 0, "the rest of the harbor was dropped")
+      await this.hidden()
+    })
+
+    await step("a reply comes due while he's still talking: it waits, and his new turn drops it", async () => {
+      const pantry = await this.say("pantry")
+      await this.heard(pantry)
+      this.addressed++
+      this.steps.push({ said: pantry, replies: ["On it.", "The pantry is stocked."] })
+      const ack = await this.reply(pantry, "On it.")
+      // He goes on 0.4 s after "On it.", for ~5 s; her next line comes due ~1 s in.
+      await sleep(Math.max(0, ack.ended.t + 400 - now()))
+      const more = await this.say("pantryMore")
+      this.check(more.end - more.at >= 4000, `he talked for ${more.end - more.at} ms`)
+      nothingStarted(more.at + 300, more.end, "a reply due mid-sentence")
+      await this.heard(more)
+      this.addressed++
+      this.steps.push({ said: more, replies: ["The fridge and the shelves are full too."] })
+      await this.reply(more, "The fridge and the shelves are full too.")
+      const staleStarted = this.trace
+        .find(isFrom("speak", (m) => m.text === "The pantry is stocked."), pantry.at)
+        .flatMap((s) => this.trace.find(isTo("playback", (m) => m.speak_id === s.msg.speak_id && m.state === "started"), s.t))
+      this.check(staleStarted.length === 0, "the reply that came due while he talked never played (his words made a new turn)")
       await this.hidden()
     })
 

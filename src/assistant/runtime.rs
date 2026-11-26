@@ -1056,7 +1056,15 @@ impl Controller {
             tracing::info!("starting the audio engine again");
             self.start_audio();
         }
-        // Lines past their deadline end now, and the engine drops them.
+        // Lines past their deadline end now, and the engine drops them. One
+        // that hasn't started while he has the floor is waiting for him.
+        if self
+            .audio
+            .as_ref()
+            .is_some_and(|audio| audio.user_has_floor())
+        {
+            self.ledger.floor_held(Instant::now());
+        }
         for ended in self.ledger.overdue(Instant::now()) {
             tracing::warn!(
                 speak_id = ended.engine_id,
